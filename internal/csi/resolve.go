@@ -101,10 +101,14 @@ const (
 	// existed is treated as v1alpha1.DefaultMaxDataTransferSize.
 	paramNVMeOFMaxDataTransferSize = "pillar-csi.bhyoo.com/nvmeof-max-data-transfer-size"
 
-	// ParamFSType is the resolved filesystem type (ext4 or xfs);
-	// NodeStageVolume formats and mounts with it in place of the PV's
-	// csi.fsType.
+	// ParamFSType is the resolved filesystem type.  NFS volumes carry
+	// "nfs" here so the node dispatches to the file-protocol handler.
 	paramFSType = "pillar-csi.bhyoo.com/fs-type"
+
+	// ParamNFSVersion is the resolved NFS protocol version used by the node
+	// mount helper.  It is persisted in VolumeContext with the other resolved
+	// settings so retries do not follow a changed PillarProtocol.
+	paramNFSVersion = "pillar-csi.bhyoo.com/nfs-version"
 
 	// ParamMkfsOptions is the resolved mkfs argument list, a JSON string
 	// array, used when NodeStageVolume formats a blank device.
@@ -246,7 +250,7 @@ func (s *ControllerServer) resolveVolumeConfig(
 			"lvm.provisioningMode thin requires PillarStore %q to set lvm.thinPool", class.store.Name)
 	}
 
-	fs, err := resolveFilesystem(scParams, caps, class.filesystem, pvc.Filesystem)
+	fs, err := resolveProtocolFilesystem(scParams, caps, class, pvc.Filesystem, protocol.Kind())
 	if err != nil {
 		return nil, err
 	}
@@ -263,6 +267,31 @@ func (s *ControllerServer) resolveVolumeConfig(
 		storeName:     class.storeName,
 		importDataset: pvc.ImportZvol,
 	}, nil
+}
+
+func resolveProtocolFilesystem(
+	scParams map[string]string,
+	caps []*csi.VolumeCapability,
+	class *classLayer,
+	pvcFS *v1alpha1.FilesystemConfig,
+	protocol v1alpha1.ProtocolID,
+) (*v1alpha1.FilesystemConfig, error) {
+	fs, err := resolveFilesystem(scParams, caps, class.filesystem, pvcFS)
+	if err != nil {
+		return nil, err
+	}
+	if protocol != v1alpha1.ProtocolIDNFS {
+		return fs, nil
+	}
+	err = validateNFSFilesystem(scParams, caps, class.filesystem, pvcFS)
+	if err != nil {
+		return nil, invalidConfig("%v", err)
+	}
+	if class.localAttach {
+		return nil, invalidConfig("localAttach is not supported for protocol %q", v1alpha1.ProtocolIDNFS)
+	}
+	fs.FSType = ProtocolNFS
+	return fs, nil
 }
 
 // resolveProtocol applies the class and claim protocol overrides to the
@@ -553,6 +582,10 @@ func applyProtocolOverride(protocol *v1alpha1.ProtocolSpec, ov *v1alpha1.Protoco
 			{&dst.NoopOutInterval, src.NoopOutInterval},
 			{&dst.NoopOutTimeout, src.NoopOutTimeout},
 		}
+	case ov.NFS != nil:
+		if protocol.NFS == nil {
+			return fmt.Errorf("%s: nfs overrides do not apply to a %s protocol", source, protocol.Kind())
+		}
 	}
 	for _, f := range fields {
 		if f.src != nil {
@@ -635,9 +668,9 @@ func classFilesystemBase(
 	if scFSType == "" {
 		return fs, nil
 	}
-	if scFSType != defaultFsType && scFSType != xfsFsType {
-		return nil, invalidConfig("unsupported StorageClass parameter %s %q: must be %q or %q",
-			paramFSTypeSC, scFSType, defaultFsType, xfsFsType)
+	if scFSType != defaultFsType && scFSType != xfsFsType && scFSType != string(v1alpha1.ProtocolIDNFS) {
+		return nil, invalidConfig("unsupported StorageClass parameter %s %q: must be %q, %q or %q",
+			paramFSTypeSC, scFSType, defaultFsType, xfsFsType, v1alpha1.ProtocolIDNFS)
 	}
 	if classFS != nil && classFS.FSType != "" && classFS.FSType != scFSType {
 		return nil, invalidConfig("StorageClass parameter %s fsType %q conflicts with %s %q",
@@ -645,6 +678,42 @@ func classFilesystemBase(
 	}
 	fs.FSType = scFSType
 	return fs, nil
+}
+
+// validateNFSFilesystem rejects filesystem settings that the file protocol
+// cannot apply.  An omitted filesystem document is valid; the effective
+// filesystem type is supplied by resolveVolumeConfig as "nfs".
+func validateNFSFilesystem(
+	scParams map[string]string,
+	caps []*csi.VolumeCapability,
+	classFS, pvcFS *v1alpha1.FilesystemConfig,
+) error {
+	if scType := scParams[paramFSTypeSC]; scType != "" && scType != ProtocolNFS {
+		return fmt.Errorf("filesystem fsType %q is not supported for NFS volumes", scType)
+	}
+	for _, cap := range caps {
+		if fsType := cap.GetMount().GetFsType(); fsType != "" && fsType != ProtocolNFS {
+			return fmt.Errorf("volume capability fsType %q is not supported for NFS volumes", fsType)
+		}
+	}
+	for source, fs := range map[string]*v1alpha1.FilesystemConfig{
+		"StorageClass": classFS,
+		"PVC":          pvcFS,
+	} {
+		if fs == nil {
+			continue
+		}
+		if fs.FSType != "" && fs.FSType != "nfs" {
+			return fmt.Errorf("%s filesystem fsType %q is not supported for NFS volumes", source, fs.FSType)
+		}
+		if len(derefList(fs.MkfsOptions)) != 0 {
+			return fmt.Errorf("%s filesystem mkfsOptions are not supported for NFS volumes", source)
+		}
+		if fs.PeriodicTrim != nil && *fs.PeriodicTrim {
+			return fmt.Errorf("%s filesystem periodicTrim=true is not supported for NFS volumes", source)
+		}
+	}
+	return nil
 }
 
 // capabilityFSType returns the fsType the request's mount capabilities name
@@ -672,8 +741,8 @@ func copyList(p *[]string) *[]string {
 
 // nodeVolumeContext returns the VolumeContext entries derived from the
 // resolved configuration that the node needs at stage time: NVMe-oF connect
-// or iSCSI session tuning, the iSCSI authentication method (absent for
-// None) and the filesystem settings.
+// or iSCSI session tuning, NFS protocol version, the iSCSI authentication
+// method (absent for None) and the filesystem settings.
 func nodeVolumeContext(resolved *v1alpha1.ResolvedVolumeConfig, volCtx map[string]string) {
 	if resolved == nil {
 		return
@@ -699,6 +768,12 @@ func nodeVolumeContext(resolved *v1alpha1.ResolvedVolumeConfig, volCtx map[strin
 		if method := i.Auth.EffectiveMethod(); method != v1alpha1.ISCSIAuthMethodNone {
 			volCtx[VolumeContextKeyISCSIAuthMethod] = string(method)
 		}
+	case resolved.Protocol.NFS != nil:
+		version := resolved.Protocol.NFS.Version
+		if version == "" {
+			version = "4.2"
+		}
+		volCtx[paramNFSVersion] = version
 	}
 	for _, f := range tuning {
 		if f.v != nil {

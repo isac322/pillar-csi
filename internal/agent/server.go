@@ -35,6 +35,7 @@ import (
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/agent/backend"
 	"github.com/isac322/pillar-csi/internal/agent/lio"
+	"github.com/isac322/pillar-csi/internal/agent/nfs"
 	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 	"github.com/isac322/pillar-csi/internal/telemetry"
 )
@@ -50,8 +51,14 @@ const defaultDrainStateDir = "/var/lib/pillar-csi/agent"
 type Server struct {
 	agentv1.UnimplementedAgentServiceServer
 
-	// backends maps pool name → VolumeBackend for that pool.
-	backends map[string]backend.VolumeBackend
+	// backends maps pool name → default backend.  backendVariants retains
+	// distinct backend types when a ZFS pool hosts both zvols and datasets.
+	backends        map[string]backend.VolumeBackend
+	backendVariants map[string]map[agentv1.BackendType]backend.VolumeBackend
+
+	// nfsManager is present only when a filesystem-capable backend is
+	// configured and the NFS runtime could be constructed.
+	nfsManager *nfs.Manager
 
 	// configfsRoot is the root of the nvmet configfs tree.  Defaults to
 	// DefaultConfigfsRoot when empty.
@@ -156,6 +163,14 @@ func NewServer(backends map[string]backend.VolumeBackend, configfsRoot string, o
 	for _, o := range opts {
 		o(s)
 	}
+	if s.backendVariants == nil {
+		s.backendVariants = make(map[string]map[agentv1.BackendType]backend.VolumeBackend, len(backends))
+		for pool, b := range backends {
+			if b != nil {
+				s.backendVariants[pool] = map[agentv1.BackendType]backend.VolumeBackend{b.Type(): b}
+			}
+		}
+	}
 	return s
 }
 
@@ -219,10 +234,35 @@ func (s *Server) backendFor(volumeID string) (backend.VolumeBackend, error) {
 	if err != nil {
 		return nil, err
 	}
+	if variants := s.backendVariants[pool]; len(variants) > 1 {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"volume %q requires an explicit backend path when pool %q has multiple backend types",
+			volumeID, pool)
+	}
 	b, ok := s.backends[pool]
 	if !ok {
 		return nil, status.Errorf(codes.NotFound,
 			"no backend registered for pool %q", pool)
+	}
+	return b, nil
+}
+
+// backendForType resolves a volume to the backend selected by its explicit
+// backend type.  This is required when one ZFS pool contains both zvol and
+// dataset resources.
+func (s *Server) backendForType(volumeID string, requested agentv1.BackendType) (backend.VolumeBackend, error) {
+	pool, err := poolFromVolumeID(volumeID)
+	if err != nil {
+		return nil, err
+	}
+	if variants := s.backendVariants[pool]; variants != nil {
+		if b, ok := variants[requested]; ok {
+			return b, nil
+		}
+	}
+	b, ok := s.backends[pool]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "no backend registered for pool %q", pool)
 	}
 	return b, nil
 }

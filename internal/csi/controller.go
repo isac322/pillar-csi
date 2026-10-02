@@ -48,6 +48,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -296,8 +297,8 @@ func pillarVolumeStatePhaseToVolumeState(phase v1alpha1.PillarVolumeStatePhase) 
 // ─────────────────────────────────────────────────────────────────────────────.
 
 // supportedAccessModes lists the VolumeCapability access modes pillar-csi
-// supports.  Every served protocol is a block protocol, which cannot satisfy
-// multi-node writer semantics.
+// supports.  MULTI_NODE_MULTI_WRITER is restricted to NFS; block protocols
+// retain their existing single-node and read-only-many behavior.
 //
 // Access-mode mapping (Kubernetes PVC → CSI constant):
 //
@@ -314,6 +315,8 @@ var supportedAccessModes = []csi.VolumeCapability_AccessMode_Mode{
 	csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
 	// ROX: multiple nodes may mount read-only simultaneously.
 	csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY,
+	// RWX: multiple NFS clients may mount read-write simultaneously.
+	csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
 }
 
 // ControllerGetCapabilities reports the operations this controller supports.
@@ -382,9 +385,23 @@ func (s *ControllerServer) ValidateVolumeCapabilities(
 	// volume?".  A malformed volume_id (rejected by the same lookup as
 	// not-found) is also treated as NotFound per the same paragraph: an ID
 	// the driver did not issue cannot identify any volume it provisioned.
-	existsErr := s.assertVolumeExists(ctx, req.GetVolumeId())
-	if existsErr != nil {
-		return nil, existsErr
+	protocolType := req.GetVolumeContext()[vcProtocolType]
+	var storedNFSReadonly bool
+	if protocolType == "" {
+		parts := strings.SplitN(req.GetVolumeId(), "/", volumeIDParts)
+		if len(parts) == volumeIDParts {
+			protocolType = parts[1]
+		}
+	}
+	if s.apiReader != nil {
+		_, pvs, stateErr := s.mustVolumeState(ctx, req.GetVolumeId())
+		if stateErr != nil {
+			return nil, stateErr
+		}
+		protocolType = pvs.Spec.ProtocolType
+		storedNFSReadonly = v1alpha1.ProtocolID(protocolType) == v1alpha1.ProtocolIDNFS &&
+			pvs.Status.ExportSpec != nil && pvs.Status.ExportSpec.NFS != nil &&
+			pvs.Status.ExportSpec.NFS.Readonly
 	}
 
 	for _, cap := range req.GetVolumeCapabilities() {
@@ -393,15 +410,16 @@ func (s *ControllerServer) ValidateVolumeCapabilities(
 			return nil, status.Error(codes.InvalidArgument,
 				"each volume capability must specify an access_mode")
 		}
-		if !isSupportedAccessMode(cap.GetAccessMode().GetMode()) {
-			return &csi.ValidateVolumeCapabilitiesResponse{
-				Message: fmt.Sprintf(
-					"access mode %s is not supported; supported modes: %s",
-					cap.GetAccessMode().GetMode(),
-					describeSupportedModes(),
-				),
-			}, nil
-		}
+	}
+	capabilityErr := validateCapabilitiesForProtocol(protocolType, req.GetVolumeCapabilities())
+	if capabilityErr != nil {
+		//nolint:nilerr // CSI reports unsupported capabilities in Message, not as an RPC failure.
+		return &csi.ValidateVolumeCapabilitiesResponse{Message: capabilityErr.Error()}, nil
+	}
+	if storedNFSReadonly && hasWritableVolumeCapability(req.GetVolumeCapabilities()) {
+		return &csi.ValidateVolumeCapabilitiesResponse{
+			Message: "NFS volume export is read-only",
+		}, nil
 	}
 
 	// All requested capabilities are supported — echo them back in Confirmed.
@@ -414,9 +432,89 @@ func (s *ControllerServer) ValidateVolumeCapabilities(
 	}, nil
 }
 
+// hasWritableVolumeCapability reports whether any requested capability can
+// write.  A read-only NFS export can still confirm ROX, but never a writer.
+func hasWritableVolumeCapability(caps []*csi.VolumeCapability) bool {
+	for _, cap := range caps {
+		if cap.GetAccessMode().GetMode() != csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY {
+			return true
+		}
+	}
+	return false
+}
+
 // isSupportedAccessMode returns true when mode is supported.
 func isSupportedAccessMode(mode csi.VolumeCapability_AccessMode_Mode) bool {
 	return slices.Contains(supportedAccessModes, mode)
+}
+
+// validateCapabilitiesForProtocol enforces the protocol-specific access and
+// volume-mode matrix.  NFS is the only protocol that may serve RWX and it
+// always serves a filesystem mount, never a raw block capability.
+func validateCapabilitiesForProtocol(
+	protocol string,
+	caps []*csi.VolumeCapability,
+) error {
+	isNFS := v1alpha1.ProtocolID(protocol) == v1alpha1.ProtocolIDNFS
+	hasROX, hasWritable := false, false
+	for _, cap := range caps {
+		err := validateCapabilityForProtocol(protocol, cap)
+		if err != nil {
+			return err
+		}
+		if cap.GetAccessMode().GetMode() == csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY {
+			hasROX = true
+		} else {
+			hasWritable = true
+		}
+	}
+	if isNFS && hasROX && hasWritable {
+		return fmt.Errorf("NFS volume capabilities cannot mix read-only-many and writable access modes")
+	}
+	return nil
+}
+
+func validateCapabilityForProtocol(protocol string, capability *csi.VolumeCapability) error {
+	mode := capability.GetAccessMode().GetMode()
+	if !isSupportedAccessMode(mode) {
+		return fmt.Errorf("access mode %s is not supported; supported modes: %s",
+			mode, describeSupportedModes())
+	}
+	isNFS := v1alpha1.ProtocolID(protocol) == v1alpha1.ProtocolIDNFS
+	if mode == csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER && !isNFS {
+		return fmt.Errorf("access mode %s is supported only for protocol %q",
+			mode, v1alpha1.ProtocolIDNFS)
+	}
+	if !isNFS {
+		return nil
+	}
+	if capability.GetBlock() != nil {
+		return fmt.Errorf("NFS volumes do not support Block volume capabilities")
+	}
+	mount := capability.GetMount()
+	if mount == nil {
+		return fmt.Errorf("NFS volumes require Filesystem volume capabilities")
+	}
+	if fsType := mount.GetFsType(); fsType != "" && fsType != ProtocolNFS {
+		return fmt.Errorf("NFS volumes do not support fsType %q", fsType)
+	}
+	return nil
+}
+
+// nfsReadonlyForCapabilities reports whether an NFS volume is exclusively
+// ROX.  NFS export read-only is volume-wide, so mixed ROX/writable requests
+// are rejected by validateCapabilitiesForProtocol rather than changing the
+// export policy per client.
+func nfsReadonlyForCapabilities(protocol v1alpha1.ProtocolID, caps []*csi.VolumeCapability) bool {
+	if protocol != v1alpha1.ProtocolIDNFS || len(caps) == 0 {
+		return false
+	}
+	for _, cap := range caps {
+		if cap.GetAccessMode().GetMode() != csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY {
+			return false
+		}
+	}
+	return true
 }
 
 // describeSupportedModes returns a comma-separated string of the supported
@@ -614,6 +712,15 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		return nil, err
 	}
 	resolved := res.resolved
+	err = validateCapabilitiesForProtocol(string(resolved.Protocol.Kind()), req.GetVolumeCapabilities())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if resolved.Protocol.Kind() != v1alpha1.ProtocolIDNFS && resolved.Filesystem != nil &&
+		resolved.Filesystem.FSType == ProtocolNFS {
+		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
+		return nil, status.Error(codes.InvalidArgument, "fsType \"nfs\" is supported only for NFS protocol volumes")
+	}
 	targetName := res.agentRef
 	if recordedCfg != nil {
 		targetName = existingPV.Spec.AgentRef
@@ -768,10 +875,13 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 
 	// ── Step 1: Create the backend storage resource ──────────────────────────
 	bindIP := extractIP(agentAddr)
-	exportParams, aclEnabled := exportParamsFromResolved(resolved.Protocol, bindIP)
-	// The durable export spec is recorded with the partial state so the
-	// resync controller can re-create the export after the storage node
-	// loses its target state, independent of later parameter changes.
+	exportParams, aclEnabled := exportParamsFromResolved(
+		resolved.Protocol, bindIP,
+		nfsReadonlyForCapabilities(resolved.Protocol.Kind(), req.GetVolumeCapabilities()),
+	)
+	// The durable export spec is recorded with the partial state so the resync
+	// controller can re-create the export after the storage node loses its
+	// target state, independent of later parameter changes.
 	exportSpec := exportSpecFor(exportParams, aclEnabled)
 	// A lifecycle already in CreatePartial created its backend in an earlier
 	// attempt whose export failed; the device path recorded then is reused and
@@ -828,7 +938,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 				CapacityBytes: capacityBytes,
 				BackendType:   agentBackendType,
 				BackendParams: backendParamsFromResolved(recorded.Backend),
-				AccessType:    agentv1.VolumeAccessType_VOLUME_ACCESS_TYPE_BLOCK,
+				AccessType:    volumeAccessType(recorded.Backend),
 			}, exportSpec)
 		if err != nil {
 			return nil, err
@@ -901,6 +1011,16 @@ func completedVolumeResponse(
 	pvs *v1alpha1.PillarVolumeState,
 ) (*csi.CreateVolumeResponse, error) {
 	ei := pvs.Status.ExportInfo
+	capabilityErr := validateCapabilitiesForProtocol(pvs.Spec.ProtocolType, req.GetVolumeCapabilities())
+	if capabilityErr != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", capabilityErr)
+	}
+	if v1alpha1.ProtocolID(pvs.Spec.ProtocolType) == v1alpha1.ProtocolIDNFS &&
+		pvs.Status.ExportSpec != nil && pvs.Status.ExportSpec.NFS != nil &&
+		pvs.Status.ExportSpec.NFS.Readonly && hasWritableVolumeCapability(req.GetVolumeCapabilities()) {
+		return nil, status.Errorf(codes.AlreadyExists,
+			"volume %q already exists with a read-only NFS export", req.GetName())
+	}
 	existingCap := pvs.Spec.CapacityBytes
 
 	// CSI spec §5.1.1: if the existing volume doesn't satisfy the new
@@ -1299,34 +1419,6 @@ func pillarVolumeStateNameFromVolumeID(volumeID string) string {
 	return agentVolID
 }
 
-// assertVolumeExists returns a gRPC NotFound error when no PillarVolumeState CRD
-// records the given volume_id, satisfying CSI spec §4.4 / §4.5 / §4.6 / §4.7
-// for ValidateVolumeCapabilities, ControllerPublishVolume, and the equivalent
-// node-side checks that mandate NotFound for unknown volumes.  A malformed
-// volume_id is treated identically because the driver provably never issued
-// it.  The function returns nil when the volume exists or when the client is
-// nil (fake clients used in low-level unit tests skip CRD plumbing).
-func (s *ControllerServer) assertVolumeExists(ctx context.Context, volumeID string) error {
-	if s.k8sClient == nil {
-		return nil
-	}
-	pvName, nameErr := s.volumeStateNameForID(ctx, volumeID)
-	if nameErr != nil {
-		return nameErr
-	}
-	if pvName == "" {
-		return status.Errorf(codes.NotFound, "volume %q not found", volumeID)
-	}
-	_, exists, err := s.loadPillarVolumeState(ctx, pvName)
-	if err != nil {
-		return status.Errorf(codes.Internal, "lookup PillarVolumeState %q: %v", pvName, err)
-	}
-	if !exists {
-		return status.Errorf(codes.NotFound, "volume %q not found", volumeID)
-	}
-	return nil
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Backend / protocol token mappers
 // ─────────────────────────────────────────────────────────────────────────────.
@@ -1338,11 +1430,20 @@ func mapBackendType(s string) agentv1.BackendType {
 	switch v1alpha1.BackendID(s) {
 	case v1alpha1.BackendIDZFSZvol:
 		return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
+	case v1alpha1.BackendIDZFSDataset:
+		return agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET
 	case v1alpha1.BackendIDLVMLV:
 		return agentv1.BackendType_BACKEND_TYPE_LVM
 	default:
 		return agentv1.BackendType_BACKEND_TYPE_UNSPECIFIED
 	}
+}
+
+func volumeAccessType(b v1alpha1.BackendSpec) agentv1.VolumeAccessType {
+	if b.ZFS != nil && b.ZFS.VolumeType == v1alpha1.ZFSVolumeTypeDataset {
+		return agentv1.VolumeAccessType_VOLUME_ACCESS_TYPE_MOUNT
+	}
+	return agentv1.VolumeAccessType_VOLUME_ACCESS_TYPE_BLOCK
 }
 
 // mapProtocolType converts a protocol routing token (the protocol segment of
@@ -1354,25 +1455,31 @@ func mapProtocolType(s string) agentv1.ProtocolType {
 		return agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP
 	case v1alpha1.ProtocolIDISCSI:
 		return agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI
+	case v1alpha1.ProtocolIDNFS:
+		return agentv1.ProtocolType_PROTOCOL_TYPE_NFS
 	default:
 		return agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED
 	}
 }
 
-// resolveInitiatorID looks up the protocol-specific initiator identity for the
-// given Kubernetes node by reading the appropriate CSINode annotation.
+// resolveInitiatorID looks up the protocol-specific initiator identity for a
+// Kubernetes node.
 //
 // Identity resolution by protocol:
 //
 //	NVMe-oF TCP → CSINode.annotations["pillar-csi.bhyoo.com/nvmeof-host-nqn"]
 //	iSCSI       → CSINode.annotations["pillar-csi.bhyoo.com/iscsi-initiator-iqn"]
+//	NFS         → Node.status.addresses[InternalIP] (numeric IP)
 //	other       → nodeID unchanged (the agent rejects an unsupported protocol)
 //
-// Returns FailedPrecondition if the CSINode does not exist or the required
-// annotation is absent.  This causes the CO (external-attacher) to retry with
-// exponential backoff, giving the node plugin time to publish its identity
-// after a fresh node bootstrap.
+// Returns FailedPrecondition if the node identity is not available yet:
+// a missing CSINode/annotation, or a missing Node/numeric InternalIP.
+// The CO retries with backoff while the node registers.
 func (s *ControllerServer) resolveInitiatorID(ctx context.Context, nodeID, protocolTypeStr string) (string, error) {
+	if v1alpha1.ProtocolID(protocolTypeStr) == v1alpha1.ProtocolIDNFS {
+		return s.resolveNFSInitiatorID(ctx, nodeID, "")
+	}
+
 	var annotationKey string
 	switch v1alpha1.ProtocolID(protocolTypeStr) {
 	case v1alpha1.ProtocolIDNVMeOFTCP:
@@ -1402,6 +1509,51 @@ func (s *ControllerServer) resolveInitiatorID(ctx context.Context, nodeID, proto
 	}
 
 	return initiatorID, nil
+}
+
+// resolveNFSInitiatorID selects a numeric InternalIP matching the storage
+// address family. An empty bindAddress resolves the first InternalIP for
+// callers that have not yet selected a storage agent.
+func (s *ControllerServer) resolveNFSInitiatorID(
+	ctx context.Context,
+	nodeID, bindAddress string,
+) (string, error) {
+	node := &corev1.Node{}
+	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: nodeID}, node)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return "", status.Errorf(codes.FailedPrecondition,
+				"Node %q not found; node plugin may not have registered yet", nodeID)
+		}
+		return "", status.Errorf(codes.Internal, "failed to get Node %q: %v", nodeID, err)
+	}
+	var firstIP string
+	for _, addr := range node.Status.Addresses {
+		if addr.Type != corev1.NodeInternalIP {
+			continue
+		}
+		if net.ParseIP(addr.Address) == nil {
+			return "", status.Errorf(codes.FailedPrecondition,
+				"Node %q has non-numeric InternalIP %q", nodeID, addr.Address)
+		}
+		if firstIP == "" {
+			firstIP = addr.Address
+		}
+		if bindAddress == "" {
+			return addr.Address, nil
+		}
+		familyErr := validateNFSInitiatorFamily(addr.Address, bindAddress)
+		if familyErr == nil {
+			return addr.Address, nil
+		}
+		if status.Code(familyErr) == codes.FailedPrecondition {
+			return "", familyErr
+		}
+	}
+	if firstIP == "" {
+		return "", status.Errorf(codes.FailedPrecondition, "Node %q has no InternalIP", nodeID)
+	}
+	return "", validateNFSInitiatorFamily(firstIP, bindAddress)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1463,7 +1615,11 @@ const defaultISCSIPort = 3260
 // exportParamsFromResolved constructs the agent ExportVolume parameters and
 // the ACL flag from the resolved protocol configuration.  The bind address is
 // the storage node's IP (PillarAgent.status.resolvedAddress without its port).
-func exportParamsFromResolved(p v1alpha1.ProtocolSpec, bindAddress string) (*agentv1.ExportParams, bool) {
+func exportParamsFromResolved(
+	p v1alpha1.ProtocolSpec,
+	bindAddress string,
+	readonly bool,
+) (*agentv1.ExportParams, bool) {
 	switch {
 	case p.NVMeOFTCP != nil:
 		n := p.NVMeOFTCP
@@ -1504,6 +1660,18 @@ func exportParamsFromResolved(p v1alpha1.ProtocolSpec, bindAddress string) (*age
 				},
 			},
 		}, i.ACL
+	case p.NFS != nil:
+		n := p.NFS
+		return &agentv1.ExportParams{
+			Params: &agentv1.ExportParams_Nfs{
+				Nfs: &agentv1.NfsExportParams{
+					Version:     n.EffectiveVersion(),
+					BindAddress: bindAddress,
+					Squash:      string(n.EffectiveSquash()),
+					Readonly:    readonly,
+				},
+			},
+		}, n.ACL
 	default:
 		return nil, false
 	}
@@ -1643,21 +1811,22 @@ func canSharePublication(a, b v1alpha1.VolumePublication) bool {
 // validatePublishAccessMode rejects an access mode the volume's protocol
 // cannot serve (for example a multi-node writer mode on a block protocol).
 func validatePublishAccessMode(protocolTypeStr string, mode csi.VolumeCapability_AccessMode_Mode) error {
-	if isSupportedAccessMode(mode) {
-		return nil
+	if !isSupportedAccessMode(mode) ||
+		(mode == csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER &&
+			v1alpha1.ProtocolID(protocolTypeStr) != v1alpha1.ProtocolIDNFS) {
+		return status.Errorf(codes.InvalidArgument,
+			"access mode %s is not supported for protocol %q; supported modes: %s",
+			mode, protocolTypeStr, describeSupportedModes())
 	}
-	return status.Errorf(codes.InvalidArgument,
-		"access mode %s is not supported for protocol %q; supported modes: %s",
-		mode, protocolTypeStr, describeSupportedModes())
+	return nil
 }
 
 // resolvePublishInitiator resolves the node's protocol initiator identity for
 // ControllerPublishVolume.  CSI spec §4.5.1: an unknown node_id must return
-// NotFound.  The resolveInitiatorID helper returns FailedPrecondition when the CSINode
-// object is missing (used elsewhere to signal "retry later, the node plugin
-// is still registering"); for publish that one signal is promoted to NotFound
-// while other failure modes (annotation present but blank) stay
-// FailedPrecondition.
+// NotFound. Missing Node and CSINode objects produce FailedPrecondition
+// during identity resolution ("retry later, still registering"); publish
+// promotes that signal to NotFound. A missing annotation or InternalIP
+// remains FailedPrecondition.
 func (s *ControllerServer) resolvePublishInitiator(
 	ctx context.Context,
 	nodeID, protocolTypeStr string,
@@ -1666,23 +1835,27 @@ func (s *ControllerServer) resolvePublishInitiator(
 	if err == nil {
 		return initiatorID, nil
 	}
+	return "", publishInitiatorError(nodeID, err)
+}
+
+func publishInitiatorError(nodeID string, err error) error {
 	if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition &&
 		strings.Contains(st.Message(), "node plugin may not have registered yet") {
-		return "", status.Errorf(codes.NotFound, "node %q not found", nodeID)
+		return status.Errorf(codes.NotFound, "node %q not found", nodeID)
 	}
-	return "", err
+	return err
 }
 
 // ControllerPublishVolume grants a specific node access to a volume by
 // calling agent.AllowInitiator on the storage node.
 //
 // The node_id in the request is the Kubernetes node name (stable handle).
-// The protocol-specific initiator identity is resolved by reading the
-// appropriate CSINode annotation that was written by the node plugin at
-// startup:
+// Block initiators use the CSINode annotation written by the node plugin;
+// NFS uses a numeric Node InternalIP matching the storage address family:
 //
 //	NVMe-oF TCP → CSINode["pillar-csi.bhyoo.com/nvmeof-host-nqn"] (host NQN)
 //	iSCSI       → CSINode["pillar-csi.bhyoo.com/iscsi-initiator-iqn"] (initiator IQN)
+//	NFS         → Node.status.addresses[InternalIP]
 //
 // If the required CSINode annotation is absent, FailedPrecondition is returned
 // and the CO (external-attacher) retries with exponential backoff, giving the
@@ -1721,17 +1894,9 @@ func (s *ControllerServer) ControllerPublishVolume(
 	nodeID := req.GetNodeId()
 	setPublishTargetAttributes(ctx, volumeID, nodeID)
 
-	if volumeID == "" {
-		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
-		return nil, status.Error(codes.InvalidArgument, "volume_id is required")
-	}
-	if nodeID == "" {
-		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
-		return nil, status.Error(codes.InvalidArgument, "node_id is required")
-	}
-	if req.GetVolumeCapability() == nil {
-		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
-		return nil, status.Error(codes.InvalidArgument, "volume_capability is required")
+	requestErr := validatePublishRequest(req)
+	if requestErr != nil {
+		return nil, requestErr
 	}
 
 	// ── Parse the encoded volume ID ───────────────────────────────────────────
@@ -1765,6 +1930,11 @@ func (s *ControllerServer) ControllerPublishVolume(
 	if pvErr != nil {
 		return nil, pvErr
 	}
+	capabilityErr := validateStoredPublishCapabilities(pvs, req)
+	if capabilityErr != nil {
+		return nil, capabilityErr
+	}
+
 	setClaimAttributes(ctx, pvs.Spec.ClaimRef)
 	err := refuseUnadoptedImport(pvs, volumeID, "publish")
 	if err != nil {
@@ -1781,7 +1951,8 @@ func (s *ControllerServer) ControllerPublishVolume(
 	setAttachAttributes(ctx, local, req.GetReadonly())
 
 	// ── Resolve the grant: initiator identity and CHAP credentials ───────────
-	initiatorID, chap, grantErr := s.resolvePublishGrant(ctx, local, nodeID, protocolTypeStr, pvs)
+	initiatorID, chap, grantErr := s.resolvePublishGrant(
+		ctx, local, nodeID, protocolTypeStr, extractIP(agentAddr), pvs)
 	if grantErr != nil {
 		return nil, grantErr
 	}
@@ -1804,6 +1975,46 @@ func (s *ControllerServer) ControllerPublishVolume(
 	ctx = withAgentName(ctx, targetName)
 	return s.finishPublish(ctx, local, pvName, agentAddr, volumeID, agentVolID, agentProtocolType,
 		nodeID, initiatorID, pvs, fence, chap)
+}
+
+func validatePublishRequest(req *csi.ControllerPublishVolumeRequest) error {
+	if req.GetVolumeId() == "" {
+		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
+		return status.Error(codes.InvalidArgument, "volume_id is required")
+	}
+	if req.GetNodeId() == "" {
+		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
+		return status.Error(codes.InvalidArgument, "node_id is required")
+	}
+	if req.GetVolumeCapability() == nil {
+		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
+		return status.Error(codes.InvalidArgument, "volume_capability is required")
+	}
+	return nil
+}
+
+func validateStoredPublishCapabilities(
+	pvs *v1alpha1.PillarVolumeState,
+	req *csi.ControllerPublishVolumeRequest,
+) error {
+	capabilityErr := validateCapabilityForProtocol(pvs.Spec.ProtocolType, req.GetVolumeCapability())
+	if capabilityErr != nil {
+		return status.Errorf(codes.InvalidArgument, "%v", capabilityErr)
+	}
+	if v1alpha1.ProtocolID(pvs.Spec.ProtocolType) != v1alpha1.ProtocolIDNFS {
+		return nil
+	}
+	if pvs.Spec.Resolved != nil && pvs.Spec.Resolved.LocalAttach {
+		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
+		return status.Error(codes.InvalidArgument, "localAttach is not supported for NFS volumes")
+	}
+	mode := req.GetVolumeCapability().GetAccessMode().GetMode()
+	if pvs.Status.ExportSpec != nil && pvs.Status.ExportSpec.NFS != nil &&
+		pvs.Status.ExportSpec.NFS.Readonly && mode != csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY {
+		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
+		return status.Error(codes.InvalidArgument, "NFS volume export is read-only")
+	}
+	return nil
 }
 
 // finishPublish completes a publish whose publication is already committed
@@ -2005,6 +2216,9 @@ func exportACLEnabled(pvs *v1alpha1.PillarVolumeState) bool {
 	if r := pvs.Spec.Resolved; r != nil && r.Protocol.ISCSI != nil {
 		return r.Protocol.ISCSI.ACL
 	}
+	if r := pvs.Spec.Resolved; r != nil && r.Protocol.NFS != nil {
+		return r.Protocol.NFS.ACL
+	}
 	return true
 }
 
@@ -2063,22 +2277,28 @@ func grantExportParams(
 }
 
 // resolvePublishGrant returns what a publish of pvs to nodeID grants: the
-// initiator identity from the node's CSINode annotation (the node ID itself
-// for a local attach, which grants no initiator and needs no node-plugin
-// identity) and the CHAP credentials, read from the volume's Secret when the
-// export has an ACL to grant.  It runs before the publication is recorded,
-// so a missing identity or a missing or invalid Secret records and grants
-// nothing.
+// initiator identity from the node's CSINode annotation or NFS InternalIP
+// (the node ID itself for a local attach, which grants no initiator and
+// needs no node-plugin identity) and CHAP credentials from the volume's
+// Secret when the export has an ACL. Missing identities and missing or
+// invalid Secrets fail before any publication is recorded or granted.
 func (s *ControllerServer) resolvePublishGrant(
 	ctx context.Context,
 	local bool,
-	nodeID, protocolTypeStr string,
+	nodeID, protocolTypeStr, bindAddress string,
 	pvs *v1alpha1.PillarVolumeState,
 ) (string, *agentv1.IscsiChap, error) {
 	if local {
 		return nodeID, nil, nil
 	}
-	initiatorID, err := s.resolvePublishInitiator(ctx, nodeID, protocolTypeStr)
+	var initiatorID string
+	var err error
+	if v1alpha1.ProtocolID(protocolTypeStr) == v1alpha1.ProtocolIDNFS {
+		initiatorID, err = s.resolveNFSInitiatorID(ctx, nodeID, bindAddress)
+		err = publishInitiatorError(nodeID, err)
+	} else {
+		initiatorID, err = s.resolvePublishInitiator(ctx, nodeID, protocolTypeStr)
+	}
 	if err != nil {
 		return "", nil, err
 	}
@@ -2090,6 +2310,26 @@ func (s *ControllerServer) resolvePublishGrant(
 		return "", nil, err
 	}
 	return initiatorID, chap, nil
+}
+
+func validateNFSInitiatorFamily(initiator, bindAddress string) error {
+	clientIP := net.ParseIP(initiator)
+	serverIP := net.ParseIP(bindAddress)
+	if clientIP == nil {
+		return status.Errorf(codes.InvalidArgument, "NFS initiator %q is not a numeric IP address", initiator)
+	}
+	if serverIP == nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"NFS storage address %q is not a numeric IP address", bindAddress)
+	}
+	clientV4 := clientIP.To4() != nil
+	serverV4 := serverIP.To4() != nil
+	if clientV4 != serverV4 {
+		return status.Errorf(codes.InvalidArgument,
+			"NFS node InternalIP %q has address family incompatible with storage address %q",
+			initiator, bindAddress)
+	}
+	return nil
 }
 
 // getReadyAgent returns the PillarAgent targetName once it has a resolved
@@ -2358,9 +2598,9 @@ func (s *ControllerServer) ControllerExpandVolume(
 			volumeID)
 	}
 	targetName := parts[0]
+	protocolTypeStr := parts[1]
 	backendTypeStr := parts[2]
 	agentVolID := parts[3]
-
 	agentBackendType := mapBackendType(backendTypeStr)
 
 	// ── Resolve the agent address from PillarAgent ───────────────────────────
@@ -2414,11 +2654,11 @@ func (s *ControllerServer) ControllerExpandVolume(
 	}
 	setSpanAttributes(ctx, telemetry.KeyCapacityAllocatedBytes.Int64(actualBytes))
 
-	// Every served protocol is a block protocol: the node must rescan the
-	// block device and grow the filesystem of a Filesystem-mode volume.
+	// NFS expansion changes the server-side dataset quota; clients observe the
+	// new capacity through statfs and do not require a block-device rescan.
 	return &csi.ControllerExpandVolumeResponse{
 		CapacityBytes:         actualBytes,
-		NodeExpansionRequired: true,
+		NodeExpansionRequired: v1alpha1.ProtocolID(protocolTypeStr) != v1alpha1.ProtocolIDNFS,
 	}, nil
 }
 

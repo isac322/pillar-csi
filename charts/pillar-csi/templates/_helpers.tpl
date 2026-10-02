@@ -195,9 +195,9 @@ with their path.  The chart checks only what would otherwise ship a
 crash-looping DaemonSet:
   - every entry sets exactly one of zfs or lvm;
   - the routing key (zfs.pool / lvm.volumeGroup) is set;
-  - no routing key appears twice.  Volumes are routed to a backend by
-    pool/VG name alone, so a ZFS pool and an LVM VG must not share a name
-    either.  Keys are trimmed so " tank " and "tank" collide.
+  - each (ZFS pool, volumeType) pair is unique, allowing zvol and dataset
+    placements on one pool; each LVM VG is unique and must not share a name
+    with a ZFS pool. Keys are trimmed so " tank " and "tank" collide.
 */}}
 {{- define "pillar-csi.agent.config" -}}
 {{- $backends := .Values.agent.backends | default list }}
@@ -219,18 +219,29 @@ crash-looping DaemonSet:
 {{- fail (printf "agent.backends[%d].%s must be a mapping" $i $member) }}
 {{- end }}
 {{- $key := "" }}
+{{- $backendKind := $member }}
 {{- if eq $member "zfs" }}
 {{- $key = required (printf "agent.backends[%d].zfs.pool is required" $i) (get $body "pool") }}
+{{- $volumeType := get $body "volumeType" | default "zvol" | toString }}
+{{- if not (has $volumeType (list "zvol" "dataset")) }}
+{{- fail (printf "agent.backends[%d].zfs.volumeType must be zvol or dataset" $i) }}
+{{- end }}
+{{- $backendKind = printf "zfs-%s" $volumeType }}
 {{- else if eq $member "lvm" }}
 {{- $key = required (printf "agent.backends[%d].lvm.volumeGroup is required" $i) (get $body "volumeGroup") }}
 {{- else }}
 {{- fail (printf "agent.backends[%d].%s is not a supported backend; use zfs or lvm" $i $member) }}
 {{- end }}
 {{- $normKey := trim (toString $key) }}
-{{- if hasKey $seen $normKey }}
-{{- fail (printf "agent.backends: pool/VG %q appears in more than one entry; each ZFS pool and LVM VG name must be unique across agent.backends" $normKey) }}
+{{- $poolTypes := get $seen $normKey | default dict }}
+{{- if and (gt (len $poolTypes) 0) (or (eq $member "lvm") (hasKey $poolTypes "lvm")) }}
+{{- fail (printf "agent.backends: pool/VG %q appears in more than one entry; LVM VG names must be unique and cannot overlap ZFS pool names" $normKey) }}
 {{- end }}
-{{- $_ := set $seen $normKey true }}
+{{- if hasKey $poolTypes $backendKind }}
+{{- fail (printf "agent.backends: pool %q has more than one %s placement" $normKey $backendKind) }}
+{{- end }}
+{{- $_ := set $poolTypes $backendKind true }}
+{{- $_ := set $seen $normKey $poolTypes }}
 {{- end }}
 {{- if $backends -}}
 backends:

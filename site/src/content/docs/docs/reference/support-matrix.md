@@ -1,6 +1,6 @@
 ---
 title: Support matrix
-description: "What pillar-csi supports: CSI capabilities, access and volume modes, filesystems, ZFS and LVM backends, NVMe-oF/TCP and iSCSI, and features not supported yet."
+description: "What pillar-csi supports: CSI capabilities, access and volume modes, ZFS and LVM backends, NVMe-oF/TCP, iSCSI and NFSv4.2, and features not supported yet."
 sidebar:
   order: 2
 ---
@@ -9,18 +9,18 @@ This page describes the current pillar-csi release. The CSI driver name is `pill
 
 ## Backends and protocols
 
-One driver serves every backend and protocol, and each combination uses the same resources: a `PillarStore` and a `PillarProtocol` joined by a `PillarStorageClass`. pillar-csi ships ZFS and LVM over NVMe-oF/TCP and over iSCSI. Cells marked Planned are not in this release.
+One driver serves every backend and protocol, and each combination uses the same resources: a `PillarStore` and a `PillarProtocol` joined by a `PillarStorageClass`. pillar-csi ships ZFS and LVM block volumes over NVMe-oF/TCP and iSCSI, and ZFS dataset filesystems over NFSv4.2. SMB is planned and unavailable.
 
 | Backend | Volume type | NVMe-oF/TCP | iSCSI | NFS | SMB |
 | --- | --- | --- | --- | --- | --- |
 | ZFS | zvol (block) | Shipped | Shipped | Not applicable | Not applicable |
-| ZFS | Dataset (file) | Not applicable | Not applicable | Planned | Planned |
+| ZFS | Dataset (file) | Not applicable | Not applicable | Shipped | Planned |
 | LVM | Linear logical volume (block) | Shipped | Shipped | Not applicable | Not applicable |
 | LVM | Thin logical volume (block) | Shipped | Shipped | Not applicable | Not applicable |
 
-A protocol exports either block devices (NVMe-oF and iSCSI) or file systems (NFS and SMB once added). A block volume therefore pairs only with a block protocol, and the planned ZFS dataset only with a file protocol.
+A protocol exports either block devices (NVMe-oF and iSCSI) or file systems (NFS and SMB). A block volume therefore pairs only with a block protocol, and a dataset only with a file protocol.
 
-The API accepts only `zfs` and `lvm` in `PillarStore.spec.backend` and only `nvmeofTcp` or `iscsi` in `PillarProtocol.spec.protocol`. For ZFS, `volumeType` accepts only `zvol`.
+The API accepts `zfs` and `lvm` in `PillarStore.spec.backend`, and `nvmeofTcp`, `iscsi`, or `nfs` in `PillarProtocol.spec.protocol`. For ZFS, `volumeType` is `zvol` for block protocols and `dataset` for NFS. The `dir` backend and SMB protocol are not offered.
 
 ### Protocol features
 
@@ -35,12 +35,43 @@ The API accepts only `zfs` and `lvm` in `PillarStore.spec.backend` and only `nvm
 | Access control (`acl: true`) | Per host NQN | Per initiator IQN |
 | Online expansion | Yes | Yes, the node rescans the SCSI device |
 | Local attach | Yes | Yes |
-| In-band authentication | Not supported yet (DH-HMAC-CHAP) | Not supported (CHAP) |
+| In-band authentication | Not supported yet (DH-HMAC-CHAP) | CHAP and mutual CHAP |
 | Addresses per export | One | One portal per target. Multipath and multi-portal are not supported. |
 
-Neither protocol needs a package on the host. The node image has no `nvme-cli`, `iscsiadm` or `iscsid`.
+### NFSv4.2 features
+
+| Feature | NFS |
+| --- | --- |
+| Storage-node target | Kernel NFS server with supervised `rpc.mountd`/`exportfs`; only pillar-csi-owned exports are reconciled |
+| Node initiator | Bundled NFS mount helper; no host `nfs-common` installation |
+| Storage-node kernel support | NFS server (`nfsd`) support |
+| Storage-node filesystem backing | Persistent `agent-state` hostPath at `/var/lib/pillar-csi/agent`; dedicated NFS-exportable backing for its `datasets` pseudoroot |
+| Worker kernel support | NFS client support |
+| Port and version | Fixed TCP port 2049, NFSv4.2 only |
+| Access control (`acl: true`) | Published node `InternalIP` values; an empty ACL denies volume data (an unauthorized mount may expose only an empty backing stub) |
+| Squash | `root` by default; `none` or `all` may be selected explicitly |
+| Read-only policy | `ReadOnlyMany` exports are volume-wide readonly; RWO/RWX exports are writable |
+| Online expansion | Yes, server-side dataset quota; `NodeExpansionRequired` is false |
+| Local attach | No; NFS always uses the network mount |
+| Formatting | No; `mkfsOptions`, explicit ext4/xfs and periodic trim are rejected |
+| Mount flags | `filesystem.mountOptions` only; support defaults cannot be overridden |
+| RPC TLS | Not offered |
+
+Neither block protocol nor NFS requires a package on the host. The images carry the user-space helpers; hosts provide the required kernel support and storage, including the NFS pseudoroot backing.
+
 
 pillar-csi does not replicate data. Each volume lives on one storage node, and it is unavailable while that node is down.
+
+### NFS deployment support
+
+| Storage-node layout | NFS support |
+| --- | --- |
+| Persistent agent state and a dedicated NFS-exportable filesystem at `/var/lib/pillar-csi/agent/datasets` | Required production layout; backing must support export filehandles and persist across restarts |
+| Container overlay/rootfs as the pseudoroot backing | Unsupported; NFS server startup rejects backing that cannot encode export filehandles |
+| Dedicated Kind test fixture with a temporary `tmpfs` pseudoroot | QA only; not persistent production backing or an automatic fallback |
+
+The pseudoroot contains dataset mountpoints, not private export/recovery state. That state lives under `/var/lib/pillar-csi/agent/nfs`. Use canonical paths without symlinks. Missing exportable backing makes the configured NFS deployment unavailable; NFS is not an optional replacement for a configured dataset backend. See [NFS persistent backing](/docs/reference/prerequisites/#nfs-persistent-backing).
+
 
 ## Access modes
 
@@ -49,18 +80,20 @@ pillar-csi does not replicate data. Each volume lives on one storage node, and i
 | `ReadWriteOnce` | `SINGLE_NODE_WRITER` or `SINGLE_NODE_MULTI_WRITER` | Yes |
 | `ReadWriteOncePod` | `SINGLE_NODE_SINGLE_WRITER` | Yes |
 | `ReadOnlyMany` | `MULTI_NODE_READER_ONLY` | Yes |
-| `ReadWriteMany` | `MULTI_NODE_MULTI_WRITER` | No, rejected |
+| `ReadWriteMany` | `MULTI_NODE_MULTI_WRITER` | Yes, NFS only |
 
-The controller records which nodes a volume is published to. It refuses to publish a single-node volume to a second node until the first node unpublishes it.
+Block protocols reject RWX because ext4/xfs block filesystems are single-node filesystems. NFS publishes the same dataset to multiple node IPs; `acl: true` preserves the published-node set, and an empty ACL denies volume data even if an unauthorized mount request reaches the server.
+
+The controller records which nodes a volume is published to. It refuses to publish a single-node block volume to a second node until the first node unpublishes it; NFS can retain concurrent RWX publications.
 
 ## Volume modes and filesystems
 
 | Volume mode | Supported | Notes |
 | --- | --- | --- |
-| `Filesystem` | Yes | `ext4` (default) or `xfs`. The node formats a volume only when it carries no filesystem. |
-| `Block` | Yes | The raw NVMe namespace or SCSI disk is bound into the Pod. |
+| `Filesystem` | Yes | Block protocols use `ext4` (default) or `xfs`; NFS uses the mounted ZFS dataset and never formats it. |
+| `Block` | Yes, block protocols only | The raw NVMe namespace or SCSI disk is bound into the Pod. NFS rejects Block. |
 
-Filesystem settings (`fsType`, `mkfsOptions`, `mountOptions`) come from `PillarStorageClass.spec.filesystem` or the `pillar-csi.bhyoo.com/filesystem` PVC annotation.
+Filesystem settings (`fsType`, `mkfsOptions`, `mountOptions`) come from `PillarStorageClass.spec.filesystem` or the `pillar-csi.bhyoo.com/filesystem` PVC annotation. For NFS, `fsType` must be omitted, `mkfsOptions` must be empty, and `mountOptions` is the only supported filesystem setting.
 
 ### Filesystem compatibility
 
@@ -83,6 +116,7 @@ The node image build fails if its `mkfs` would create a filesystem that Linux 5.
 | Controller | `PUBLISH_UNPUBLISH_VOLUME` | Yes |
 | Controller | `EXPAND_VOLUME` | Yes |
 | Controller | `SINGLE_NODE_MULTI_WRITER` | Yes |
+| Controller | `MULTI_NODE_MULTI_WRITER` | Yes, NFS only |
 | Controller | `GET_CAPACITY` | Yes. The chart does not turn on capacity tracking in `csi-provisioner`. |
 | Controller | `CREATE_DELETE_SNAPSHOT`, `LIST_SNAPSHOTS` | Not supported yet |
 | Controller | `CLONE_VOLUME` | Not supported yet |
@@ -90,7 +124,7 @@ The node image build fails if its `mkfs` would create a filesystem that Linux 5.
 | Node | `EXPAND_VOLUME` | Yes |
 | Node | `GET_VOLUME_STATS` | Yes |
 
-Volume expansion runs online: the agent grows the zvol or logical volume, and the node grows the filesystem with `resize2fs` or `xfs_growfs`. A generated StorageClass allows expansion unless `spec.storageClass.allowVolumeExpansion` is set to `false`.
+Volume expansion runs online. For block protocols, the agent grows the zvol or logical volume and the node grows the filesystem with `resize2fs` or `xfs_growfs`. For NFS, the agent grows the server-side dataset quota; the mounted client filesystem sees the new capacity without a node-side resize and `NodeExpansionRequired` is false. A generated StorageClass allows expansion unless `spec.storageClass.allowVolumeExpansion` is set to `false`.
 
 ## Kubernetes features
 
@@ -101,7 +135,7 @@ Volume expansion runs online: the agent grows the zvol or logical volume, and th
 | CSI ephemeral inline volumes | No. The CSIDriver lists only the `Persistent` lifecycle mode. |
 | Volume snapshots | Not supported yet |
 | Volume cloning | Not supported yet |
-| `fsGroup` ownership changes | Yes. The CSIDriver sets `fsGroupPolicy: File`. |
+| `fsGroup` ownership changes | Yes, with protocol limits. The CSIDriver sets `fsGroupPolicy: File`; NFS uses the export's squash policy, so use `squash: none` explicitly when root/fsGroup initialization must reach the dataset. |
 | Attach before mount | Yes. The CSIDriver sets `attachRequired: true`. |
 | Reclaim policies | `Delete` (default) and `Retain` |
 | Binding modes | `Immediate` (default) and `WaitForFirstConsumer` |
@@ -113,9 +147,10 @@ Volume expansion runs online: the agent grows the zvol or logical volume, and th
 | mTLS between controller and agent | Yes, with cert-manager or your own Secrets | Off |
 | NVMe-oF host access control by host NQN | Yes, `PillarProtocol.spec.protocol.nvmeofTcp.acl` | Off (`acl: false` allows any host) |
 | iSCSI initiator access control by initiator IQN | Yes, `PillarProtocol.spec.protocol.iscsi.acl` | Off (`acl: false` allows any initiator) |
+| NFS client access control by node IP | Yes, `PillarProtocol.spec.protocol.nfs.acl` | Off (`acl: false` allows any reachable client) |
+| NFS root squash | Yes, `squash: root`, `none`, or `all` may be selected | `root` |
 | NVMe-oF in-band authentication (DH-HMAC-CHAP) | Not supported yet | Not applicable |
-| iSCSI CHAP authentication | Not supported | Not applicable |
-| NVMe-oF/TCP transport encryption (TLS) | Not supported yet | Not applicable |
 | iSCSI transport encryption | Not supported. iSCSI data is not encrypted. | Not applicable |
+| NFS RPC TLS | Not offered. Do not infer encryption from ACLs or mTLS. | Not applicable |
 
-See [Configure mTLS](/docs/how-to/configure-mtls/) and [Prerequisites](/docs/reference/prerequisites/).
+Protocol ACLs control who may connect; they do not encrypt volume traffic. See [Configure mTLS](/docs/how-to/configure-mtls/) and [Prerequisites](/docs/reference/prerequisites/).

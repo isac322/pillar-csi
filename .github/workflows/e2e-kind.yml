@@ -165,10 +165,11 @@ jobs:
       # two passes (internal-agent then external-agent), emits per-pass and
       # total wall-clock timing, and deletes the Kind cluster at the end.
       #
-      # linux-modules-extra-$(uname -r) ships all four NVMe modules and the
-      # iSCSI initiator (iscsi_tcp) / LIO target (target_core_*, iscsi_target_mod)
-      # modules on ubuntu-latest.
-      - name: Install ZFS, LVM, NVMe, and iSCSI kernel modules
+      # linux-modules-extra-$(uname -r) ships all four NVMe modules, the
+      # iSCSI initiator (iscsi_tcp) / LIO target (target_core_*, iscsi_target_mod),
+      # and compressed NFS modules on ubuntu-latest; load them on the host before
+      # Kind starts.
+      - name: Install ZFS, LVM, NVMe, iSCSI, and NFS kernel modules
         run: |
           bash hack/ci-prefer-ubuntu-mirror.sh
           sudo apt-get update -qq
@@ -182,7 +183,12 @@ jobs:
           sudo modprobe nvmet
           sudo modprobe nvmet_tcp
           sudo modprobe nvme_tcp
-          sudo modprobe -a iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod
+          sudo modprobe -a iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod nfsd nfs nfsv4
+          if ! grep -qw nfs4 /proc/filesystems; then
+            echo "ERROR: nfs4 is not registered in /proc/filesystems after NFS module load"
+            exit 1
+          fi
+          echo "NFS: nfs4 registered in /proc/filesystems"
           # target/iscsi appears only after the agent mkdirs it; the LIO core dir
           # must exist as soon as target_core_mod is loaded.
           test -d /sys/kernel/config/target || \
@@ -252,6 +258,33 @@ jobs:
             echo "::error title=e2e-timeout::make test-e2e took ${E2E_ELAPSED}s which exceeds the 600s budget"
             exit 1
           fi
+      # NFS uses a separate internal-agent lane because the external-agent
+      # image intentionally has no ZFS userspace or host NFS helpers.  The
+      # lane still uses the same real Kind+ZFS bootstrap and never installs
+      # nfs-utils on the GitHub runner or Kind nodes.
+      - name: Run real ZFS dataset NFS E2E lane
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          E2E_NFS_E2E: "true"
+          E2E_HELM_BOOTSTRAP: "true"
+          E2E_LABEL_FILTER: "nfs"
+          E2E_PROCS: "1"
+          PILLAR_E2E_SEQUENTIAL: "true"
+          E2E_RUN: "^TestE2E$$"
+          E2E_REPORT_DIR: "${{ runner.temp }}/e2e-kind-nfs-reports"
+        run: |
+          set -Eeuo pipefail
+          NFS_LOG="${RUNNER_TEMP}/e2e-kind-nfs-run.log"
+          set +e
+          make test-e2e-internal 2>&1 | tee "${NFS_LOG}"
+          NFS_RC=${PIPESTATUS[0]}
+          set -e
+          if [ "${NFS_RC}" -ne 0 ]; then
+            echo "::error title=nfs-e2e-failed::make test-e2e-internal exited with status ${NFS_RC}"
+            exit "${NFS_RC}"
+          fi
+
 
       # Emit a step summary table regardless of pass/fail so the timing is
       # always visible in the GitHub Actions UI without opening the log.
@@ -304,8 +337,9 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Best-effort: the run log plus the Ginkgo JSON report that TestMain's
-      # ginkgo re-exec writes to $TMPDIR/pillar-csi-e2e-reports/e2e-auto.json.
+      # Best-effort: both lane logs plus each lane's Ginkgo JSON report. The
+      # default lane keeps its legacy /tmp report path; the NFS lane uses its
+      # runner-temp-specific E2E_REPORT_DIR.
       - name: Upload e2e run log and reports
         if: always()
         continue-on-error: true
@@ -315,5 +349,7 @@ jobs:
           path: |
             ${{ runner.temp }}/e2e-kind-run.log
             /tmp/pillar-csi-e2e-reports/
+            ${{ runner.temp }}/e2e-kind-nfs-run.log
+            ${{ runner.temp }}/e2e-kind-nfs-reports/
           if-no-files-found: ignore
           retention-days: 7

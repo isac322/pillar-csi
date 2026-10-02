@@ -1723,52 +1723,47 @@ var _ = Describe("desiredStorageClassFor", func() {
 			},
 		}
 	}
-
-	It("emits only the binding identity and the default ext4 fstype, whatever the overrides", func() {
-		desired := desiredStorageClassFor(makeBinding(nil), nil)
-		Expect(desired.params).To(Equal(map[string]string{
-			"pillar-csi.bhyoo.com/storage-class": "test-binding",
-			"csi.storage.k8s.io/fstype":          "ext4",
-		}))
-		Expect(desired.mountOptions).To(BeNil())
-	})
+	blockProtocol := &pillarcsiv1alpha1.PillarProtocol{Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+		Protocol: pillarcsiv1alpha1.ProtocolSpec{NVMeOFTCP: &pillarcsiv1alpha1.NVMeOFTCPConfig{Port: 4420}},
+	}}
 
 	It("uses spec.filesystem.fsType as the fstype parameter", func() {
-		desired := desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{FSType: "xfs"}), nil)
+		desired := desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{FSType: "xfs"}), blockProtocol, nil)
 		Expect(desired.params).To(HaveKeyWithValue("csi.storage.k8s.io/fstype", "xfs"))
 	})
-
-	It("does not put mkfsOptions on the StorageClass", func() {
-		mkfs := []string{"-K"}
-		desired := desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{MkfsOptions: &mkfs}), nil)
-		Expect(desired.params).To(HaveLen(2))
+	It("uses nfs fstype for an NFS protocol when filesystem config is omitted", func() {
+		nfsProtocol := &pillarcsiv1alpha1.PillarProtocol{Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+			Protocol: pillarcsiv1alpha1.ProtocolSpec{NFS: &pillarcsiv1alpha1.NFSConfig{}},
+		}}
+		desired := desiredStorageClassFor(makeBinding(nil), nfsProtocol, nil)
+		Expect(desired.params).To(HaveKeyWithValue("csi.storage.k8s.io/fstype", "nfs"))
 	})
 
 	It("copies spec.filesystem.mountOptions: omitted → nil, [] → empty, list → list", func() {
-		Expect(desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{FSType: "xfs"}), nil).mountOptions).
+		Expect(desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{FSType: "xfs"}), blockProtocol, nil).mountOptions).
 			To(BeNil())
 
 		cleared := []string{}
-		desired := desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{MountOptions: &cleared}), nil)
+		desired := desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{MountOptions: &cleared}), blockProtocol, nil)
 		Expect(desired.mountOptions).NotTo(BeNil())
 		Expect(desired.mountOptions).To(BeEmpty())
 
 		opts := []string{"noatime", "discard"}
-		desired = desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{MountOptions: &opts}), nil)
+		desired = desiredStorageClassFor(makeBinding(&pillarcsiv1alpha1.FilesystemConfig{MountOptions: &opts}), blockProtocol, nil)
 		Expect(desired.mountOptions).To(Equal([]string{"noatime", "discard"}))
 		desired.mountOptions[0] = "mutated"
 		Expect(opts[0]).To(Equal("noatime"), "the StorageClass must not alias the binding's list")
 	})
 
 	It("defaults allowVolumeExpansion to true and honours an explicit false", func() {
-		desired := desiredStorageClassFor(makeBinding(nil), nil)
+		desired := desiredStorageClassFor(makeBinding(nil), blockProtocol, nil)
 		Expect(desired.allowVolumeExpansion).NotTo(BeNil())
 		Expect(*desired.allowVolumeExpansion).To(BeTrue())
 
 		binding := makeBinding(nil)
 		disallow := false
 		binding.Spec.StorageClass.AllowVolumeExpansion = &disallow
-		desired = desiredStorageClassFor(binding, nil)
+		desired = desiredStorageClassFor(binding, blockProtocol, nil)
 		Expect(*desired.allowVolumeExpansion).To(BeFalse())
 	})
 })

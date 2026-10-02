@@ -317,6 +317,9 @@ func (t *trimmer) considerRecord(ctx context.Context, key string) {
 // not opted out.  An empty access type is a record written before Block
 // mode existed, i.e. Filesystem mode.
 func trimEligible(rec *nodeStageState) bool {
+	if rec.ProtocolType == ProtocolNFS {
+		return false
+	}
 	if rec.AccessType != "" && rec.AccessType != AccessTypeFilesystem {
 		return false
 	}

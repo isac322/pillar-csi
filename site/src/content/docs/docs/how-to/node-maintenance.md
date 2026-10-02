@@ -1,11 +1,11 @@
 ---
 title: Maintain storage and worker nodes
-description: Reboot a pillar-csi storage node or drain a worker without losing NVMe-oF/TCP or iSCSI volumes, using ctrlLossTmo, replacementTimeout, export restore status and a safe drain order.
+description: Reboot a pillar-csi storage node or drain a worker without losing NVMe-oF/TCP, iSCSI or NFS volumes, using protocol recovery, export restore status and a safe drain order.
 sidebar:
   order: 9
 ---
 
-pillar-csi does not replicate data. While a storage node is down, every volume it exports is unavailable. This page covers how to take a storage node or a worker node down and bring it back so that workloads resume without a restart.
+pillar-csi does not replicate data. While a storage node is down, every volume it exports is unavailable. This page covers how to take a storage node or a worker node down and bring it back so that block and NFS workloads resume when their protocol recovery limits allow.
 
 ## How workers ride out a storage node outage
 
@@ -36,15 +36,15 @@ The agent keeps the state it needs on the storage node's own disk, in hostPath d
 - `generations/` holds the fencing marks that reject stale requests.
 - `nvmet-identity/` holds namespace identities recorded for older exports.
 
-After a reboot the kernel targets (`nvmet` and LIO) are empty. The agent starts with its exports gated and reports it through the `ExportsReady` condition on its `PillarAgent`:
+After a reboot the kernel block targets and NFS export state are empty. The agent starts with exports gated and reports it through the `ExportsReady` condition on its `PillarAgent`:
 
 | `ExportsReady` | Reason | Meaning |
 |---|---|---|
-| `False` | `ExportRestorePending` | The agent restarted and waits for the controller to send its full export list. |
+| `False` | `ExportRestorePending` | The agent restarted and waits for the controller to send its full owned export list. |
 | `False` | `ExportRestoreFailed` | The last restore attempt failed; the controller retries. |
-| `True` | `ExportsServing` | Every export is back and the agent serves them. |
+| `True` | `ExportsServing` | Every owned block and NFS export is back and the agent serves them. |
 
-The controller sends every export of that storage node in one request. The agent configures all of them, including each namespace's fixed identity and ACL, before it links any subsystem to a port. The port starts listening only when every export is ready. A reconnecting worker therefore meets either a refused connection, which it retries, or its complete subsystem with the same namespace identity as before. iSCSI targets come back from the same export list with the same IQN, LUN 0 and initiator ACLs, and the agent removes pillar-csi targets that are not in the list. `PillarAgent` stays not `Ready` until the restore completes.
+The controller sends every export of that storage node in one request. The agent restores block identities and NFS root/child dataset exports, including ACL membership, readonly, squash and version, before reporting readiness. A reconnecting worker therefore meets either a refused connection or its complete export. Foreign NFS exports are never stopped or reconfigured.
 
 ## Reboot a storage node
 
@@ -112,9 +112,9 @@ A normal drain is safe:
 kubectl drain <worker> --ignore-daemonsets --delete-emptydir-data
 ```
 
-For each evicted pod, kubelet unmounts the volume. The node plugin then disconnects the NVMe controller and waits for the kernel to delete it before it reports the volume unstaged, so a quick restage on the same node cannot reuse a controller that is still being torn down. For an iSCSI volume the node plugin logs out of the session instead. Finally the controller unpublishes the volume from the node: it removes the node's host NQN or initiator IQN from the export's ACL (when `acl` is on) and deletes the node from the volume's publication record.
+For each evicted pod, kubelet unmounts the volume. The node plugin then disconnects the NVMe controller, logs out of iSCSI, or unmounts the exact NFS staging path from its durable stage record before it reports the volume unstaged. Finally the controller unpublishes the volume from the node: it removes the block initiator or NFS node IP from the export ACL when ACLs are enabled and updates the publication record.
 
-`ReadWriteOnce` and `ReadWriteOncePod` volumes can be published to one node at a time. The replacement pod on another node starts only after that unpublish completes. Until then its attach fails with `FailedPrecondition` and a message that the volume `is published to another node`, and Kubernetes retries.
+`ReadWriteOnce` and `ReadWriteOncePod` volumes can be published to one node at a time. NFS `ReadWriteMany` publications may remain on other nodes while one worker drains; only the draining node's NFS client mount and ACL membership are removed. Block replacement pods wait for unpublish with `FailedPrecondition`.
 
 The node plugin keeps a record of each staged volume in `/var/lib/pillar-csi/node/` on the worker. The record survives node plugin restarts and reboots, and unstaging needs it. Do not delete that directory on a worker that still has volumes staged.
 

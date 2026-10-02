@@ -39,7 +39,7 @@ func (s *Server) CreateVolume(
 	req *agentv1.CreateVolumeRequest,
 ) (*agentv1.CreateVolumeResponse, error) {
 	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
-	b, err := s.backendFor(req.GetVolumeId())
+	b, err := s.backendForType(req.GetVolumeId(), req.GetBackendType())
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +75,9 @@ func (s *Server) CreateVolume(
 // the volume's pool/VG.  Op is the RPC name used in error messages.
 func checkBackendType(op string, requested, configured agentv1.BackendType, volumeID string) error {
 	switch requested {
-	case agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL, agentv1.BackendType_BACKEND_TYPE_LVM:
+	case agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET,
+		agentv1.BackendType_BACKEND_TYPE_LVM:
 		if requested != configured {
 			return status.Errorf(codes.InvalidArgument,
 				"%s %q: backend_type %s does not match the pool's configured backend %s",
@@ -138,9 +140,30 @@ func (s *Server) DeleteVolume(
 	req *agentv1.DeleteVolumeRequest,
 ) (*agentv1.DeleteVolumeResponse, error) {
 	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
-	b, err := s.backendFor(req.GetVolumeId())
+	b, err := s.backendForType(req.GetVolumeId(), req.GetBackendType())
 	if err != nil {
 		return nil, err
+	}
+	checkErr := checkBackendType("DeleteVolume", req.GetBackendType(), b.Type(), req.GetVolumeId())
+	if checkErr != nil {
+		return nil, checkErr
+	}
+	if b.Type() == agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET {
+		if s.nfsManager == nil {
+			return nil, status.Errorf(
+				codes.Unavailable,
+				"DeleteVolume: NFS protocol is unavailable on this agent for volume %q",
+				req.GetVolumeId(),
+			)
+		}
+		h, handlerErr := s.handlerForProtocol(agentv1.ProtocolType_PROTOCOL_TYPE_NFS)
+		if handlerErr != nil {
+			return nil, protocolRPCError(handlerErr)
+		}
+		unexportErr := h.Unexport(ctx, req.GetVolumeId(), req.GetFence())
+		if unexportErr != nil {
+			return nil, protocolRPCError(unexportErr)
+		}
 	}
 	err = s.fenced(ctx, req.GetVolumeId(), req.GetFence(), fenceDestroy, func() error {
 		deleteErr := b.Delete(ctx, req.GetVolumeId())
@@ -163,9 +186,13 @@ func (s *Server) ExpandVolume(
 	req *agentv1.ExpandVolumeRequest,
 ) (*agentv1.ExpandVolumeResponse, error) {
 	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
-	b, err := s.backendFor(req.GetVolumeId())
+	b, err := s.backendForType(req.GetVolumeId(), req.GetBackendType())
 	if err != nil {
 		return nil, err
+	}
+	checkErr := checkBackendType("ExpandVolume", req.GetBackendType(), b.Type(), req.GetVolumeId())
+	if checkErr != nil {
+		return nil, checkErr
 	}
 	var allocated int64
 	err = s.fenced(ctx, req.GetVolumeId(), req.GetFence(), fenceGrant, func() error {
@@ -177,6 +204,9 @@ func (s *Server) ExpandVolume(
 				return capErr
 			}
 			return status.Errorf(codes.Internal, "ExpandVolume: %v", expandErr)
+		}
+		if b.Type() == agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET {
+			return nil
 		}
 		return s.revalidateNamespace(ctx, req.GetVolumeId())
 	})

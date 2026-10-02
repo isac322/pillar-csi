@@ -32,24 +32,29 @@ const (
 	// BackendIDZFSZvol provisions ZFS zvols (block volumes).
 	BackendIDZFSZvol BackendID = "zfs-zvol"
 
+	// BackendIDZFSDataset provisions ZFS datasets (filesystem volumes).
+	BackendIDZFSDataset BackendID = "zfs-dataset"
+
 	// BackendIDLVMLV provisions LVM logical volumes (block volumes).
 	BackendIDLVMLV BackendID = "lvm-lv"
 )
 
 // ZFSVolumeType enumerates the ZFS volume kinds the driver can create.
-// +kubebuilder:validation:Enum=zvol
+// +kubebuilder:validation:Enum=zvol;dataset
 type ZFSVolumeType string
 
 // Supported ZFSVolumeType values.
 const (
-	// ZFSVolumeTypeZvol creates block-device zvols.  It is currently the
-	// only implemented kind; zfs datasets are a future variant.
+	// ZFSVolumeTypeZvol creates block-device zvols.
 	ZFSVolumeTypeZvol ZFSVolumeType = "zvol"
+
+	// ZFSVolumeTypeDataset creates filesystem ZFS datasets.
+	ZFSVolumeTypeDataset ZFSVolumeType = "dataset"
 )
 
 // ZFSBackendConfig holds ZFS-specific pool and dataset settings.
 type ZFSBackendConfig struct {
-	// volumeType selects the ZFS volume kind.  Only "zvol" is implemented.
+	// volumeType selects the ZFS volume kind.
 	// +optional
 	// +kubebuilder:default=zvol
 	VolumeType ZFSVolumeType `json:"volumeType,omitempty"`
@@ -60,11 +65,8 @@ type ZFSBackendConfig struct {
 	Pool string `json:"pool"`
 
 	// parentDataset is the ZFS dataset path under which pillar-csi will
-	// create per-volume zvols (e.g. "k8s").  It must equal the parentDataset
-	// of the agent's backend configuration for this pool (chart
-	// agent.backends[].zfs.parentDataset; empty = pool root): on a mismatch
-	// the store is not Ready (PoolDiscovered=False, BackendLayoutMismatch)
-	// and CreateVolume fails instead of placing volumes elsewhere.
+	// create per-volume zvols or datasets (e.g. "k8s").  It must equal the
+	// parentDataset of the agent's backend configuration for this pool.
 	// +optional
 	ParentDataset string `json:"parentDataset,omitempty"`
 
@@ -141,6 +143,8 @@ type BackendSpec struct {
 // union is empty.
 func (b BackendSpec) Kind() BackendID {
 	switch {
+	case b.ZFS != nil && b.ZFS.VolumeType == ZFSVolumeTypeDataset:
+		return BackendIDZFSDataset
 	case b.ZFS != nil:
 		return BackendIDZFSZvol
 	case b.LVM != nil:

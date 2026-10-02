@@ -835,6 +835,8 @@ func backendTypeToString(bt agentv1.BackendType) string {
 	switch bt {
 	case agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL:
 		return string(pillarcsiv1alpha1.BackendIDZFSZvol)
+	case agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET:
+		return string(pillarcsiv1alpha1.BackendIDZFSDataset)
 	case agentv1.BackendType_BACKEND_TYPE_LVM:
 		return string(pillarcsiv1alpha1.BackendIDLVMLV)
 	default:
@@ -850,6 +852,8 @@ func protocolTypeToString(pt agentv1.ProtocolType) string {
 		return string(pillarcsiv1alpha1.ProtocolIDNVMeOFTCP)
 	case agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:
 		return string(pillarcsiv1alpha1.ProtocolIDISCSI)
+	case agentv1.ProtocolType_PROTOCOL_TYPE_NFS:
+		return string(pillarcsiv1alpha1.ProtocolIDNFS)
 	default:
 		return unknownCapability
 	}

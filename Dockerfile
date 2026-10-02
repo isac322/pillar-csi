@@ -4,8 +4,8 @@
 #
 # Targets:
 #   controller — CSI controller (distroless, no runtime deps)
-#   agent      — pillar-agent gRPC server (alpine + ZFS + LVM2)
-#   node       — CSI node plugin (alpine + mount utils + e2fsprogs + xfsprogs)
+#   agent      — pillar-agent gRPC server (alpine + ZFS + LVM2 + NFS server)
+#   node       — CSI node plugin (alpine + mount/NFS utils + e2fsprogs + xfsprogs)
 #
 # Usage:
 #   docker buildx bake                  # build all 3 images
@@ -71,8 +71,10 @@ USER 65532:65532
 ENTRYPOINT ["/usr/bin/manager"]
 
 # ── Runtime: agent ────────────────────────────────────────────────────────────
-# Alpine + ZFS + LVM2 userspace tools.  The agent invokes zfs(8), zpool(8),
-# lvcreate(8), lvremove(8), etc. via os/exec.  NVMe-oF uses configfs directly.
+# Alpine + ZFS + LVM2 + nfs-utils userspace tools. The agent invokes zfs(8),
+# zpool(8), lvcreate(8), lvremove(8), exportfs(8), rpc.mountd(8) and nfsdcld(8).
+# NVMe-oF uses configfs directly; NFS uses the host kernel nfsd and a supervised
+# userspace NFSv4 client-recovery daemon with private persistent state.
 #
 # Runtime security (enforced in the DaemonSet manifest):
 #   --security-opt=no-new-privileges:true
@@ -80,7 +82,7 @@ ENTRYPOINT ["/usr/bin/manager"]
 #   --cap-drop ALL --cap-add SYS_ADMIN  (ZFS + configfs need SYS_ADMIN)
 FROM alpine:3.24.2 AS agent
 RUN set -eux \
-    && apk add --no-cache 'zfs~=2.4' lvm2 \
+    && apk add --no-cache 'zfs~=2.4' lvm2 nfs-utils \
     # Configure LVM for container environments where udevd is not running.
     && sed -i 's/obtain_device_list_from_udev = 1/obtain_device_list_from_udev = 0/' /etc/lvm/lvm.conf \
     && sed -i 's/udev_sync = 1/udev_sync = 0/' /etc/lvm/lvm.conf \
@@ -88,13 +90,14 @@ RUN set -eux \
     && addgroup -g 65532 nonroot \
     && adduser  -u 65532 -G nonroot -s /sbin/nologin -D nonroot \
     # Strip SUID/SGID bits from every file on the root filesystem.
-    && find / -xdev \( -perm -4000 -o -perm -2000 \) -exec chmod a-s {} + 2>/dev/null || true \
+    && (find / -xdev \( -perm -4000 -o -perm -2000 \) -exec chmod a-s {} + 2>/dev/null || true) \
     # Remove package manager (prevents `apk add` at runtime).
     && rm -rf /sbin/apk /etc/apk /lib/apk /usr/share/apk /var/lib/apk \
     # Remove shell (no interactive escape path).
     && rm -f /bin/sh /bin/bash /usr/bin/env
 COPY --from=builder --link --chmod=0555 /workspace/bin/agent /usr/bin/pillar-agent
 USER 65532:65532
+EXPOSE 2049/tcp
 EXPOSE 9500
 ENTRYPOINT ["/usr/bin/pillar-agent"]
 
@@ -107,6 +110,7 @@ ENTRYPOINT ["/usr/bin/pillar-agent"]
 # would create a filesystem Linux 5.15 cannot mount.
 # device-mapper carries dmsetup, which holds the backend device of a local
 # attach on the storage node through a linear target.
+# nfs-utils supplies mount.nfs for NFSv4.2 stages without host package installs.
 #
 # Runtime security (enforced in the DaemonSet manifest):
 #   --security-opt=no-new-privileges:true
@@ -121,7 +125,8 @@ RUN --mount=type=bind,source=hack/verify-mkfs-baseline.sh,target=/tmp/verify-mkf
          'e2fsprogs-extra~=1.47' \
          'xfsprogs~=7.0' \
          'xfsprogs-extra~=7.0' \
-         'device-mapper~=2.03'; \
+         'device-mapper~=2.03' \
+         nfs-utils; \
     # A separate command: the "|| true" below would mask a failure in the chain.
     sh /tmp/verify-mkfs-baseline.sh; \
     addgroup -g 65532 nonroot \

@@ -19,7 +19,10 @@ package agent
 import (
 	"time"
 
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/agent/backend"
 	"github.com/isac322/pillar-csi/internal/agent/lio"
+	"github.com/isac322/pillar-csi/internal/agent/nfs"
 	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 )
 
@@ -81,4 +84,15 @@ func WithExportRestoreGate() ServerOption {
 // lio/liotest) rooted at the server's configfs root.
 func WithLIOFS(fsys lio.FS) ServerOption {
 	return func(s *Server) { s.lioFS = fsys }
+}
+
+// WithNFSManager enables NFS protocol dispatch for filesystem-capable pools.
+func WithNFSManager(manager *nfs.Manager) ServerOption {
+	return func(s *Server) { s.nfsManager = manager }
+}
+
+// WithBackendVariants supplies the explicit backend-type registry used when
+// multiple backend kinds share one physical pool.
+func WithBackendVariants(variants map[string]map[agentv1.BackendType]backend.VolumeBackend) ServerOption {
+	return func(s *Server) { s.backendVariants = variants }
 }

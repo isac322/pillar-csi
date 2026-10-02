@@ -102,6 +102,27 @@ func TestDeployedTopology(t *testing.T) {
 	}
 }
 
+// TestNFSHelpersRemainImageScoped proves the CI topology does not install
+// host server helpers must remain absent on client nodes. kindest/node may
+// already contain the client-side mount.nfs helper; the node image owns the
+// helper used by CSI mounts and is verified by the dedicated Kind suite.
+// This check intentionally excludes mount.nfs from the host-zero-install rule.
+func TestNFSHelpersRemainImageScoped(t *testing.T) {
+	cfg := loadConfig(t)
+	for _, node := range []string{cfg.clientNodeA, cfg.clientNodeB} {
+		_, stderr, err := runDockerExec(context.Background(), node, "sh", "-ceu",
+			`for helper in exportfs rpc.mountd; do
+				if command -v "$helper" >/dev/null 2>&1; then
+					printf 'unexpected host server helper %s\n' "$helper" >&2
+					exit 1
+				fi
+			done`)
+		if err != nil {
+			t.Fatalf("Kind client node %s has host NFS userspace helper installed: %v\n%s", node, err, stderr)
+		}
+	}
+}
+
 func TestFilesystemCrossNodeReattach(t *testing.T) {
 	cfg := loadConfig(t)
 	ns := createNamespace(t, "fs")

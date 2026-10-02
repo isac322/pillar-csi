@@ -56,7 +56,7 @@ func TestHandlerForProtocol_Unsupported(t *testing.T) {
 	t.Parallel()
 
 	srv := NewServer(nil, "", WithDrainStateDir(t.TempDir()))
-	_, err := srv.handlerForProtocol(agentv1.ProtocolType_PROTOCOL_TYPE_NFS)
+	_, err := srv.handlerForProtocol(agentv1.ProtocolType_PROTOCOL_TYPE_SMB)
 	if err == nil {
 		t.Fatal("expected error for unsupported protocol, got nil")
 	}

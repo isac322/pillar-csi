@@ -24,8 +24,9 @@ func assertE9_CreateAndDeleteVolume(tc documentedCase) {
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
 	_, err = env.client.DeleteVolume(env.ctx, &agentv1.DeleteVolumeRequest{
-		VolumeId: "tank/pvc-e9-create",
-		Fence:    fence,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		VolumeId:    "tank/pvc-e9-create",
+		Fence:       fence,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: DeleteVolume", tc.tcNodeLabel())
 }
@@ -111,6 +112,7 @@ func assertE9_ExpandVolume(tc documentedCase) {
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume", tc.tcNodeLabel())
 
 	resp, err := env.client.ExpandVolume(env.ctx, &agentv1.ExpandVolumeRequest{
+		BackendType:    agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		VolumeId:       "tank/pvc-e9-expand",
 		RequestedBytes: 20 << 20,
 		Fence:          fence,
@@ -125,7 +127,8 @@ func assertE9_GetCapacity(tc documentedCase) {
 	defer env.close()
 
 	resp, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
-		PoolName: "tank",
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		PoolName:    "tank",
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity", tc.tcNodeLabel())
 	Expect(resp.GetTotalBytes()).To(BeNumerically(">", 0),

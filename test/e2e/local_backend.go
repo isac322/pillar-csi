@@ -599,8 +599,9 @@ func verifyAgentLocalBackendForProcess(processNum int) error {
 	// that may have exited before the DeleteVolume step completed.  The delete
 	// ends its own lifecycle, so the create below needs a different one.
 	_, _ = server.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
-		VolumeId: volID,
-		Fence:    agentLifecycleFence(volID + "#pre-cleanup"),
+		VolumeId:    volID,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		Fence:       agentLifecycleFence(volID + "#pre-cleanup"),
 	})
 
 	if _, err := server.CreateVolume(ctx, &agentv1.CreateVolumeRequest{
@@ -671,8 +672,9 @@ func verifyAgentLocalBackendForProcess(processNum int) error {
 	}
 
 	if _, err := server.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
-		VolumeId: volID,
-		Fence:    fence,
+		VolumeId:    volID,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		Fence:       fence,
 	}); err != nil {
 		return fmt.Errorf("agent delete volume: %w", err)
 	}

@@ -20,10 +20,12 @@ import (
 	"context"
 
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/agent/nfs"
 	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
@@ -79,16 +81,16 @@ func (s *Server) reconcileVolumes(ctx context.Context, vols []*agentv1.VolumeDes
 	var protocolOrder []agentv1.ProtocolType
 
 	for i, vol := range vols {
-		failures[i] = s.resolveVolumeHandlers(ctx, vol, handlers, &protocolOrder)
-	}
-	for i, vol := range vols {
+		devicePath, err := s.resolveVolumeHandlers(ctx, vol, handlers, &protocolOrder)
+		failures[i] = err
 		if failures[i] != nil {
 			continue
 		}
 		for _, export := range vol.GetExports() {
 			protocolType := export.GetProtocolType()
-			desiredByProtocol[protocolType] = append(desiredByProtocol[protocolType],
-				exportDesiredState(vol, export))
+			state := exportDesiredState(vol, export)
+			state.DevicePath = devicePath
+			desiredByProtocol[protocolType] = append(desiredByProtocol[protocolType], state)
 			volumeByProtocol[protocolType] = append(volumeByProtocol[protocolType], i)
 		}
 	}
@@ -108,30 +110,50 @@ func (s *Server) reconcileVolumes(ctx context.Context, vols []*agentv1.VolumeDes
 	return failures
 }
 
-// resolveVolumeHandlers resolves the handler of every protocol vol exports,
-// recording new protocols in first-seen order.  A volume with an unsupported
-// protocol fails as a whole: none of its exports is applied, and the failure
-// is recorded as a resolve-phase item_failed event on the span in ctx.
+// resolveVolumeHandlers resolves the typed backend path and every protocol
+// handler without modifying the caller's desired state. A volume with an
+// unsupported protocol fails as a whole: none of its exports is applied, and
+// the failure is recorded as a resolve-phase item_failed event on the span.
 func (s *Server) resolveVolumeHandlers(
 	ctx context.Context,
 	vol *agentv1.VolumeDesiredState,
 	handlers map[agentv1.ProtocolType]AgentProtocolHandler,
 	protocolOrder *[]agentv1.ProtocolType,
-) error {
+) (string, error) {
+	b, err := s.backendForType(vol.GetVolumeId(), vol.GetBackendType())
+	if err != nil {
+		recordReconcileItemFailed(ctx, vol.GetVolumeId(), reconcilePhaseResolve, err)
+		return "", err
+	}
+	checkErr := checkBackendType("ReconcileState", vol.GetBackendType(), b.Type(), vol.GetVolumeId())
+	if checkErr != nil {
+		recordReconcileItemFailed(ctx, vol.GetVolumeId(), reconcilePhaseResolve, checkErr)
+		return "", checkErr
+	}
 	for _, export := range vol.GetExports() {
 		protocolType := export.GetProtocolType()
 		if _, ok := handlers[protocolType]; ok {
 			continue
 		}
-		handler, err := s.handlerForProtocol(protocolType)
-		if err != nil {
-			recordReconcileItemFailed(ctx, vol.GetVolumeId(), reconcilePhaseResolve, err)
-			return err
+		handler, handlerErr := s.handlerForProtocol(protocolType)
+		if handlerErr != nil {
+			recordReconcileItemFailed(ctx, vol.GetVolumeId(), reconcilePhaseResolve, handlerErr)
+			return "", handlerErr
 		}
 		handlers[protocolType] = handler
 		*protocolOrder = append(*protocolOrder, protocolType)
 	}
-	return nil
+	devicePath := vol.GetDevicePath()
+	if devicePath == "" && len(vol.GetExports()) != 0 {
+		devicePath = b.DevicePath(vol.GetVolumeId())
+		if devicePath == "" {
+			err = status.Errorf(codes.FailedPrecondition,
+				"ReconcileState: backend device path unavailable for volume %q", vol.GetVolumeId())
+			recordReconcileItemFailed(ctx, vol.GetVolumeId(), reconcilePhaseResolve, err)
+			return "", err
+		}
+	}
+	return devicePath, nil
 }
 
 // setReconcileSpanAttributes sets the ReconcileState summary attributes on
@@ -156,7 +178,7 @@ func setReconcileSpanAttributes(ctx context.Context, complete bool, failures []e
 }
 
 func exportDesiredState(vol *agentv1.VolumeDesiredState, export *agentv1.ExportDesiredState) ExportDesiredState {
-	return ExportDesiredState{
+	state := ExportDesiredState{
 		VolumeID:          vol.GetVolumeId(),
 		DevicePath:        vol.GetDevicePath(),
 		ProtocolParams:    export.GetExportParams(),
@@ -165,6 +187,14 @@ func exportDesiredState(vol *agentv1.VolumeDesiredState, export *agentv1.ExportD
 		Fence:             vol.GetFence(),
 		LocalAttach:       export.GetLocalAttach(),
 	}
+	if export.GetProtocolType() == agentv1.ProtocolType_PROTOCOL_TYPE_NFS {
+		nfsParams := export.GetExportParams().GetNfs()
+		if nfsParams != nil {
+			state.BindAddress = nfsParams.GetBindAddress()
+			state.Port = nfs.Port
+		}
+	}
+	return state
 }
 
 func reconcileResult(volumeID string, err error) *agentv1.ReconcileItemResult {

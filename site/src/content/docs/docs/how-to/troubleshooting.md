@@ -45,8 +45,10 @@ Match the message:
 |---|---|---|
 | `unsupported PVC annotation` | The PVC has a `pillar-csi.bhyoo.com/` annotation other than `backend`, `protocol`, `filesystem` or `import-zvol`, such as a 0.2 key. | Remove it. Use the YAML documents described in [Override settings](/docs/how-to/volume-overrides/). |
 | `pillar-csi.bhyoo.com/import-zvol` or `import of volume ... refused` | A zvol import was refused. | See the refusals in [Import a zvol from another CSI driver](/docs/how-to/import-zvol/#refusals). |
-| `is structural and cannot be set per volume` | The annotation sets `pool`, `parentDataset`, `volumeGroup`, `thinPool`, `port` or `acl`. | Remove the field. Create a separate `PillarStore` or `PillarProtocol` instead. |
-| `unknown field` | A typo or a field that does not exist at that path. | Fix the key; the message lists the supported ones. |
+| `is structural and cannot be set per volume` | The annotation sets `pool`, `parentDataset`, `volumeGroup`, `thinPool`, `port`, `acl`, `version`, or `squash`. | Remove the field. Create a separate `PillarStore` or `PillarProtocol` instead. |
+| `invalid NFS filesystem option` | The NFS volume sets `fsType`, nonempty `mkfsOptions`, periodic trim, `localAttach`, or contradictory support flags such as `nfsvers`/`proto`/`soft`. | Omit `fsType`, use empty `mkfsOptions`, disable periodic trim/localAttach, and keep `filesystem.mountOptions` compatible with hard NFSv4.2 TCP defaults. |
+| `NFS export requires ZFS dataset` | The NFS protocol was paired with a zvol or LVM backend. | Set `zfs.volumeType: dataset` on a ZFS store; NFS cannot export zvols, LVs, or directories. |
+| `ReadWriteMany` or `MULTI_NODE_MULTI_WRITER` is unsupported | The request uses RWX with a block protocol. | Bind the PVC to a ZFS dataset + NFS protocol; block protocols support only RWO, RWOP and ROX. |
 | `mkfs option ... is not allowed` | An `mkfsOptions` entry is not on the allowlist for that filesystem type. | Remove it; the message lists the allowed flags. |
 | `(named via ...) not found` | The `PillarStore`, `PillarProtocol` or `PillarStorageClass` named by the StorageClass does not exist. | Create it, or fix the name. |
 | `lvm.provisioningMode thin requires PillarStore ... to set lvm.thinPool` | Thin provisioning without a thin pool. | Set `lvm.thinPool` on the store and in `agent.backends`, or use `linear`. |
@@ -154,6 +156,14 @@ With `AddressNotResolved`, the node has no address of the type in `spec.nodeRef.
 `AgentConnected` can also be `True` with reason `AgentDegraded`. The agent answers but reports a degraded subsystem, for example a missing `nvmet` module or an unmounted configfs. The agent's init container runs `modprobe` for `nvmet`, `nvmet_tcp`, `target_core_mod`, `target_core_iblock` and `iscsi_target_mod` against the host's `/lib/modules`, so the modules must exist in the host kernel.
 
 If iSCSI volumes do not provision on a storage node, check that the agent lists `iscsi` among its protocols. It does so only when the LIO iSCSI target works on the node, which needs `target_core_mod`, `target_core_iblock` and `iscsi_target_mod`:
+If NFS volumes do not provision on a storage node, check that the agent lists `nfs` among its protocols and that the host kernel provides NFS server support. The agent also needs its persistent state hostPath and must be able to establish ownership of its NFS export root; it refuses availability rather than touching foreign exports when ownership cannot be proven:
+
+```sh
+kubectl get pillaragent <name> -o jsonpath='{.status.capabilities.protocols}'
+kubectl describe pillaragent <name>
+```
+
+For NFS ACL failures, verify the published node has a numeric `InternalIP` and that it matches the client source address. `acl: true` with an empty published set denies volume data (an unauthorized mount may expose only an empty backing stub); `acl: false` allows any reachable client. ACLs do not encrypt NFS traffic, and RPC TLS is not offered.
 
 ```sh
 kubectl get pillaragent <name> -o jsonpath='{.status.capabilities.protocols}'
@@ -200,6 +210,10 @@ kubectl -n pillar-csi logs <node-pod> -c node
 | an NVMe connect error, or a timeout waiting for the device | The worker cannot reach the storage node's NVMe/TCP port (`4420` by default), or `nvme_tcp` is not loaded. | Open the port on the storage node's firewall. On the worker, check that `/sys/module/nvme_tcp` exists; the init container only runs `modprobe` against the host's `/lib/modules`. |
 | `the iSCSI initiator is disabled on this node because kernel module iscsi_tcp was not loaded when pillar-node started` | `iscsi_tcp` was missing when the node plugin started. | Load `iscsi_tcp` on the host, list it in `/etc/modules-load.d/`, and restart the node plugin pod. |
 | `iscsi Attach: login to <target> at <address>:<port>` followed by a connection or timeout error | The worker cannot reach the storage node's iSCSI port (`3260` by default). | Open the port on the storage node's firewall. With `acl: true`, check that the worker's `pillar-csi.bhyoo.com/iscsi-initiator-iqn` annotation is set. |
+| an NFS mount error or timeout on TCP 2049 | The worker cannot reach the storage node, NFS client support is missing, or the owned export is not ready. | Check the `ExportsReady` condition, open TCP 2049, verify NFS client support, and read the node/agent logs. |
+| `NFS ACL has no allowed clients` | `acl: true` is enabled but no node publication has been committed, or the node IP is not numeric/valid. | Wait for `ControllerPublishVolume`, check `status.publishedNodes` and the node `InternalIP`, then retry; verify the dataset marker/data, not only whether a mount command returned. |
+| `NFS mount options contradict supported defaults` | `mountOptions` attempted to select another NFS version/transport or `soft`. | Remove the conflicting option; NFS is fixed to hard, NFSv4.2 and TCP. |
+| `localAttach is not supported for NFS` | A dataset/NFS volume was configured for localAttach. | Remove `localAttach`; NFS always uses its network mount, including on the storage node. |
 | `create iSCSI initiator (netlink netns ...)` or `start iSCSI initiator` in the node plugin log, and the node plugin pod restarts | The node plugin cannot open the kernel's `NETLINK_ISCSI` socket, which exists only in the host's initial network namespace. | Keep `hostNetwork: true` on the node plugin. On Kind or other nodes that run in containers, set `node.iscsi.netlinkNetnsPath`; see [Prerequisites](/docs/reference/prerequisites/#kubernetes-and-helm). |
 | `read iSCSI initiator IQN` in the node plugin log, and the node plugin pod restarts | `/etc/iscsi/initiatorname.iscsi` on the host holds an `InitiatorName=` that is not a valid iSCSI name, or the file cannot be read or written. The node plugin never overwrites an existing name. | Fix the `InitiatorName=` line, or remove the file so the node plugin generates a new IQN. |
 | `resize2fs` or `xfs_growfs` | Growing the filesystem after an expansion failed. | See [Expand a volume](/docs/how-to/expand-volume/#failures). |

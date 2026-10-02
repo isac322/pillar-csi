@@ -89,6 +89,7 @@ func TestServer_RequiresFencingToken(t *testing.T) {
 		"ExpandVolume": func() error {
 			_, err := srv.ExpandVolume(ctx, &agentv1.ExpandVolumeRequest{
 				VolumeId: fencingTestVolume, RequestedBytes: 1 << 30,
+				BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 			})
 			return err
 		},

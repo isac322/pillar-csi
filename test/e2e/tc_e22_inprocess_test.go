@@ -64,13 +64,15 @@ func assertE22_CreateVolume_ProtocolDoc_MemberMismatchRejected(tc documentedCase
 		"iscsi overrides do not apply to a nvmeof-tcp protocol")
 }
 
-func assertE22_CreateVolume_ProtocolDoc_NFSRejected(tc documentedCase) {
+func assertE22_CreateVolume_ProtocolDoc_NFSStructuralOverrideRejected(tc documentedCase) {
 	env := newControllerTestEnv()
 	defer env.close()
 
-	expectE22Rejected(tc, env, "pvc-e22-nfs",
-		e22HandWrittenWithDoc(env, e2eDocProtocol, "nfs:\n  version: \"4.2\"\n"),
-		e2eDocProtocol, `unknown field "nfs"`)
+	for _, doc := range []string{"nfs: {version: '3'}", "nfs: {port: 2050}", "nfs: {acl: false}", "nfs: {squash: none}"} {
+		expectE22Rejected(tc, env, "pvc-e22-nfs",
+			e22HandWrittenWithDoc(env, e2eDocProtocol, doc),
+			e2eDocProtocol, "structural")
+	}
 }
 
 func assertE22_CreateVolume_LegacyProtocolTypeParamRejected(tc documentedCase) {

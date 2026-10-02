@@ -50,6 +50,9 @@ func (s *Server) GetCapabilities(
 	if lio.Available(s.lioFS, s.configfsRoot) == nil {
 		protocols = append(protocols, agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI)
 	}
+	if s.nfsManager != nil && s.nfsManager.Health() == nil {
+		protocols = append(protocols, agentv1.ProtocolType_PROTOCOL_TYPE_NFS)
+	}
 	return &agentv1.GetCapabilitiesResponse{
 		AgentVersion:       agentVersion,
 		SupportedBackends:  s.collectSupportedBackendTypes(),
@@ -64,8 +67,15 @@ func (s *Server) GetCapabilities(
 // runtime configuration.
 func (s *Server) collectSupportedBackendTypes() []agentv1.BackendType {
 	seen := make(map[agentv1.BackendType]struct{}, len(s.backends))
-	for _, b := range s.backends {
-		seen[b.Type()] = struct{}{}
+	for _, variants := range s.backendVariants {
+		for _, b := range variants {
+			seen[b.Type()] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		for _, b := range s.backends {
+			seen[b.Type()] = struct{}{}
+		}
 	}
 	types := make([]agentv1.BackendType, 0, len(seen))
 	for t := range seen {
@@ -80,20 +90,39 @@ func (s *Server) collectSupportedBackendTypes() []agentv1.BackendType {
 // of which backend implementation is registered for each pool.
 func (s *Server) collectPoolInfo(ctx context.Context) []*agentv1.PoolInfo {
 	pools := make([]*agentv1.PoolInfo, 0, len(s.backends))
-	for name, b := range s.backends {
-		total, avail, err := b.Capacity(ctx)
-		if err != nil {
-			continue // Best-effort: skip pools whose capacity cannot be queried.
+	for name, variants := range s.backendVariants {
+		for _, b := range variants {
+			total, avail, err := b.Capacity(ctx)
+			if err != nil {
+				continue
+			}
+			layout := b.Layout()
+			pools = append(pools, &agentv1.PoolInfo{
+				Name:           name,
+				BackendType:    b.Type(),
+				TotalBytes:     total,
+				AvailableBytes: avail,
+				ParentDataset:  layout.ParentDataset,
+				ThinPool:       layout.ThinPool,
+			})
 		}
-		layout := b.Layout()
-		pools = append(pools, &agentv1.PoolInfo{
-			Name:           name,
-			BackendType:    b.Type(),
-			TotalBytes:     total,
-			AvailableBytes: avail,
-			ParentDataset:  layout.ParentDataset,
-			ThinPool:       layout.ThinPool,
-		})
+	}
+	if len(pools) == 0 {
+		for name, b := range s.backends {
+			total, avail, err := b.Capacity(ctx)
+			if err != nil {
+				continue
+			}
+			layout := b.Layout()
+			pools = append(pools, &agentv1.PoolInfo{
+				Name:           name,
+				BackendType:    b.Type(),
+				TotalBytes:     total,
+				AvailableBytes: avail,
+				ParentDataset:  layout.ParentDataset,
+				ThinPool:       layout.ThinPool,
+			})
+		}
 	}
 	return pools
 }
@@ -105,8 +134,20 @@ func (s *Server) GetCapacity(
 ) (*agentv1.GetCapacityResponse, error) {
 	poolName := req.GetPoolName()
 	b, ok := s.backends[poolName]
+	if variants := s.backendVariants[poolName]; len(variants) > 0 {
+		b, ok = variants[req.GetBackendType()]
+	}
 	if !ok {
-		return nil, status.Errorf(codes.NotFound, "no backend registered for pool %q", poolName)
+		return nil, status.Errorf(
+			codes.NotFound,
+			"no backend registered for pool %q and type %s",
+			poolName,
+			req.GetBackendType(),
+		)
+	}
+	checkErr := checkBackendType("GetCapacity", req.GetBackendType(), b.Type(), poolName)
+	if checkErr != nil {
+		return nil, checkErr
 	}
 	total, avail, err := b.Capacity(ctx)
 	if err != nil {
@@ -119,15 +160,28 @@ func (s *Server) GetCapacity(
 	}, nil
 }
 
-// ListVolumes returns all zvols currently present in the given pool.
+// ListVolumes returns all resources currently present in the given pool and
+// explicitly selected backend type.
 func (s *Server) ListVolumes(
 	ctx context.Context,
 	req *agentv1.ListVolumesRequest,
 ) (*agentv1.ListVolumesResponse, error) {
 	poolName := req.GetPoolName()
 	b, ok := s.backends[poolName]
+	if variants := s.backendVariants[poolName]; len(variants) > 0 {
+		b, ok = variants[req.GetBackendType()]
+	}
 	if !ok {
-		return nil, status.Errorf(codes.NotFound, "no backend registered for pool %q", poolName)
+		return nil, status.Errorf(
+			codes.NotFound,
+			"no backend registered for pool %q and type %s",
+			poolName,
+			req.GetBackendType(),
+		)
+	}
+	checkErr := checkBackendType("ListVolumes", req.GetBackendType(), b.Type(), poolName)
+	if checkErr != nil {
+		return nil, checkErr
 	}
 	vols, err := b.ListVolumes(ctx)
 	if err != nil {
@@ -137,7 +191,8 @@ func (s *Server) ListVolumes(
 }
 
 // ListExports returns every active NVMe-oF TCP and iSCSI export from
-// configfs, keyed by volume ID.
+// configfs. NFS exports are represented by the durable NFS manager state and
+// are not reconstructed from configfs.
 func (s *Server) ListExports(
 	_ context.Context,
 	_ *agentv1.ListExportsRequest,
@@ -297,9 +352,24 @@ func (s *Server) HealthCheck(
 	_ *agentv1.HealthCheckRequest,
 ) (*agentv1.HealthCheckResponse, error) {
 	hs := s.collectHealthStatus(ctx)
+	healthy := hs.AllHealthy()
+	subsystems := hs.ToProtoSubsystems()
+	if s.nfsManager != nil {
+		healthErr := s.nfsManager.Health()
+		if healthErr != nil {
+			healthy = false
+			subsystems = append(subsystems, &agentv1.SubsystemStatus{
+				Name: "nfs", Healthy: false, Message: healthErr.Error(),
+			})
+		} else {
+			subsystems = append(subsystems, &agentv1.SubsystemStatus{
+				Name: "nfs", Healthy: true, Message: "NFS runtime is healthy.",
+			})
+		}
+	}
 	return &agentv1.HealthCheckResponse{
-		Healthy:              hs.AllHealthy(),
-		Subsystems:           hs.ToProtoSubsystems(),
+		Healthy:              healthy,
+		Subsystems:           subsystems,
 		AgentVersion:         agentVersion,
 		CheckedAt:            timestamppb.Now(),
 		ExportRestorePending: s.exportRestorePending.Load(),

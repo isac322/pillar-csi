@@ -1,11 +1,11 @@
 ---
 title: Expand a volume
-description: Grow a pillar-csi PVC backed by a ZFS zvol or an LVM logical volume while it stays mounted, and resize its ext4 or xfs filesystem on the Kubernetes worker.
+description: Grow a pillar-csi PVC backed by a ZFS zvol, ZFS dataset, or LVM logical volume while it stays mounted; block filesystems resize on the worker and NFS datasets grow server-side.
 sidebar:
   order: 8
 ---
 
-pillar-csi supports online expansion. You raise the PVC's storage request, the agent grows the zvol or logical volume on the storage node, and the node plugin grows the filesystem while the pod keeps running. Shrinking is not supported.
+pillar-csi supports online expansion. You raise the PVC's storage request, and the agent grows the zvol, ZFS dataset quota, or logical volume while the pod keeps running. Block volumes then grow their ext4 or xfs filesystem on the worker; NFS reports the larger dataset capacity without a node-side filesystem resize. Shrinking is not supported.
 
 ## Before you start
 
@@ -17,7 +17,7 @@ kubectl get storageclass <name> -o jsonpath='{.allowVolumeExpansion}'
 
 `allowVolumeExpansion` is the one StorageClass field Kubernetes lets you change in place, so switching it on a `PillarStorageClass` updates the generated class without recreating it.
 
-The pool needs free space for the new size. For ZFS, the limit is the space available to the store's parent dataset. For LVM thin volumes, `lvextend` grows the virtual size of the thin volume inside the thin pool.
+The pool or dataset parent needs free space for the new size. For ZFS block volumes, the limit is the available space for the zvol; for NFS, the limit is the dataset quota and its parent dataset. For LVM thin volumes, `lvextend` grows the virtual size inside the thin pool.
 
 ## Expand
 
@@ -38,15 +38,15 @@ kubectl describe pvc postgres-data
 ## What happens
 
 1. `csi-resizer` in the controller pod calls `ControllerExpandVolume`.
-2. The controller asks the agent to grow the backend volume: `zfs set volsize=<bytes>` for ZFS, `lvextend -L <bytes>b` for LVM linear and thin volumes.
-3. If the volume is exported over NVMe-oF/TCP, the agent writes `1` to the namespace's `revalidate_size` in nvmet configfs. The namespace stays enabled, so connected workers keep their session. An iSCSI target needs no step here: its LIO `iblock` backstore reads the new size of the zvol or logical volume.
-4. The controller always reports that node expansion is required. On the worker, `NodeExpandVolume` makes the kernel see the new size, then grows the filesystem: `resize2fs <device>` for ext4, `xfs_growfs <mount point>` for xfs. For NVMe-oF/TCP it rescans the NVMe controller. For iSCSI it rescans the SCSI disk of the volume's session, which stays logged in.
+2. The controller asks the agent to grow the backend volume: `zfs set volsize=<bytes>` for a ZFS zvol, `zfs set quota=<bytes>` for a ZFS dataset, or `lvextend -L <bytes>b` for LVM linear and thin volumes.
+3. For NVMe-oF/TCP, the agent revalidates the namespace; an iSCSI LIO backstore reads the new block size. NFS needs no client-side device step.
+4. The controller reports node expansion required for block volumes. On the worker, `NodeExpandVolume` makes the kernel see the new block size, then grows ext4 with `resize2fs` or xfs with `xfs_growfs`. For NFS, `NodeExpansionRequired` is false and the mounted client sees the updated server-side quota.
 
-For a raw block volume (`volumeMode: Block`) there is no filesystem, so step 4 only reports the new size. The application sees the larger device.
+For a raw block volume (`volumeMode: Block`) there is no filesystem, so block step 4 only reports the new size. NFS rejects `volumeMode: Block`.
 
 For a volume [attached locally on the storage node](/docs/how-to/local-attach/#expansion), the NVMe namespace is disabled, so the agent skips `revalidate_size`; an iSCSI target has no LUN at that time. `NodeExpandVolume` on the storage node reloads the `pillar-local-*` device-mapper table to the new size and then grows the filesystem on that device.
 
-If no pod uses the PVC during expansion, Kubernetes finishes the filesystem step the next time a pod mounts it.
+If no pod uses a block PVC during expansion, Kubernetes finishes the filesystem step the next time a pod mounts it. An NFS dataset does not need a node-side expansion step.
 
 ## Failures
 

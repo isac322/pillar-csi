@@ -195,8 +195,9 @@ func lvmCreateVolumeE28(env *agentTestEnv, lvName string, capacityBytes int64) e
 func lvmDeleteVolumeE28NoFail(env *agentTestEnv, lvName string) {
 	volumeID := env.lvmVG + "/" + lvName
 	_, _ = env.client.DeleteVolume(env.ctx, &agentv1.DeleteVolumeRequest{
-		VolumeId: volumeID,
-		Fence:    agentLifecycleFence(volumeID),
+		VolumeId:    volumeID,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+		Fence:       agentLifecycleFence(volumeID),
 	})
 }
 
@@ -249,7 +250,7 @@ func e28FullRoundTrip(env *agentTestEnv, lvName string, params *agentv1.LvmVolum
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: UnexportVolume", tc.tcNodeLabel())
 
-	_, err = env.client.DeleteVolume(env.ctx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID, Fence: fence})
+	_, err = env.client.DeleteVolume(env.ctx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID, BackendType: agentv1.BackendType_BACKEND_TYPE_LVM, Fence: fence})
 	Expect(err).NotTo(HaveOccurred(), "%s: DeleteVolume", tc.tcNodeLabel())
 }
 
@@ -317,7 +318,8 @@ func assertE28_LVM_GetCapacity_LinearVG(tc documentedCase) {
 	defer env.close()
 
 	resp, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
-		PoolName: env.lvmVG,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+		PoolName:    env.lvmVG,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity", tc.tcNodeLabel())
 	Expect(resp.GetTotalBytes()).To(BeNumerically(">", 0),
@@ -334,7 +336,8 @@ func assertE28_LVM_GetCapacity_ThinPool(tc documentedCase) {
 	defer env.close()
 
 	resp, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
-		PoolName: env.lvmVG,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+		PoolName:    env.lvmVG,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity (thin pool)", tc.tcNodeLabel())
 	Expect(resp.GetTotalBytes()).To(BeNumerically(">", 0),
@@ -358,7 +361,8 @@ func assertE28_LVM_GetCapacity_ThinPoolOverProvisioned(tc documentedCase) {
 		"%s: create thin LV for over-provisioning test", tc.tcNodeLabel())
 
 	resp, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
-		PoolName: env.lvmVG,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+		PoolName:    env.lvmVG,
 	})
 	Expect(err).NotTo(HaveOccurred(),
 		"%s: GetCapacity on thin pool with committed virtual space", tc.tcNodeLabel())
@@ -406,7 +410,8 @@ func assertE28_LVM_GetCapacity_FullVG(tc documentedCase) {
 
 	// Get current available capacity so we can fill dynamically.
 	cap1, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
-		PoolName: env.lvmVG,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+		PoolName:    env.lvmVG,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity before fill", tc.tcNodeLabel())
 
@@ -433,7 +438,8 @@ func assertE28_LVM_GetCapacity_FullVG(tc documentedCase) {
 		tc.tcNodeLabel(), fillSize, fillSize/extentSize)
 
 	cap2, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{
-		PoolName: env.lvmVG,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+		PoolName:    env.lvmVG,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity after fill", tc.tcNodeLabel())
 	// After filling to the extent boundary, at most one extent (4 MiB) can remain.
@@ -458,7 +464,8 @@ func assertE28_LVM_ListVolumes_SkipsThinPoolLV(tc documentedCase) {
 	Expect(lvmCreateVolumeE28(env, "pvc-e28-data-2", 10<<20)).To(Succeed())
 
 	resp, err := env.client.ListVolumes(env.ctx, &agentv1.ListVolumesRequest{
-		PoolName: env.lvmVG,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+		PoolName:    env.lvmVG,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: ListVolumes", tc.tcNodeLabel())
 	// Both data LVs must be present — no data LV should be filtered.
@@ -491,7 +498,8 @@ func assertE28_LVM_ListVolumes_Linear_AllReturned(tc documentedCase) {
 	Expect(lvmCreateVolumeE28(env, "pvc-e28-lv-c", 10<<20)).To(Succeed())
 
 	resp, err := env.client.ListVolumes(env.ctx, &agentv1.ListVolumesRequest{
-		PoolName: env.lvmVG,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+		PoolName:    env.lvmVG,
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: ListVolumes linear", tc.tcNodeLabel())
 	// All 3 created LVs must be present — linear LVM does not filter any data LV.
@@ -527,7 +535,7 @@ func assertE28_LVM_CreateVolume_LinearModeParam(tc documentedCase) {
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume with linear mode", tc.tcNodeLabel())
 	// Verify volume was actually created by listing volumes.
-	listResp, listErr := env.client.ListVolumes(env.ctx, &agentv1.ListVolumesRequest{PoolName: env.lvmVG})
+	listResp, listErr := env.client.ListVolumes(env.ctx, &agentv1.ListVolumesRequest{BackendType: agentv1.BackendType_BACKEND_TYPE_LVM, PoolName: env.lvmVG})
 	Expect(listErr).NotTo(HaveOccurred(), "%s: ListVolumes after create", tc.tcNodeLabel())
 	Expect(listResp.GetVolumes()).To(ContainElement(
 		HaveField("VolumeId", env.lvmVG+"/pvc-e28-linear-param"),
@@ -555,7 +563,7 @@ func assertE28_LVM_CreateVolume_ThinModeParam(tc documentedCase) {
 	})
 	Expect(err).NotTo(HaveOccurred(), "%s: CreateVolume with thin mode", tc.tcNodeLabel())
 	// Verify volume was actually created by listing volumes.
-	listResp, listErr := env.client.ListVolumes(env.ctx, &agentv1.ListVolumesRequest{PoolName: env.lvmVG})
+	listResp, listErr := env.client.ListVolumes(env.ctx, &agentv1.ListVolumesRequest{BackendType: agentv1.BackendType_BACKEND_TYPE_LVM, PoolName: env.lvmVG})
 	Expect(listErr).NotTo(HaveOccurred(), "%s: ListVolumes after thin create", tc.tcNodeLabel())
 	Expect(listResp.GetVolumes()).To(ContainElement(
 		HaveField("VolumeId", env.lvmVG+"/pvc-e28-thin-param"),
@@ -619,6 +627,7 @@ func assertE28_LVM_ExpandVolume_ShrinkRejected(tc documentedCase) {
 
 	// Real LVM rejects shrink requests natively.
 	_, err := env.client.ExpandVolume(env.ctx, &agentv1.ExpandVolumeRequest{
+		BackendType:    agentv1.BackendType_BACKEND_TYPE_LVM,
 		VolumeId:       env.lvmVG + "/pvc-e28-shrink",
 		Fence:          agentLifecycleFence(env.lvmVG + "/pvc-e28-shrink"),
 		RequestedBytes: 10 << 20, // smaller than 20MiB — shrink attempt
@@ -683,8 +692,9 @@ func assertE28_LVM_DeleteVolume_NonExistent_Idempotent(tc documentedCase) {
 	defer env.close()
 
 	_, err := env.client.DeleteVolume(env.ctx, &agentv1.DeleteVolumeRequest{
-		VolumeId: env.lvmVG + "/pvc-e28-nonexistent-del",
-		Fence:    agentLifecycleFence(env.lvmVG + "/pvc-e28-nonexistent-del"),
+		BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+		VolumeId:    env.lvmVG + "/pvc-e28-nonexistent-del",
+		Fence:       agentLifecycleFence(env.lvmVG + "/pvc-e28-nonexistent-del"),
 	})
 	// Idempotent: non-existent volume must not error.
 	if err != nil {
@@ -711,8 +721,9 @@ func assertE28_LVM_ReconcileState_RestoresExports(tc documentedCase) {
 	_, err := env.client.ReconcileState(env.ctx, &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
-				VolumeId: env.lvmVG + "/pvc-e28-reconcile-a",
-				Fence:    agentLifecycleFence(env.lvmVG + "/pvc-e28-reconcile-a"),
+				BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+				VolumeId:    env.lvmVG + "/pvc-e28-reconcile-a",
+				Fence:       agentLifecycleFence(env.lvmVG + "/pvc-e28-reconcile-a"),
 				Exports: []*agentv1.ExportDesiredState{
 					{
 						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
@@ -721,8 +732,9 @@ func assertE28_LVM_ReconcileState_RestoresExports(tc documentedCase) {
 				},
 			},
 			{
-				VolumeId: env.lvmVG + "/pvc-e28-reconcile-b",
-				Fence:    agentLifecycleFence(env.lvmVG + "/pvc-e28-reconcile-b"),
+				BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+				VolumeId:    env.lvmVG + "/pvc-e28-reconcile-b",
+				Fence:       agentLifecycleFence(env.lvmVG + "/pvc-e28-reconcile-b"),
 				Exports: []*agentv1.ExportDesiredState{
 					{
 						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
@@ -869,7 +881,7 @@ func assertE28_LVM_CreateVolume_ExtraFlags_Forwarded(tc documentedCase) {
 	Expect(err).NotTo(HaveOccurred(),
 		"%s: CreateVolume with ExtraFlags should succeed", tc.tcNodeLabel())
 	// Verify volume was created (ExtraFlags were forwarded and accepted by real LVM).
-	listResp, listErr := env.client.ListVolumes(env.ctx, &agentv1.ListVolumesRequest{PoolName: env.lvmVG})
+	listResp, listErr := env.client.ListVolumes(env.ctx, &agentv1.ListVolumesRequest{BackendType: agentv1.BackendType_BACKEND_TYPE_LVM, PoolName: env.lvmVG})
 	Expect(listErr).NotTo(HaveOccurred(), "%s: ListVolumes after ExtraFlags create", tc.tcNodeLabel())
 	Expect(listResp.GetVolumes()).To(ContainElement(
 		HaveField("VolumeId", env.lvmVG+"/pvc-e28-extraflags"),
@@ -939,7 +951,7 @@ func assertE28_LVM_CreateVolume_ThinPool_NearFull(tc documentedCase) {
 	defer env.close()
 
 	// Get current VG capacity to request more than available.
-	capResp, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{PoolName: env.lvmVG})
+	capResp, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{BackendType: agentv1.BackendType_BACKEND_TYPE_LVM, PoolName: env.lvmVG})
 	Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity", tc.tcNodeLabel())
 
 	// Request 10x the total linear VG size — guaranteed to exceed available space.
@@ -968,7 +980,7 @@ func assertE28_LVM_CreateVolume_ThinPool_Full(tc documentedCase) {
 	defer env.close()
 
 	// Get current VG capacity to request astronomically more.
-	capResp, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{PoolName: env.lvmVG})
+	capResp, err := env.client.GetCapacity(env.ctx, &agentv1.GetCapacityRequest{BackendType: agentv1.BackendType_BACKEND_TYPE_LVM, PoolName: env.lvmVG})
 	Expect(err).NotTo(HaveOccurred(), "%s: GetCapacity", tc.tcNodeLabel())
 
 	// Request 100x the total linear VG size — simulates a completely-full pool condition.

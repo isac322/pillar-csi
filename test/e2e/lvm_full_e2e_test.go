@@ -240,8 +240,9 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 				dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer dcancel()
 				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
-					VolumeId: volID,
-					Fence:    agentLifecycleFence(volID),
+					BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+					VolumeId:    volID,
+					Fence:       agentLifecycleFence(volID),
 				})
 			})
 
@@ -285,8 +286,9 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 				dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer dcancel()
 				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
-					VolumeId: volID,
-					Fence:    agentLifecycleFence(volID),
+					BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+					VolumeId:    volID,
+					Fence:       agentLifecycleFence(volID),
 				})
 			})
 
@@ -325,8 +327,9 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 				dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer dcancel()
 				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
-					VolumeId: volID,
-					Fence:    agentLifecycleFence(volID),
+					BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+					VolumeId:    volID,
+					Fence:       agentLifecycleFence(volID),
 				})
 			})
 
@@ -370,8 +373,9 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 
 			By("deleting the LV")
 			_, err = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
-				VolumeId: volID,
-				Fence:    agentLifecycleFence(volID),
+				BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+				VolumeId:    volID,
+				Fence:       agentLifecycleFence(volID),
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F27.4] DeleteVolume must succeed")
 
@@ -407,13 +411,15 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 				dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer dcancel()
 				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
-					VolumeId: volID,
-					Fence:    agentLifecycleFence(volID),
+					BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+					VolumeId:    volID,
+					Fence:       agentLifecycleFence(volID),
 				})
 			})
 
 			By("expanding LV from 10 MiB to 20 MiB")
 			_, err = agentClient.ExpandVolume(ctx, &agentv1.ExpandVolumeRequest{
+				BackendType:    agentv1.BackendType_BACKEND_TYPE_LVM,
 				VolumeId:       volID,
 				Fence:          agentLifecycleFence(volID),
 				RequestedBytes: 20 << 20,
@@ -497,8 +503,9 @@ var _ = Describe("F27: 실제 LVM LV 생성/삭제/확장/용량",
 				dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer dcancel()
 				_, _ = agentClient.DeleteVolume(dctx, &agentv1.DeleteVolumeRequest{
-					VolumeId: volID,
-					Fence:    agentLifecycleFence(volID),
+					BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+					VolumeId:    volID,
+					Fence:       agentLifecycleFence(volID),
 				})
 			})
 
@@ -570,8 +577,9 @@ var _ = Describe("F28: 실제 LVM + NVMe-oF configfs 내보내기",
 					ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 				})
 				_, _ = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
-					VolumeId: volID,
-					Fence:    agentLifecycleFence(volID),
+					BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+					VolumeId:    volID,
+					Fence:       agentLifecycleFence(volID),
 				})
 				cleanup()
 			}
@@ -693,8 +701,9 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 					ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
 				})
 				_, _ = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
-					VolumeId: volID,
-					Fence:    agentLifecycleFence(volID),
+					BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+					VolumeId:    volID,
+					Fence:       agentLifecycleFence(volID),
 				})
 				cleanup()
 			}
@@ -840,8 +849,9 @@ var _ = Describe("F29: 실제 LVM + NVMe-oF TCP 연결",
 
 			By("deleting LV")
 			_, err = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{
-				VolumeId: fullVolID,
-				Fence:    agentLifecycleFence(fullVolID),
+				BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+				VolumeId:    fullVolID,
+				Fence:       agentLifecycleFence(fullVolID),
 			})
 			Expect(err).NotTo(HaveOccurred(), "[TC-F29.3] DeleteVolume must succeed")
 

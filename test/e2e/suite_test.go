@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,17 @@ func TestE2E(t *testing.T) {
 
 	suiteConfig, reporterConfig := GinkgoConfiguration()
 
+	// In the sequential path, honor the CI-provided report directory without
+	// overriding an explicit Ginkgo JSON report path.
+	if reporterConfig.JSONReport == "" {
+		if reportDir := strings.TrimSpace(os.Getenv("E2E_REPORT_DIR")); reportDir != "" {
+			if err := os.MkdirAll(reportDir, 0o755); err != nil {
+				t.Fatalf("create E2E report directory %q: %v", reportDir, err)
+			}
+			reporterConfig.JSONReport = filepath.Join(reportDir, "e2e-auto.json")
+		}
+	}
+
 	// AC 6: apply fail-fast from -e2e.fail-fast flag or E2E_FAIL_FAST env var.
 	// Default is false (continue on failure) so the full summary report is always emitted.
 	applyFailFast(&suiteConfig)
@@ -59,13 +71,17 @@ func TestE2E(t *testing.T) {
 		if suiteConfig.Timeout <= 0 {
 			suiteConfig.Timeout = suiteLevelTimeout
 		}
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("E2E_NFS_E2E")), "true") &&
+			suiteConfig.Timeout > 20*time.Minute {
+			suiteConfig.Timeout = 20 * time.Minute
+		}
 
 		// Restrict to the default execution profile unless the caller has
 		// already narrowed or broadened the label expression.
 		// E2E_LABEL_FILTER env var allows overriding the label filter from
 		// outside — used by make test-e2e-bench to exclude cluster-required
 		// in-process tests (E9, E28) that would panic without a Kind cluster.
-		if strings.TrimSpace(suiteConfig.LabelFilter) == "" {
+		if !suiteConfig.DryRun && strings.TrimSpace(suiteConfig.LabelFilter) == "" {
 			if envFilter := os.Getenv("E2E_LABEL_FILTER"); envFilter != "" {
 				suiteConfig.LabelFilter = envFilter
 			} else {

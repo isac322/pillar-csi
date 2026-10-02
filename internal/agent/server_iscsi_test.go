@@ -37,6 +37,72 @@ const (
 	testVolumeIQN    = "iqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-abc"
 	testInitiatorIQN = "iqn.2026-01.com.bhyoo.pillar-csi:node.0123456789abcdef0123456789abcdef"
 )
+const (
+	testMixedZVOLDevicePath    = "/dev/zvol/tank/pvc-abc"
+	testMixedDatasetDevicePath = "/var/lib/pillar-csi/datasets/tank/pvc-abc"
+)
+
+type typedMockBackend struct {
+	*mockBackend
+	backendType agentv1.BackendType
+}
+
+func (m *typedMockBackend) Type() agentv1.BackendType {
+	return m.backendType
+}
+
+func newMixedISCSIServer(t *testing.T) iscsiEnv {
+	t.Helper()
+	return newMixedISCSIServerWithPaths(t, testMixedZVOLDevicePath, testMixedDatasetDevicePath)
+}
+
+func newMixedISCSIServerWithPaths(t *testing.T, zvolPath, datasetPath string) iscsiEnv {
+	t.Helper()
+	return newMixedISCSIServerWithPathsAndType(
+		t,
+		agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		zvolPath,
+		datasetPath,
+	)
+}
+
+func newMixedISCSIServerWithPathsAndType(
+	t *testing.T,
+	zvolType agentv1.BackendType,
+	zvolPath, datasetPath string,
+) iscsiEnv {
+	t.Helper()
+	root := t.TempDir()
+	k, err := liotest.New(root)
+	if err != nil {
+		t.Fatalf("liotest.New: %v", err)
+	}
+	zvol := &typedMockBackend{
+		mockBackend: &mockBackend{devicePathResult: zvolPath},
+		backendType: zvolType,
+	}
+	dataset := &typedMockBackend{
+		mockBackend: &mockBackend{devicePathResult: datasetPath},
+		backendType: agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET,
+	}
+	// Make the dataset the pool's default backend deliberately.  iSCSI local
+	// attach must still select the zvol variant by type.
+	backends := map[string]backend.VolumeBackend{testPool: dataset}
+	variants := map[string]map[agentv1.BackendType]backend.VolumeBackend{
+		testPool: {
+			agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET: dataset,
+			agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL:    zvol,
+		},
+	}
+	opts := []agent.ServerOption{
+		agent.WithDrainStateDir(t.TempDir()),
+		agent.WithLIOFS(k),
+		agent.WithDeviceClaimer(k.Claimer()),
+		agent.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
+		agent.WithBackendVariants(variants),
+	}
+	return iscsiEnv{srv: agent.NewServer(backends, root, opts...), k: k, root: root}
+}
 
 type iscsiEnv struct {
 	srv  *agent.Server
@@ -230,6 +296,74 @@ func TestISCSI_SetLocalAttachToggle(t *testing.T) {
 	}
 }
 
+// A mixed ZFS pool may default to its dataset backend, but iSCSI local
+// attach always resolves the zvol variant when no backstore records a path.
+func TestISCSI_SetLocalAttachMixedPoolSelectsZVOLDevicePath(t *testing.T) {
+	t.Parallel()
+	env := newMixedISCSIServer(t)
+	exportISCSI(t, env.srv, false)
+
+	resp, err := iscsiSetLocalAttach(t, env.srv, true)
+	if err != nil || resp.GetDevicePath() != testDevicePath {
+		t.Fatalf("initial SetLocalAttach(true) = %v, %v; want %s", resp, err, testDevicePath)
+	}
+
+	// The export is already locally attached, so EnterLocalAttach returns no
+	// backstore path and the private resolver must select the zvol backend.
+	resp, err = iscsiSetLocalAttach(t, env.srv, true)
+	if err != nil || resp.GetDevicePath() != testMixedZVOLDevicePath {
+		t.Fatalf("retry SetLocalAttach(true) = %v, %v; want %s", resp, err, testMixedZVOLDevicePath)
+	}
+	if env.k.Exists(env.lun0()) {
+		t.Fatal("lun_0 present after repeated SetLocalAttach(true)")
+	}
+
+	resp, err = iscsiSetLocalAttach(t, env.srv, false)
+	if err != nil || resp.GetDevicePath() != "" {
+		t.Fatalf("SetLocalAttach(false) = %v, %v; want empty device path", resp, err)
+	}
+	resp, err = iscsiSetLocalAttach(t, env.srv, true)
+	if err != nil || resp.GetDevicePath() != testMixedZVOLDevicePath {
+		t.Fatalf("post-reenable SetLocalAttach(true) = %v, %v; want %s", resp, err, testMixedZVOLDevicePath)
+	}
+	if resp.GetDevicePath() == testMixedDatasetDevicePath {
+		t.Fatal("iSCSI local attach selected the dataset device path")
+	}
+}
+
+func TestISCSI_SetLocalAttachMixedPoolRejectsWrongTypedZVOL(t *testing.T) {
+	t.Parallel()
+	env := newMixedISCSIServerWithPathsAndType(
+		t,
+		agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET,
+		testMixedZVOLDevicePath,
+		testMixedDatasetDevicePath,
+	)
+	exportISCSI(t, env.srv, false)
+
+	_, err := iscsiSetLocalAttach(t, env.srv, false)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("SetLocalAttach(false) = %v, want InvalidArgument for wrong typed zvol lookup", err)
+	}
+	if !env.k.Exists(env.lun0()) {
+		t.Fatal("typed backend rejection changed the existing LUN state")
+	}
+}
+
+func TestISCSI_SetLocalAttachMixedPoolRejectsEmptyZVOLDevicePath(t *testing.T) {
+	t.Parallel()
+	env := newMixedISCSIServerWithPaths(t, "", testMixedDatasetDevicePath)
+	exportISCSI(t, env.srv, false)
+
+	_, err := iscsiSetLocalAttach(t, env.srv, false)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("SetLocalAttach(false) = %v, want FailedPrecondition for empty zvol path", err)
+	}
+	if !env.k.Exists(env.lun0()) {
+		t.Fatal("empty zvol path rejection changed the existing LUN state")
+	}
+}
+
 func TestISCSI_SetLocalAttachMissingExport(t *testing.T) {
 	t.Parallel()
 	env := newISCSIServer(t)
@@ -241,9 +375,10 @@ func TestISCSI_SetLocalAttachMissingExport(t *testing.T) {
 
 func iscsiDesired(allowed ...string) *agentv1.VolumeDesiredState {
 	return &agentv1.VolumeDesiredState{
-		VolumeId:   testVolumeID,
-		DevicePath: "/dev/zvol/" + testVolumeID,
-		Fence:      &agentv1.FencingToken{VolumeUid: testVolumeID, Generation: 1},
+		VolumeId:    testVolumeID,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		DevicePath:  "/dev/zvol/" + testVolumeID,
+		Fence:       &agentv1.FencingToken{VolumeUid: testVolumeID, Generation: 1},
 		Exports: []*agentv1.ExportDesiredState{{
 			ProtocolType:      agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
 			ExportParams:      iscsiExportParams("10.0.0.1", 3260),

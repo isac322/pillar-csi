@@ -36,6 +36,9 @@ const (
 
 	// ProtocolISCSI identifies the iSCSI (TCP) transport protocol.
 	ProtocolISCSI = "iscsi"
+
+	// ProtocolNFS identifies the NFSv4 client protocol.
+	ProtocolNFS = "nfs"
 )
 
 // CSI access-type string constants persisted in nodeStageState.AccessType so
@@ -61,17 +64,16 @@ const (
 // approach) so that each storage protocol can store its own typed teardown
 // parameters without sharing a generic map.
 //
-// The sub-struct matching the ProtocolType tag is non-nil (NVMe-oF TCP and
-// iSCSI are the implemented protocols).  This ensures that the fields required by each
-// protocol's Detach() implementation are present and type-checked at compile
-// time rather than discovered at runtime as missing map keys.
+// The sub-struct matching the ProtocolType tag is non-nil (NVMe-oF TCP, iSCSI,
+// and NFS). This ensures that the fields required by each protocol's Detach()
+// implementation are present and type-checked at compile time rather than
+// discovered at runtime as missing map keys.
 //
 // Legacy format (before discriminated union): {"subsys_nqn": "nqn.…"}
 // New format: {"protocol_type":"nvmeof-tcp","nvmeof":{"subsys_nqn":"nqn.…",…}}
 // readStageState performs in-place migration from the old format.
 type nodeStageState struct {
-	// ProtocolType identifies which typed sub-struct is populated.
-	// Known values: "nvmeof-tcp", "iscsi".
+	// Known values: "nvmeof-tcp", "iscsi", "nfs".
 	ProtocolType string `json:"protocol_type"`
 
 	// AccessType records whether NodeStageVolume staged the volume in
@@ -97,6 +99,10 @@ type nodeStageState struct {
 	// ISCSI holds iSCSI teardown state.  Non-nil when ProtocolType == "iscsi"
 	// and the volume was staged through the protocol handler.
 	ISCSI *ISCSIStageState `json:"iscsi,omitempty"`
+
+	// NFS holds the exact mount source needed to validate idempotent restage and
+	// to type-check teardown after a process restart.
+	NFS *NFSStageState `json:"nfs,omitempty"`
 
 	// AttachMode records how NodeStageVolume attached the device:
 	// AttachModeLocal for a direct attach on the storage node, empty for a
@@ -225,6 +231,15 @@ type ISCSIStageState struct {
 	// node records, the stage state file is therefore written mode 0600
 	// in a 0700 directory (see writeStageState); never log it.
 	CHAP *ISCSIStageCHAP `json:"chap,omitempty"`
+}
+
+// NFSStageState holds the durable NFS mount identity.
+type NFSStageState struct {
+	Address     string `json:"address"`
+	ExportPath  string `json:"export_path"`
+	Port        string `json:"port"`
+	Version     string `json:"version"`
+	MountSource string `json:"mount_source"`
 }
 
 // ISCSIStageCHAP is the persisted form of iscsi.CHAPCredentials.
@@ -358,6 +373,14 @@ func (s *nodeStageState) ToProtocolState() (ProtocolState, error) {
 			LoginTimeout: time.Duration(s.ISCSI.LoginTimeoutSeconds) * time.Second,
 			CHAP:         s.ISCSI.CHAP.credentials(),
 		}, nil
+	case ProtocolNFS:
+		if s.NFS == nil {
+			return nil, fmt.Errorf("NFS stage state sub-struct is nil")
+		}
+		return &NFSProtocolState{
+			Address: s.NFS.Address, ExportPath: s.NFS.ExportPath,
+			Port: s.NFS.Port, Version: s.NFS.Version, MountSource: s.NFS.MountSource,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unrecognized protocol type %q in persisted stage state", s.ProtocolType)
 	}
@@ -380,49 +403,77 @@ func (s *nodeStageState) ToProtocolState() (ProtocolState, error) {
 //     the result carries a concrete *NVMeoFProtocolState.
 //   - "iscsi": uses targetID (IQN), address, port from VolumeContext and
 //     LUN 0; the *ISCSIProtocolState from attachResult.State wins when present.
-//   - Other protocols: only ProtocolType is set (none is implemented).
+//   - "nfs": uses the typed NFSProtocolState from AttachResult.State so the
+//     exact mount source survives a process restart.
 func stageStateFromAttachResult(
 	protocolType, accessType, targetID, address, port string,
 	attachResult *AttachResult,
 ) *nodeStageState {
 	s := &nodeStageState{ProtocolType: protocolType, AccessType: accessType}
-
-	// NVMe-oF TCP: prefer state from AttachResult if it carries a concrete
-	// NVMeoFProtocolState; fall back to VolumeContext fields for the legacy path.
-	if protocolType == ProtocolNVMeoFTCP {
-		subsysNQN := targetID
-		trAddr := address
-		trSvcID := port
-		if attachResult != nil {
-			if nvmeState, ok := attachResult.State.(*NVMeoFProtocolState); ok && nvmeState != nil {
-				subsysNQN = nvmeState.SubsysNQN
-				trAddr = nvmeState.Address
-				trSvcID = nvmeState.Port
-			}
-		}
-		s.NVMeoF = &NVMeoFStageState{
-			SubsysNQN: subsysNQN,
-			Address:   trAddr,
-			Port:      trSvcID,
-		}
+	switch protocolType {
+	case ProtocolNVMeoFTCP:
+		s.NVMeoF = nvmeofStageState(targetID, address, port, attachResult)
+	case ProtocolISCSI:
+		s.ISCSI = iscsiStageState(targetID, address, port, attachResult)
+	case ProtocolNFS:
+		s.NFS = nfsStageState(targetID, address, port, attachResult)
 	}
-
-	if protocolType == ProtocolISCSI {
-		st := &ISCSIStageState{TargetIQN: targetID, Address: address, Port: port}
-		if attachResult != nil {
-			if iscsiState, ok := attachResult.State.(*ISCSIProtocolState); ok && iscsiState != nil {
-				st = &ISCSIStageState{
-					TargetIQN:           iscsiState.TargetIQN,
-					Address:             iscsiState.Address,
-					Port:                iscsiState.Port,
-					LUN:                 iscsiState.LUN,
-					LoginTimeoutSeconds: int(iscsiState.LoginTimeout / time.Second),
-					CHAP:                iscsiStageCHAP(iscsiState.CHAP),
-				}
-			}
-		}
-		s.ISCSI = st
-	}
-
 	return s
+}
+
+func nvmeofStageState(targetID, address, port string, attachResult *AttachResult) *NVMeoFStageState {
+	state := &NVMeoFStageState{SubsysNQN: targetID, Address: address, Port: port}
+	if attachResult == nil {
+		return state
+	}
+	nvmeState, ok := attachResult.State.(*NVMeoFProtocolState)
+	if !ok || nvmeState == nil {
+		return state
+	}
+	state.SubsysNQN = nvmeState.SubsysNQN
+	state.Address = nvmeState.Address
+	state.Port = nvmeState.Port
+	return state
+}
+
+func iscsiStageState(targetID, address, port string, attachResult *AttachResult) *ISCSIStageState {
+	state := &ISCSIStageState{TargetIQN: targetID, Address: address, Port: port}
+	if attachResult == nil {
+		return state
+	}
+	iscsiState, ok := attachResult.State.(*ISCSIProtocolState)
+	if !ok || iscsiState == nil {
+		return state
+	}
+	return &ISCSIStageState{
+		TargetIQN:           iscsiState.TargetIQN,
+		Address:             iscsiState.Address,
+		Port:                iscsiState.Port,
+		LUN:                 iscsiState.LUN,
+		LoginTimeoutSeconds: int(iscsiState.LoginTimeout / time.Second),
+		CHAP:                iscsiStageCHAP(iscsiState.CHAP),
+	}
+}
+
+func nfsStageState(targetID, address, port string, attachResult *AttachResult) *NFSStageState {
+	if attachResult != nil {
+		nfsState, ok := attachResult.State.(*NFSProtocolState)
+		if ok && nfsState != nil {
+			return &NFSStageState{
+				Address: nfsState.Address, ExportPath: nfsState.ExportPath,
+				Port: nfsState.Port, Version: nfsState.Version,
+				MountSource: nfsState.MountSource,
+			}
+		}
+		if attachResult.MountSource != "" {
+			return &NFSStageState{
+				Address: address, Port: port, Version: defaultNFSVersion,
+				MountSource: attachResult.MountSource,
+			}
+		}
+	}
+	return &NFSStageState{
+		Address: address, Port: port, Version: defaultNFSVersion,
+		MountSource: address + ":" + targetID,
+	}
 }

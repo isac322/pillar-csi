@@ -645,7 +645,7 @@ require_linux_storage_stack() {
       exit 1
     fi
   fi
-  for module in dm_mod loop nvme_fabrics nvme_tcp nvmet nvmet_tcp iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod; do
+  for module in dm_mod loop nvme_fabrics nvme_tcp nvmet nvmet_tcp iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod nfsd; do
     if ! error=$(modprobe "${module}" 2>&1); then
       missing+=("${module}")
       printf 'failed to load required kernel module %s: %s\n' "${module}" "${error:-modprobe exited nonzero}" >&2
@@ -654,9 +654,9 @@ require_linux_storage_stack() {
   if (( ${#missing[@]} > 0 )); then
     printf 'required kernel modules are unavailable: %s\n' "${missing[*]}" >&2
     printf '%s\n' \
-      'Run this harness on a Linux host or Linux VM whose kernel includes device-mapper, loop, NVMe initiator/target, and iSCSI initiator/LIO target support.' \
+      'Run this harness on a Linux host or Linux VM whose kernel includes device-mapper, loop, NVMe initiator/target, iSCSI LIO target, and NFS server support.' \
       'Ubuntu/Debian commonly requires: sudo apt-get install linux-modules-extra-$(uname -r)' \
-      'Then load: sudo modprobe dm_mod loop nvmet nvmet-tcp nvme-fabrics nvme-tcp iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod' >&2
+      'Then load: sudo modprobe dm_mod loop nvmet nvmet-tcp nvme-fabrics nvme-tcp iscsi_tcp target_core_mod target_core_iblock iscsi_target_mod nfsd' >&2
     exit 1
   fi
   if ! mountpoint -q /sys/kernel/config; then

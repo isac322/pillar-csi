@@ -87,6 +87,18 @@ func exportSpecFor(params *agentv1.ExportParams, aclEnabled bool) *v1alpha1.Volu
 	case params.GetIscsi() != nil:
 		p := params.GetIscsi()
 		return &v1alpha1.VolumeExportSpec{BindAddress: p.GetBindAddress(), Port: p.GetPort(), ACLEnabled: aclEnabled}
+	case params.GetNfs() != nil:
+		p := params.GetNfs()
+		return &v1alpha1.VolumeExportSpec{
+			BindAddress: p.GetBindAddress(),
+			Port:        2049,
+			ACLEnabled:  aclEnabled,
+			NFS: &v1alpha1.NFSExportSpec{
+				Version:  p.GetVersion(),
+				Squash:   v1alpha1.NFSSquash(p.GetSquash()),
+				Readonly: p.GetReadonly(),
+			},
+		}
 	default:
 		return nil
 	}
@@ -118,6 +130,27 @@ func exportParamsFor(protocol agentv1.ProtocolType, spec *v1alpha1.VolumeExportS
 			Iscsi: &agentv1.IscsiExportParams{
 				BindAddress: spec.BindAddress,
 				Port:        spec.Port,
+			},
+		}}
+	case agentv1.ProtocolType_PROTOCOL_TYPE_NFS:
+		nfs := spec.NFS
+		version, squash := "4.2", v1alpha1.NFSSquashRoot
+		readonly := false
+		if nfs != nil {
+			if nfs.Version != "" {
+				version = nfs.Version
+			}
+			if nfs.Squash != "" {
+				squash = nfs.Squash
+			}
+			readonly = nfs.Readonly
+		}
+		return &agentv1.ExportParams{Params: &agentv1.ExportParams_Nfs{
+			Nfs: &agentv1.NfsExportParams{
+				Version:     version,
+				BindAddress: spec.BindAddress,
+				Squash:      string(squash),
+				Readonly:    readonly,
 			},
 		}}
 	default:

@@ -20,11 +20,21 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/agent"
+	"github.com/isac322/pillar-csi/internal/agent/backend"
+	"github.com/isac322/pillar-csi/internal/agent/backend/zfs"
+	"github.com/isac322/pillar-csi/internal/agent/lio"
+	"github.com/isac322/pillar-csi/internal/agent/lio/liotest"
+	"github.com/isac322/pillar-csi/internal/agent/nfs"
+	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 )
 
 // testDevicePath is the block-device path used in ReconcileState tests.
@@ -53,10 +63,11 @@ func reconcileOne(t *testing.T, srv *agent.Server, devicePath string, export *ag
 	t.Helper()
 	resp, err := srv.ReconcileState(context.Background(), &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{{
-			VolumeId:   testVolumeID,
-			DevicePath: devicePath,
-			Exports:    []*agentv1.ExportDesiredState{export},
-			Fence:      testFence(t),
+			VolumeId:    testVolumeID,
+			BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+			DevicePath:  devicePath,
+			Exports:     []*agentv1.ExportDesiredState{export},
+			Fence:       testFence(t),
 		}},
 	})
 	if err != nil {
@@ -109,9 +120,10 @@ func TestReconcileState_NvmeofExportCreatesConfigfs(t *testing.T) {
 	resp, err := srv.ReconcileState(context.Background(), &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
-				VolumeId:   testVolumeID,
-				Fence:      testFence(t),
-				DevicePath: testDevicePath,
+				VolumeId:    testVolumeID,
+				BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+				Fence:       testFence(t),
+				DevicePath:  testDevicePath,
 				Exports: []*agentv1.ExportDesiredState{
 					nvmeofExportState("192.168.1.10"),
 				},
@@ -146,12 +158,13 @@ func TestReconcileState_UnsupportedProtocolReported(t *testing.T) {
 	resp, err := srv.ReconcileState(context.Background(), &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
-				VolumeId:   testVolumeID,
-				Fence:      testFence(t),
-				DevicePath: testDevicePath,
+				VolumeId:    testVolumeID,
+				BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+				Fence:       testFence(t),
+				DevicePath:  testDevicePath,
 				Exports: []*agentv1.ExportDesiredState{
 					{
-						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
+						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_SMB,
 						ExportParams: &agentv1.ExportParams{},
 					},
 				},
@@ -169,7 +182,7 @@ func TestReconcileState_UnsupportedProtocolReported(t *testing.T) {
 	}
 	if !strings.Contains(
 		resp.GetResults()[0].GetErrorMessage(),
-		"protocol PROTOCOL_TYPE_NFS is not supported by this agent",
+		"protocol PROTOCOL_TYPE_SMB is not supported by this agent",
 	) {
 		t.Errorf("ErrorMessage = %q, want unsupported protocol detail", resp.GetResults()[0].GetErrorMessage())
 	}
@@ -182,9 +195,10 @@ func TestReconcileState_Idempotent(t *testing.T) {
 	req := &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
-				VolumeId:   testVolumeID,
-				Fence:      testFence(t),
-				DevicePath: testDevicePath,
+				VolumeId:    testVolumeID,
+				BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+				Fence:       testFence(t),
+				DevicePath:  testDevicePath,
 				Exports: []*agentv1.ExportDesiredState{
 					nvmeofExportState("10.0.0.1"),
 				},
@@ -219,9 +233,10 @@ func TestReconcileState_WithAllowedInitiators(t *testing.T) {
 	resp, err := srv.ReconcileState(context.Background(), &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
-				VolumeId:   testVolumeID,
-				Fence:      testFence(t),
-				DevicePath: testDevicePath,
+				VolumeId:    testVolumeID,
+				BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+				Fence:       testFence(t),
+				DevicePath:  testDevicePath,
 				Exports: []*agentv1.ExportDesiredState{
 					nvmeofACLExportState(hostNQN),
 				},
@@ -255,18 +270,20 @@ func TestReconcileState_MultipleVolumes(t *testing.T) {
 	resp, err := srv.ReconcileState(context.Background(), &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
-				VolumeId:   testVolumeID,
-				Fence:      testFence(t),
-				DevicePath: testDevicePath,
+				VolumeId:    testVolumeID,
+				BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+				Fence:       testFence(t),
+				DevicePath:  testDevicePath,
 				Exports: []*agentv1.ExportDesiredState{
 					nvmeofExportState("10.0.0.1"),
 				},
 			},
 			{
-				VolumeId:   secondVolumeID,
-				Fence:      testFence(t),
-				DevicePath: "/dev/zvol/tank/pvc-def",
-				Exports:    []*agentv1.ExportDesiredState{},
+				VolumeId:    secondVolumeID,
+				BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+				Fence:       testFence(t),
+				DevicePath:  "/dev/zvol/tank/pvc-def",
+				Exports:     []*agentv1.ExportDesiredState{},
 			},
 		},
 	})
@@ -401,5 +418,244 @@ func TestReconcileState_DerivesDevicePathFromBackend(t *testing.T) {
 	raw, err := os.ReadFile(ns) //nolint:gosec // G304: test reads a file under t.TempDir().
 	if err != nil || strings.TrimSpace(string(raw)) != backendPath {
 		t.Errorf("namespace device_path = %q (err %v), want %q", raw, err, backendPath)
+	}
+}
+
+type mixedPoolReconcileEnv struct {
+	srv     *agent.Server
+	kernel  *liotest.Kernel
+	root    string
+	manager *nfs.Manager
+}
+
+func newMixedPoolReconcileEnv(t *testing.T, stateDir, datasetRoot string, datasetDefault bool) mixedPoolReconcileEnv {
+	t.Helper()
+	root := t.TempDir()
+	kernel, err := liotest.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probeErr := os.MkdirAll(filepath.Join(datasetRoot, "tank", "files"), 0o700); probeErr != nil {
+		t.Fatal(probeErr)
+	}
+	manager, err := nfs.NewManager(nfs.Config{
+		StateDir: filepath.Join(stateDir, "nfs"), ExportRoot: datasetRoot, BindAddress: "192.0.2.10",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeErr := manager.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	})
+	zvol := zfs.New("tank", "blocks")
+	dataset := zfs.NewDataset("tank", "files", datasetRoot)
+	var defaultBackend backend.VolumeBackend = zvol
+	if datasetDefault {
+		defaultBackend = dataset
+	}
+	srv := agent.NewServer(map[string]backend.VolumeBackend{"tank": defaultBackend}, root,
+		agent.WithBackendVariants(map[string]map[agentv1.BackendType]backend.VolumeBackend{
+			"tank": {
+				agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL:    zvol,
+				agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET: dataset,
+			},
+		}),
+		agent.WithNFSManager(manager),
+		agent.WithLIOFS(kernel),
+		agent.WithDeviceChecker(nvmeof.AlwaysPresentChecker),
+		agent.WithDeviceClaimer(kernel.Claimer()),
+		agent.WithDrainStateDir(stateDir),
+		agent.WithExportRestoreGate(),
+	)
+	return mixedPoolReconcileEnv{srv: srv, kernel: kernel, root: root, manager: manager}
+}
+
+func mixedPoolDesired(generation uint64, nvmeHost, iscsiHost string) []*agentv1.VolumeDesiredState {
+	nvme := nvmeofACLExportState(nvmeHost)
+	iscsi := &agentv1.ExportDesiredState{
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI,
+		ExportParams: iscsiExportParams("192.0.2.10", 3260),
+		AclEnabled:   true, AllowedInitiators: []string{iscsiHost},
+	}
+	file := &agentv1.ExportDesiredState{
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
+		ExportParams: &agentv1.ExportParams{Params: &agentv1.ExportParams_Nfs{Nfs: &agentv1.NfsExportParams{
+			Version: "4.2", BindAddress: "192.0.2.10", Squash: "root",
+		}}},
+		AclEnabled: true, AllowedInitiators: []string{"192.0.2.20"},
+	}
+	return []*agentv1.VolumeDesiredState{
+		{
+			VolumeId: "tank/pvc-nvme", BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+			Fence:   &agentv1.FencingToken{VolumeUid: "nvme-owner", Generation: generation},
+			Exports: []*agentv1.ExportDesiredState{nvme},
+		},
+		{
+			VolumeId: "tank/pvc-iscsi", BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+			Fence:   &agentv1.FencingToken{VolumeUid: "iscsi-owner", Generation: generation},
+			Exports: []*agentv1.ExportDesiredState{iscsi},
+		},
+		{
+			VolumeId: "tank/pvc-nfs", BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET,
+			Fence:   &agentv1.FencingToken{VolumeUid: "nfs-owner", Generation: generation},
+			Exports: []*agentv1.ExportDesiredState{file},
+		},
+	}
+}
+
+func assertMixedPoolBlockExports(t *testing.T, env mixedPoolReconcileEnv, nvmeHost, iscsiHost string) {
+	t.Helper()
+	nvmeExports, err := nvmeof.ListExports(env.root)
+	if err != nil || len(nvmeExports) != 1 {
+		t.Fatalf("NVMe exports = %v, %v; want one restored subsystem", nvmeExports, err)
+	}
+	if got := nvmeExports[0].NamespaceDevicePaths[1]; got != "/dev/zvol/tank/blocks/pvc-nvme" {
+		t.Fatalf("NVMe namespace path = %q; want the zvol in the block layout", got)
+	}
+	if !slices.Equal(nvmeExports[0].AllowedHosts, []string{nvmeHost}) {
+		t.Fatalf("NVMe admission = %v; want [%s]", nvmeExports[0].AllowedHosts, nvmeHost)
+	}
+	if got := readAllowAnyHost(t, env.root, nvmeExports[0].NQN); got != "0" {
+		t.Fatalf("NVMe allow_any_host = %q; want closed ACL", got)
+	}
+	iscsiExports, err := lio.ListTargets(env.kernel, env.root)
+	if err != nil || len(iscsiExports) != 1 {
+		t.Fatalf("iSCSI exports = %v, %v; want one restored target", iscsiExports, err)
+	}
+	if got := iscsiExports[0].DevicePath; got != "/dev/zvol/tank/blocks/pvc-iscsi" {
+		t.Fatalf("iSCSI LUN path = %q; want the zvol in the block layout", got)
+	}
+	target := &lio.Target{ConfigfsRoot: env.root, FS: env.kernel, IQN: iscsiExports[0].IQN}
+	initiators, err := target.Initiators()
+	if err != nil || !slices.Equal(initiators, []string{iscsiHost}) {
+		t.Fatalf("iSCSI admission = %v, %v; want [%s]", initiators, err, iscsiHost)
+	}
+}
+
+// The real backend path resolvers and built-in protocol handlers must work
+// regardless of which same-pool backend is registered as the default. The NFS
+// directory is deliberately absent: that export must fail path validation, not
+// ambiguous backend lookup, and must not suppress either block export.
+func reconcileMixedPool(
+	t *testing.T,
+	env mixedPoolReconcileEnv,
+	datasetRoot string,
+	complete bool,
+	vols []*agentv1.VolumeDesiredState,
+) {
+	t.Helper()
+	resp, err := env.srv.ReconcileState(t.Context(), &agentv1.ReconcileStateRequest{Complete: complete, Volumes: vols})
+	if err != nil || len(resp.GetResults()) != 3 {
+		t.Fatalf("mixed-pool reconcile = %v, %v; want three item results", resp, err)
+	}
+	for i, result := range resp.GetResults() {
+		if result.GetVolumeId() != vols[i].GetVolumeId() {
+			t.Fatalf("result %d volume = %q; want %q", i, result.GetVolumeId(), vols[i].GetVolumeId())
+		}
+		if i < 2 && !result.GetSuccess() {
+			t.Fatalf("block export %s failed: %s", result.GetVolumeId(), result.GetErrorMessage())
+		}
+		if vols[i].GetDevicePath() != "" {
+			t.Fatalf("reconcile mutated caller device path for %s", vols[i].GetVolumeId())
+		}
+	}
+	fileResult := resp.GetResults()[2]
+	wantPath := filepath.Join(datasetRoot, "tank", "files", "pvc-nfs")
+	if fileResult.GetSuccess() || !strings.Contains(fileResult.GetErrorMessage(), "resolve NFS export path") ||
+		!strings.Contains(fileResult.GetErrorMessage(), wantPath) {
+		t.Fatalf("NFS result = %v; want missing dataset path %q rejection", fileResult, wantPath)
+	}
+	healthErr := env.manager.Health()
+	if healthErr == nil {
+		t.Fatal("missing dataset export was reported healthy")
+	}
+	clientPath, err := env.manager.ExportPath(wantPath)
+	if err != nil || clientPath != "/tank/files/pvc-nfs" {
+		t.Fatalf("NFS client path = %q, %v; want dataset child path", clientPath, err)
+	}
+}
+
+func TestReconcileState_MixedPoolTypedPathsRestore(t *testing.T) {
+	t.Parallel()
+	for _, datasetDefault := range []bool{false, true} {
+		name := "zvol-default"
+		if datasetDefault {
+			name = "dataset-default"
+		}
+		t.Run(name, func(t *testing.T) {
+			stateDir, datasetRoot := t.TempDir(), filepath.Join(t.TempDir(), "datasets")
+			env := newMixedPoolReconcileEnv(t, stateDir, datasetRoot, datasetDefault)
+			vols := mixedPoolDesired(2, testHostNQN, testInitiatorIQN)
+			_, err := env.srv.ReconcileState(
+				t.Context(),
+				&agentv1.ReconcileStateRequest{Volumes: vols},
+			)
+			if status.Code(err) != codes.Unavailable {
+				t.Fatalf("partial restore before complete = %v; want Unavailable", err)
+			}
+			reconcileMixedPool(t, env, datasetRoot, true, vols)
+			assertMixedPoolBlockExports(t, env, testHostNQN, testInitiatorIQN)
+
+			const nextHost = "nqn.2026-01.com.bhyoo.pillar-csi:node.next"
+			const nextIQN = "iqn.2026-01.com.bhyoo.pillar-csi:node.next"
+			newer := mixedPoolDesired(3, nextHost, nextIQN)
+			reconcileMixedPool(t, env, datasetRoot, false, newer)
+			assertMixedPoolBlockExports(t, env, nextHost, nextIQN)
+
+			// A reboot loses configfs but keeps the durable fencing directory.
+			restarted := newMixedPoolReconcileEnv(t, stateDir, datasetRoot, datasetDefault)
+			reconcileMixedPool(t, restarted, datasetRoot, true, newer)
+			assertMixedPoolBlockExports(t, restarted, nextHost, nextIQN)
+			stale, err := restarted.srv.ReconcileState(t.Context(), &agentv1.ReconcileStateRequest{Volumes: vols[:2]})
+			if err != nil || len(stale.GetResults()) != 2 {
+				t.Fatalf("stale reconcile = %v, %v", stale, err)
+			}
+			for _, result := range stale.GetResults() {
+				if result.GetSuccess() || !strings.Contains(result.GetErrorMessage(), "stale fencing token") {
+					t.Fatalf("stale restore was not fenced: %v", result)
+				}
+			}
+			assertMixedPoolBlockExports(t, restarted, nextHost, nextIQN)
+		})
+	}
+}
+
+func TestReconcileState_MixedPoolPreservesExplicitNFSPathAndTypeGuard(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	env := newMixedPoolReconcileEnv(t, stateDir, filepath.Join(t.TempDir(), "datasets"), false)
+	for _, complete := range []bool{true, false} {
+		vol := mixedPoolDesired(1, testHostNQN, testInitiatorIQN)[2]
+		vol.DevicePath = "/"
+		resp, err := env.srv.ReconcileState(t.Context(), &agentv1.ReconcileStateRequest{
+			Complete: complete, Volumes: []*agentv1.VolumeDesiredState{vol},
+		})
+		if err != nil || len(resp.GetResults()) != 1 {
+			t.Fatalf("explicit NFS path reconcile = %v, %v", resp, err)
+		}
+		if result := resp.GetResults()[0]; result.GetSuccess() ||
+			!strings.Contains(result.GetErrorMessage(), `unsafe NFS export path "/"`) {
+			t.Fatalf("explicit unsafe path was replaced or accepted: %v", result)
+		}
+		if vol.GetDevicePath() != "/" {
+			t.Fatal("reconcile mutated caller's explicit path")
+		}
+		vol.BackendType = agentv1.BackendType_BACKEND_TYPE_LVM
+		vol.Fence.Generation = 2
+		resp, err = env.srv.ReconcileState(t.Context(), &agentv1.ReconcileStateRequest{
+			Complete: complete, Volumes: []*agentv1.VolumeDesiredState{vol},
+		})
+		if err != nil || len(resp.GetResults()) != 1 || resp.GetResults()[0].GetSuccess() ||
+			!strings.Contains(resp.GetResults()[0].GetErrorMessage(), "backend_type") {
+			t.Fatalf("explicit path bypassed backend-type guard: %v, %v", resp, err)
+		}
+	}
+	if err := env.manager.Health(); err == nil {
+		t.Fatal("refused NFS export was reported healthy")
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "nfs")); !os.IsNotExist(err) {
+		t.Fatalf("refused NFS export created runtime ownership/admission state: %v", err)
 	}
 }

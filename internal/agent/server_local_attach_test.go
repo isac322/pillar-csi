@@ -100,10 +100,11 @@ func reconcileLocal(t *testing.T, srv *agent.Server, local bool) *agentv1.Reconc
 	export.LocalAttach = local
 	resp, err := srv.ReconcileState(context.Background(), &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{{
-			VolumeId:   testVolumeID,
-			DevicePath: testDevicePath,
-			Exports:    []*agentv1.ExportDesiredState{export},
-			Fence:      testFence(t),
+			VolumeId:    testVolumeID,
+			BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+			DevicePath:  testDevicePath,
+			Exports:     []*agentv1.ExportDesiredState{export},
+			Fence:       testFence(t),
 		}},
 	})
 	if err != nil {
@@ -335,6 +336,7 @@ func TestExpandVolume_SkipsRevalidateWhileDisabled(t *testing.T) {
 
 	resp, err := env.srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       testVolumeID,
+		BackendType:    agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:          testFence(t),
 		RequestedBytes: 2 << 30,
 	})

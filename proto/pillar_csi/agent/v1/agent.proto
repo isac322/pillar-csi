@@ -439,6 +439,12 @@ message IscsiChap {
 message NfsExportParams {
   // NFS protocol version, e.g. "4.2".
   string version = 1;
+  // IP address on which the NFS server listens.
+  string bind_address = 2;
+  // Identity squashing policy: "root", "none", or "all".
+  string squash = 3;
+  // Whether every client is served read-only.
+  bool readonly = 4;
 }
 
 // SmbExportParams holds SMB/CIFS export configuration.

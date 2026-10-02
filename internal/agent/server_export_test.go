@@ -150,7 +150,7 @@ func TestExportVolume_WrongProtocol(t *testing.T) {
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     testVolumeID,
 		Fence:        testFence(t),
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_SMB,
 	})
 	if err == nil {
 		t.Fatal("expected error for unsupported protocol, got nil")
@@ -332,7 +332,7 @@ func TestUnexportVolume_WrongProtocol(t *testing.T) {
 	_, err := srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{
 		VolumeId:     testVolumeID,
 		Fence:        testFence(t),
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_SMB,
 	})
 	if err == nil {
 		t.Fatal("expected error for unsupported protocol, got nil")
@@ -420,7 +420,7 @@ func TestAllowInitiator_WrongProtocol(t *testing.T) {
 	_, err := srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 		VolumeId:     testVolumeID,
 		Fence:        testFence(t),
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_SMB,
 		InitiatorId:  "10.0.0.0/24",
 	})
 	if err == nil {

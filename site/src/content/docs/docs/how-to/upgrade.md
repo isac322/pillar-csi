@@ -52,7 +52,7 @@ Load the modules on the hosts before you create an iSCSI `PillarProtocol`; see [
 | Hand-written StorageClass | flat keys such as `zfs-prop.*`, `lvm-*`, `nvmeof-*`, `acl-enabled`, `backend-type` | `pillar-csi.bhyoo.com/store-ref`, `/protocol-ref` and the same three documents; the old keys are rejected |
 | Helm `agent.backends` | `{type: zfs-zvol, pool, parent}`, `{type: lvm-lv, vg, thinpool}` | `{zfs: {pool, parentDataset}}`, `{lvm: {volumeGroup, thinPool}}`, rendered into the agent's `--config` file |
 | `pillar-agent` flags | `--backend` | `--config`; `--backend` is gone. Default listen port `9500` |
-| Served schema | schema-only placeholders for iSCSI, NFS, SMB, `zfs-dataset` and `dir`, never implemented | placeholders removed; the 0.3 schema accepts only `zfs`, `lvm` and `nvmeofTcp`. A later release adds `iscsi` (see [Upgrade to a release with iSCSI](#upgrade-to-a-release-with-iscsi)); NFS and SMB remain planned |
+| Served schema | schema-only placeholders for iSCSI, NFS, SMB, `zfs-dataset` and `dir`, never implemented | Historical 0.3 schema accepted only `zfs`, `lvm` and `nvmeofTcp`; later releases added iSCSI and now add NFSv4.2 with `zfs.volumeType: dataset`. SMB and `dir` remain unavailable |
 
 A 0.2 `PillarVolumeState` has `spec.nodeConnectParams`. 0.3 instead records the resolved configuration in `spec.resolved` at `CreateVolume`, and 0.2 StorageClasses carry the old parameters. No migration shim exists.
 

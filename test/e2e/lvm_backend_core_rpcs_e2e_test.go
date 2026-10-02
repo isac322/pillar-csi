@@ -273,7 +273,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				DeferCleanup(func() {
 					cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
-					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID, Fence: fence})
+					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{BackendType: agentv1.BackendType_BACKEND_TYPE_LVM, VolumeId: volumeID, Fence: fence})
 				})
 			})
 
@@ -306,7 +306,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				DeferCleanup(func() {
 					cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
-					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID, Fence: fence})
+					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{BackendType: agentv1.BackendType_BACKEND_TYPE_LVM, VolumeId: volumeID, Fence: fence})
 				})
 			})
 
@@ -335,12 +335,12 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				Expect(err).NotTo(HaveOccurred(), "[TC-E33.288] create LV for delete test")
 
 				// First delete.
-				_, err = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID, Fence: fence})
+				_, err = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{BackendType: agentv1.BackendType_BACKEND_TYPE_LVM, VolumeId: volumeID, Fence: fence})
 				Expect(err).NotTo(HaveOccurred(),
 					"[TC-E33.288] first DeleteVolume must succeed")
 
 				// Second delete (idempotent).
-				_, err = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID, Fence: fence})
+				_, err = agentClient.DeleteVolume(ctx, &agentv1.DeleteVolumeRequest{BackendType: agentv1.BackendType_BACKEND_TYPE_LVM, VolumeId: volumeID, Fence: fence})
 				Expect(err).NotTo(HaveOccurred(),
 					"[TC-E33.288] second DeleteVolume (idempotent) must succeed")
 			})
@@ -372,6 +372,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 
 				By("expanding to 64 MiB")
 				expandResp, err := agentClient.ExpandVolume(ctx, &agentv1.ExpandVolumeRequest{
+					BackendType:    agentv1.BackendType_BACKEND_TYPE_LVM,
 					VolumeId:       volumeID,
 					Fence:          fence,
 					RequestedBytes: 64 * 1024 * 1024,
@@ -384,7 +385,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				DeferCleanup(func() {
 					cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
-					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID, Fence: fence})
+					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{BackendType: agentv1.BackendType_BACKEND_TYPE_LVM, VolumeId: volumeID, Fence: fence})
 				})
 			})
 
@@ -416,7 +417,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				DeferCleanup(func() {
 					cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
-					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID, Fence: fence})
+					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{BackendType: agentv1.BackendType_BACKEND_TYPE_LVM, VolumeId: volumeID, Fence: fence})
 				})
 
 				By("listing volumes")
@@ -475,7 +476,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				DeferCleanup(func() {
 					cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
-					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID, Fence: fence})
+					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{BackendType: agentv1.BackendType_BACKEND_TYPE_LVM, VolumeId: volumeID, Fence: fence})
 				})
 			})
 
@@ -516,7 +517,7 @@ var _ = Describe("E33: LVM Kind 클러스터 E2E — 실제 LVM VG + NVMe-oF TCP
 				DeferCleanup(func() {
 					cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
-					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{VolumeId: volumeID, Fence: fence})
+					_, _ = agentClient.DeleteVolume(cleanCtx, &agentv1.DeleteVolumeRequest{BackendType: agentv1.BackendType_BACKEND_TYPE_LVM, VolumeId: volumeID, Fence: fence})
 				})
 			})
 

@@ -118,7 +118,8 @@ type PartialFailureInfo struct {
 // agent's ExportVolume RPC.  These values are stored durably so that
 // DeleteVolume can tear down the export after a controller restart.
 type VolumeExportInfo struct {
-	// targetID is the NVMe Qualified Name (NQN) of the NVMe-oF subsystem.
+	// targetID is the protocol-specific export identifier: NQN for NVMe-oF,
+	// IQN for iSCSI, or the server export path for NFS.
 	// +optional
 	TargetID string `json:"targetID,omitempty"`
 
@@ -127,14 +128,33 @@ type VolumeExportInfo struct {
 	// +optional
 	Address string `json:"address,omitempty"`
 
-	// port is the TCP port on which the NVMe-oF target listens.
+	// port is the TCP port on which the protocol target listens.
+	// NFS uses its fixed port 2049.
 	// +optional
 	Port int32 `json:"port,omitempty"`
 
-	// volumeRef is the protocol-level reference for this volume (the NVMe-oF
-	// subsystem name).
+	// volumeRef is the protocol-level reference for this volume.
 	// +optional
 	VolumeRef string `json:"volumeRef,omitempty"`
+}
+
+// NFSExportSpec is the protocol-specific durable desired state for an NFS
+// export.  BindAddress and Port remain on VolumeExportSpec because they are
+// common routing fields shared by every protocol.
+type NFSExportSpec struct {
+	// version is the NFS protocol version.
+	// +required
+	// +kubebuilder:validation:Enum="4.2"
+	Version string `json:"version"`
+
+	// squash is the NFS identity squashing policy.
+	// +required
+	// +kubebuilder:validation:Enum=root;none;all
+	Squash NFSSquash `json:"squash"`
+
+	// readonly makes the export read-only for every client.
+	// +required
+	Readonly bool `json:"readonly"`
 }
 
 // VolumeExportSpec is the export configuration requested from the agent at
@@ -173,6 +193,9 @@ type VolumeExportSpec struct {
 	// +optional
 	// +kubebuilder:validation:Enum=0;8192;16384;32768;65536;131072;262144;524288;1048576;2097152;4194304;8388608;16777216;33554432;67108864;134217728;268435456;536870912;1073741824
 	MaxDataTransferSize *int32 `json:"maxDataTransferSize,omitempty"`
+	// nfs contains the durable NFS-specific export configuration.
+	// +optional
+	NFS *NFSExportSpec `json:"nfs,omitempty"`
 }
 
 // VolumePublication records one node to which ControllerPublishVolume granted

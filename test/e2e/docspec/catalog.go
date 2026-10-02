@@ -25,6 +25,10 @@ type Case struct {
 	Symbol     string
 	Section    string
 	Subsection string
+	// Alias marks a documented row annotated as an existing/reference
+	// implementation. Alias rows remain in Cases for active-profile ID
+	// resolution but are excluded from the canonical inventory.
+	Alias bool
 	// SectionKey is the E/F-prefixed key extracted from the ## section heading
 	// (e.g. "E1", "E33", "F27").  It is used by GinkgoNodeID to produce
 	// normalised TC IDs for cluster-level sections whose table rows carry plain
@@ -37,16 +41,20 @@ type Case struct {
 // "E33" in "## E33: Kind+LVM NVMe-oF テスト".
 var sectionKeyRE = regexp.MustCompile(`^([EF]\d+)\b`)
 
+// qualifiedCaseIDRE accepts E/F/M IDs whose numeric segments may carry the
+// lowercase letter suffixes used by section-local catalog rows.
+var qualifiedCaseIDRE = regexp.MustCompile(`^[EFM]\d+(?:\.\d+[a-z]?)*(?:-\d+)?$`)
+
 // GinkgoNodeID returns the normalised TC ID that must appear inside the Ginkgo
 // It-node name as "[TC-<GinkgoNodeID>]".
 //
 // Rules:
 //   - If the row ID already starts with E or F it is used verbatim.
-//   - If the row ID is all-numeric (cluster / full-E2E table rows) and a
-//     SectionKey is available, the returned ID is "<SectionKey>.<ID>" so that
-//     the node name matches the format produced by tcNodeLabel() in the e2e
-//     package (e.g. the cluster-test row "285" under section "E33" becomes
-//     "E33.285").
+//   - If the row ID is section-local numeric or numeric-plus-letter (cluster /
+//     full-E2E table rows) and a SectionKey is available, the returned ID is
+//     "<SectionKey>.<ID>" so that the node name matches the format produced by
+//     tcNodeLabel in the e2e package (e.g. "285" becomes "E33.285" and
+//     "217a" becomes "E27.217a").
 //   - Otherwise the raw ID is returned unchanged.
 func (c Case) GinkgoNodeID() string {
 	if c.ID == "" {
@@ -56,7 +64,7 @@ func (c Case) GinkgoNodeID() string {
 	if first == 'E' || first == 'F' || first == 'M' {
 		return c.ID
 	}
-	if allDigits(c.ID) && c.SectionKey != "" {
+	if isSectionLocalID(c.ID) && c.SectionKey != "" {
 		return c.SectionKey + "." + c.ID
 	}
 	return c.ID
@@ -121,6 +129,15 @@ type Catalog struct {
 	Cases            []Case
 	CanonicalCases   []Case
 	DuplicateSymbols map[string][]Case
+	ScopeName        string
+	InventoryCount   int
+	ExcludedCount    int
+	// RegisteredUnique is the number of unique source-profile IDs requested by
+	// ScopeCatalog.
+	RegisteredUnique int
+	// UnresolvedIDs lists requested source-profile IDs absent from Cases after
+	// node-ID normalization.
+	UnresolvedIDs []string
 }
 
 // Binding records one code-level reference to a documented case.
@@ -175,7 +192,10 @@ func FindRepoRoot(start string) (string, error) {
 	}
 }
 
-// LoadCatalog parses docs/E2E-TESTCASES.md and returns the extracted catalog.
+// LoadCatalog parses case tables in docs/E2E-TESTCASES.md and returns the
+// extracted catalog.  Rows outside a table headed by "ID | 테스트 함수" are
+// explanatory/reference tables, even when their first two cells happen to
+// resemble a case row, and are intentionally ignored.
 //
 // The parser stops at the manual-only Type M section because the declared
 // total explicitly excludes those manual scenarios.
@@ -192,6 +212,7 @@ func LoadCatalog(repoRoot string) (Catalog, error) {
 		currentSection    string
 		currentSectionKey string
 		currentSubsection string
+		inCaseTable       bool
 		cases             []Case
 	)
 
@@ -209,6 +230,7 @@ func LoadCatalog(repoRoot string) (Catalog, error) {
 		case strings.HasPrefix(line, "## "):
 			currentSection = strings.TrimSpace(strings.TrimPrefix(line, "## "))
 			currentSubsection = ""
+			inCaseTable = false
 			// Extract the E/F-group key from the section heading, e.g. "E33"
 			// from "## E33: Kind+LVM NVMe-oF テスト".
 			if m := sectionKeyRE.FindStringSubmatch(currentSection); len(m) == 2 {
@@ -218,12 +240,28 @@ func LoadCatalog(repoRoot string) (Catalog, error) {
 			}
 		case strings.HasPrefix(line, "### "):
 			currentSubsection = strings.TrimSpace(strings.TrimPrefix(line, "### "))
+			inCaseTable = false
 		}
 
 		if declaredTotal == 0 {
 			if total, ok := parseDeclaredTotal(line); ok {
 				declaredTotal = total
 			}
+		}
+
+		if isCaseTableHeader(line) {
+			inCaseTable = true
+			continue
+		}
+		if !inCaseTable {
+			continue
+		}
+		if !strings.HasPrefix(line, "|") {
+			inCaseTable = false
+			continue
+		}
+		if strings.HasPrefix(line, "|---") || strings.HasPrefix(line, "|----") {
+			continue
 		}
 
 		tc, ok := parseCaseRow(line, currentSection, currentSectionKey, currentSubsection, lineNo)
@@ -246,7 +284,68 @@ func LoadCatalog(repoRoot string) (Catalog, error) {
 		Cases:            cases,
 		CanonicalCases:   canonicalCases,
 		DuplicateSymbols: duplicateSymbols,
+		InventoryCount:   len(canonicalCases),
 	}, nil
+}
+
+// ScopeCatalog returns a view of the full inventory containing only the
+// explicitly registered IDs for the named execution profiles.  The raw Cases
+// and DuplicateSymbols remain untouched so excluded reference/non-default rows
+// stay auditable.  Active aliases are resolved from Cases rather than
+// CanonicalCases, then the selected view is de-duplicated by normalized
+// Ginkgo node ID.  The full canonical inventory remains unchanged.
+func ScopeCatalog(catalog Catalog, profileNames []string, ids []string) Catalog {
+	wanted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		wanted[id] = struct{}{}
+	}
+
+	scoped := catalog
+	scoped.CanonicalCases = make([]Case, 0, len(wanted))
+	seenNodeIDs := make(map[string]int, len(wanted))
+	for _, tc := range catalog.Cases {
+		nodeID := tc.GinkgoNodeID()
+		if _, ok := wanted[nodeID]; !ok || nodeID == "" {
+			continue
+		}
+
+		if index, exists := seenNodeIDs[nodeID]; exists {
+			// Prefer the non-alias row when a document contains both rows for
+			// one node ID, while still retaining alias-only active cases.
+			if scoped.CanonicalCases[index].Alias && !tc.Alias {
+				scoped.CanonicalCases[index] = tc
+			}
+			continue
+		}
+		seenNodeIDs[nodeID] = len(scoped.CanonicalCases)
+		scoped.CanonicalCases = append(scoped.CanonicalCases, tc)
+	}
+
+	unresolved := make([]string, 0, len(wanted)-len(seenNodeIDs))
+	for id := range wanted {
+		if _, ok := seenNodeIDs[id]; !ok {
+			unresolved = append(unresolved, id)
+		}
+	}
+	sort.Strings(unresolved)
+	canonicalNodeIDs := make(map[string]struct{}, len(catalog.CanonicalCases))
+	for _, tc := range catalog.CanonicalCases {
+		if nodeID := tc.GinkgoNodeID(); nodeID != "" {
+			canonicalNodeIDs[nodeID] = struct{}{}
+		}
+	}
+	selectedInventory := 0
+	for _, tc := range scoped.CanonicalCases {
+		if _, ok := canonicalNodeIDs[tc.GinkgoNodeID()]; ok {
+			selectedInventory++
+		}
+	}
+	scoped.ScopeName = strings.Join(profileNames, ",")
+	scoped.InventoryCount = len(catalog.CanonicalCases)
+	scoped.ExcludedCount = len(catalog.CanonicalCases) - selectedInventory
+	scoped.RegisteredUnique = len(wanted)
+	scoped.UnresolvedIDs = unresolved
+	return scoped
 }
 
 // BuildTraceabilityReport scans the Go tree and reports which documented cases
@@ -317,6 +416,18 @@ func parseDeclaredTotal(line string) (int, bool) {
 	return value, true
 }
 
+func isCaseTableHeader(line string) bool {
+	if !strings.HasPrefix(line, "|") {
+		return false
+	}
+	cells := splitMarkdownRow(line)
+	if len(cells) < 2 {
+		return false
+	}
+	return (cells[0] == "ID" || cells[0] == "#") &&
+		strings.HasPrefix(cells[1], "테스트 함수")
+}
+
 func parseCaseRow(line, section, sectionKey, subsection string, lineNo int) (Case, bool) {
 	if !strings.HasPrefix(line, "|") {
 		return Case{}, false
@@ -328,21 +439,33 @@ func parseCaseRow(line, section, sectionKey, subsection string, lineNo int) (Cas
 	}
 
 	id := strings.TrimSpace(cells[0])
-	symbol := strings.TrimSpace(cells[1])
-	if !looksLikeCaseID(id) || !looksLikeBacktickedSymbol(symbol) {
+	symbol, alias, ok := backtickedSymbol(strings.TrimSpace(cells[1]))
+	if !looksLikeCaseID(id) || !ok {
 		return Case{}, false
 	}
 
 	return Case{
 		ID:         id,
-		Symbol:     strings.Trim(symbol, "`"),
+		Symbol:     symbol,
 		Section:    section,
 		SectionKey: sectionKey,
 		Subsection: subsection,
+		Alias:      alias,
 		Line:       lineNo,
 	}, true
 }
 
+func backtickedSymbol(value string) (string, bool, bool) {
+	if !strings.HasPrefix(value, "`") {
+		return "", false, false
+	}
+	end := strings.IndexByte(value[1:], '`')
+	if end < 0 {
+		return "", false, false
+	}
+	alias := strings.TrimSpace(value[end+2:]) != ""
+	return value[1 : end+1], alias, true
+}
 func splitMarkdownRow(line string) []string {
 	trimmed := strings.Trim(line, "|")
 	rawCells := strings.Split(trimmed, "|")
@@ -357,15 +480,7 @@ func looksLikeCaseID(value string) bool {
 	if value == "" {
 		return false
 	}
-	if allDigits(value) {
-		return true
-	}
-	if strings.HasPrefix(value, "E") || strings.HasPrefix(value, "F") || strings.HasPrefix(value, "M") {
-		for _, r := range value[1:] {
-			if (r < '0' || r > '9') && r != '.' && r != '-' {
-				return false
-			}
-		}
+	if isSectionLocalID(value) || qualifiedCaseIDRE.MatchString(value) {
 		return true
 	}
 	return false
@@ -384,12 +499,35 @@ func allDigits(value string) bool {
 	return value != ""
 }
 
+func isSectionLocalID(value string) bool {
+	if value == "" {
+		return false
+	}
+	i := 0
+	for i < len(value) && value[i] >= '0' && value[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return false
+	}
+	for i < len(value) {
+		if value[i] < 'a' || value[i] > 'z' {
+			return false
+		}
+		i++
+	}
+	return true
+}
+
 func canonicalizeCases(cases []Case) ([]Case, map[string][]Case) {
 	firstBySymbol := make(map[string]Case, len(cases))
 	duplicates := make(map[string][]Case)
 	order := make([]string, 0, len(cases))
 
 	for _, tc := range cases {
+		if tc.Alias {
+			continue
+		}
 		if _, exists := firstBySymbol[tc.Symbol]; !exists {
 			firstBySymbol[tc.Symbol] = tc
 			order = append(order, tc.Symbol)
@@ -494,10 +632,9 @@ func fileExists(path string) bool {
 //
 // Pattern design:
 //
-//	The outer structure `(?:It|Describe|…)\s*\(\s*"` ensures the match is
-//	anchored to the first string argument of a well-known Ginkgo function.
-//	Requiring (?:\.\d+)+ (one or more ".N" segments) avoids matching
-//	bare section-group tokens like "[TC-E1]" that appear in test comments.
+//	Requiring (?:\.\d+[a-z]?)+ (one or more numeric segments, optionally
+//	suffixed with a lowercase catalog letter) avoids matching bare section-
+//	group tokens like "[TC-E1]" that appear in test comments.
 //
 //	The named-capture group grabs the normalised TC ID (e.g. "E1.2",
 //	"F27.3", "E33.285") that the caller uses to look up the spec catalogue.
@@ -509,11 +646,12 @@ func fileExists(path string) bool {
 //
 // Grammar:
 //
-//	[EF]         — prefix letter (E for E-series, F for F-series)
-//	\d+          — group number (e.g. 1, 27, 33)
-//	(?:\.\d+)+   — one or more ".N" decimal segments (e.g. .1, .10, .3.1)
-//	(?:-\d+)?    — optional hyphen-suffix (e.g. -1 in E1.10-1)
-const tcIDFragment = `[EF]\d+(?:\.\d+)+(?:-\d+)?`
+//	[EF]              — prefix letter (E for E-series, F for F-series)
+//	\d+               — group number (e.g. 1, 27, 33)
+//	(?:\.\d+[a-z]?)+ — one or more numeric segments, optionally suffixed
+//	                    with a lowercase catalog letter (e.g. .217a)
+//	(?:-\d+)?         — optional hyphen-suffix (e.g. -1 in E1.10-1)
+const tcIDFragment = `[EF]\d+(?:\.\d+[a-z]?)+(?:-\d+)?`
 
 var ginkgoNodeLabelRE = regexp.MustCompile(
 	`(?:It|Describe|Context|When|DescribeTable|Entry)\s*\(\s*"[^"]*\[TC-(` + tcIDFragment + `)\]`,

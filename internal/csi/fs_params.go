@@ -43,9 +43,11 @@ func validateFilesystemConfig(
 ) error {
 	for _, c := range caps {
 		if c.GetMount() != nil {
-			err := validateMkfsOptions(fs.FSType, derefList(fs.MkfsOptions))
-			if err != nil {
-				return err
+			if fs.FSType != ProtocolNFS {
+				err := validateMkfsOptions(fs.FSType, derefList(fs.MkfsOptions))
+				if err != nil {
+					return err
+				}
 			}
 			continue
 		}

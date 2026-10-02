@@ -34,6 +34,22 @@ const (
 	// ProtocolIDISCSI exports volumes over iSCSI (LIO target, in-process
 	// initiator on the node).
 	ProtocolIDISCSI ProtocolID = "iscsi"
+
+	// ProtocolIDNFS exports filesystem volumes over NFS.
+	ProtocolIDNFS ProtocolID = "nfs"
+)
+
+// NFSSquash selects the NFS root squashing policy.
+// +kubebuilder:validation:Enum=root;none;all
+type NFSSquash string
+
+const (
+	// NFSSquashRoot applies root squashing (the safe default).
+	NFSSquashRoot NFSSquash = "root"
+	// NFSSquashNone disables root squashing.
+	NFSSquashNone NFSSquash = "none"
+	// NFSSquashAll squashes all users.
+	NFSSquashAll NFSSquash = "all"
 )
 
 // NVMeOFTCPConfig holds NVMe-oF/TCP-specific protocol parameters.
@@ -116,6 +132,59 @@ type NVMeOFTCPConfig struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	ReconnectDelay *int32 `json:"reconnectDelay,omitempty"`
+}
+
+// NFSConfig holds NFS-specific protocol parameters.
+// The server always uses NFSv4.2 over TCP on port 2049.
+type NFSConfig struct {
+	// version is the NFS protocol version.
+	// +optional
+	// +kubebuilder:default="4.2"
+	// +kubebuilder:validation:Enum="4.2"
+	Version string `json:"version,omitempty"`
+
+	// port is the fixed NFS listener port.
+	// +optional
+	// +kubebuilder:default=2049
+	// +kubebuilder:validation:Minimum=2049
+	// +kubebuilder:validation:Maximum=2049
+	Port int32 `json:"port,omitempty"`
+
+	// acl enables client-IP access control.
+	// Defaults to false.
+	// +optional
+	// +kubebuilder:default=false
+	ACL bool `json:"acl"`
+
+	// squash selects the NFS identity squashing policy.
+	// Defaults to root.
+	// +optional
+	// +kubebuilder:default=root
+	Squash NFSSquash `json:"squash,omitempty"`
+}
+
+// EffectiveVersion returns the configured NFS version, defaulting to 4.2.
+func (c *NFSConfig) EffectiveVersion() string {
+	if c == nil || c.Version == "" {
+		return "4.2"
+	}
+	return c.Version
+}
+
+// EffectivePort returns the configured NFS port, defaulting to 2049.
+func (c *NFSConfig) EffectivePort() int32 {
+	if c == nil || c.Port == 0 {
+		return 2049
+	}
+	return c.Port
+}
+
+// EffectiveSquash returns the configured NFS squash mode, defaulting to root.
+func (c *NFSConfig) EffectiveSquash() NFSSquash {
+	if c == nil || c.Squash == "" {
+		return NFSSquashRoot
+	}
+	return c.Squash
 }
 
 // ISCSIConfig holds iSCSI-specific protocol parameters.
@@ -243,12 +312,12 @@ func (a *ISCSIAuth) EffectiveMethod() ISCSIAuthMethod {
 
 // ProtocolSpec describes the transport protocol of a PillarProtocol.
 // Exactly one member must be set: the member name selects the protocol
-// (nvmeofTcp or iscsi) and its value carries that protocol's configuration.
+// (nvmeofTcp, iscsi, or nfs) and its value carries that protocol's configuration.
 //
 // Per-binding and per-volume override documents use ProtocolOverrides,
 // which keeps only the tunable subset.
 //
-// +kubebuilder:validation:XValidation:rule="(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1 : 0) == 1",message="exactly one protocol member must be set (supported: nvmeofTcp, iscsi)"
+// +kubebuilder:validation:XValidation:rule="(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1 : 0) + (has(self.nfs) ? 1 : 0) == 1",message="exactly one protocol member must be set (supported: nvmeofTcp, iscsi, nfs)"
 type ProtocolSpec struct {
 	// nvmeofTcp holds NVMe-oF/TCP configuration.
 	// +optional
@@ -257,6 +326,10 @@ type ProtocolSpec struct {
 	// iscsi holds iSCSI configuration.
 	// +optional
 	ISCSI *ISCSIConfig `json:"iscsi,omitempty"`
+
+	// nfs holds NFS configuration.
+	// +optional
+	NFS *NFSConfig `json:"nfs,omitempty"`
 }
 
 // Kind returns the selected protocol member as a ProtocolID, or "" when the
@@ -267,6 +340,8 @@ func (p ProtocolSpec) Kind() ProtocolID {
 		return ProtocolIDNVMeOFTCP
 	case p.ISCSI != nil:
 		return ProtocolIDISCSI
+	case p.NFS != nil:
+		return ProtocolIDNFS
 	default:
 		return ""
 	}

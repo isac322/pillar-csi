@@ -152,7 +152,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `fsType` _string_ | fsType is the filesystem the node formats a new volume with when<br />volumeMode is Filesystem. | ext4 | Enum: [ext4 xfs] <br />Optional <br /> |
+| `fsType` _string_ | fsType is the filesystem type the node uses for a block volume in<br />Filesystem mode.  The controller defaults omitted values to ext4;<br />file protocols such as NFS use their protocol filesystem instead. |  | Enum: [ext4 xfs nfs] <br />Optional <br /> |
 | `mkfsOptions` _string_ | mkfsOptions are additional mkfs arguments used when the node formats a<br />new volume; a volume that already carries a filesystem is never<br />reformatted.  Each element is one argv element (no shell); only<br />filesystem tuning flags of the formatted type are accepted.<br />A null/omitted value inherits the options of the layer below; an<br />explicit empty list [] clears them. |  | Optional <br /> |
 | `mountOptions` _string_ | mountOptions are the mount options the node applies when mounting a<br />Filesystem-mode volume.  On a PillarStorageClass they are written to<br />the generated Kubernetes StorageClass's mountOptions; a PVC annotation<br />value overrides them for that volume.<br />A null/omitted value inherits the options of the layer below; an<br />explicit empty list [] clears them. |  | Optional <br /> |
 | `periodicTrim` _boolean_ | periodicTrim controls whether the CSI node periodically trims (FITRIM)<br />the staged filesystem of a Filesystem-mode volume so the backend can<br />reclaim freed blocks.  Unset follows the node setting (enabled unless<br />the node's `--trim-interval` is 0); false opts the volume out.  A PVC<br />annotation value overrides the class value for that volume. |  | Optional <br /> |
@@ -327,6 +327,80 @@ _Appears in:_
 | --- | --- |
 | `linear` | LVMProvisioningModeLinear creates fully-allocated linear logical volumes<br />directly in the volume group (lvcreate -L &lt;size>b).<br /> |
 | `thin` | LVMProvisioningModeThin creates thin-provisioned logical volumes inside a<br />pre-existing thin pool LV (lvcreate -V &lt;size>b `--thinpool` &lt;pool>).<br /> |
+
+
+#### NFSConfig
+
+
+
+NFSConfig holds NFS-specific protocol parameters.
+The server always uses NFSv4.2 over TCP on port 2049.
+
+
+
+_Appears in:_
+- [ProtocolSpec](#protocolspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `version` _string_ | version is the NFS protocol version. | 4.2 | Enum: [4.2] <br />Optional <br /> |
+| `port` _integer_ | port is the fixed NFS listener port. | 2049 | Maximum: 2049 <br />Minimum: 2049 <br />Optional <br /> |
+| `acl` _boolean_ | acl enables client-IP access control.<br />Defaults to false. | false | Optional <br /> |
+| `squash` _[NFSSquash](#nfssquash)_ | squash selects the NFS identity squashing policy.<br />Defaults to root. | root | Enum: [root none all] <br />Optional <br /> |
+
+
+#### NFSExportSpec
+
+
+
+NFSExportSpec is the protocol-specific durable desired state for an NFS
+export.  BindAddress and Port remain on VolumeExportSpec because they are
+common routing fields shared by every protocol.
+
+
+
+_Appears in:_
+- [VolumeExportSpec](#volumeexportspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `version` _string_ | version is the NFS protocol version. |  | Enum: [4.2] <br />Required <br /> |
+| `squash` _[NFSSquash](#nfssquash)_ | squash is the NFS identity squashing policy. |  | Enum: [root none all] <br />Required <br /> |
+| `readonly` _boolean_ | readonly makes the export read-only for every client. |  | Required <br /> |
+
+
+#### NFSOverrides
+
+
+
+NFSOverrides is intentionally empty: NFS structural export settings are
+fixed per PillarProtocol and cannot be overridden per binding or volume.
+
+
+
+_Appears in:_
+- [ProtocolOverrides](#protocoloverrides)
+
+
+
+#### NFSSquash
+
+_Underlying type:_ _string_
+
+NFSSquash selects the NFS root squashing policy.
+
+_Validation:_
+- Enum: [root none all]
+
+_Appears in:_
+- [NFSConfig](#nfsconfig)
+- [NFSExportSpec](#nfsexportspec)
+
+| Field | Description |
+| --- | --- |
+| `root` | NFSSquashRoot applies root squashing (the safe default).<br /> |
+| `none` | NFSSquashNone disables root squashing.<br /> |
+| `all` | NFSSquashAll squashes all users.<br /> |
 
 
 #### NVMeOFTCPConfig
@@ -836,6 +910,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `nvmeofTcp` _[NVMeOFTCPOverrides](#nvmeoftcpoverrides)_ | nvmeofTcp overrides NVMe-oF/TCP tunables; valid only when the<br />protocol's member is nvmeofTcp. |  | Optional <br /> |
 | `iscsi` _[ISCSIOverrides](#iscsioverrides)_ | iscsi overrides iSCSI tunables; valid only when the protocol's member<br />is iscsi. |  | Optional <br /> |
+| `nfs` _[NFSOverrides](#nfsoverrides)_ | nfs is an empty override member; NFS settings are structural and fixed<br />by the referenced PillarProtocol. |  | Optional <br /> |
 
 
 #### ProtocolSpec
@@ -844,7 +919,7 @@ _Appears in:_
 
 ProtocolSpec describes the transport protocol of a PillarProtocol.
 Exactly one member must be set: the member name selects the protocol
-(nvmeofTcp or iscsi) and its value carries that protocol's configuration.
+(nvmeofTcp, iscsi, or nfs) and its value carries that protocol's configuration.
 
 Per-binding and per-volume override documents use ProtocolOverrides,
 which keeps only the tunable subset.
@@ -859,6 +934,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `nvmeofTcp` _[NVMeOFTCPConfig](#nvmeoftcpconfig)_ | nvmeofTcp holds NVMe-oF/TCP configuration. |  | Optional <br /> |
 | `iscsi` _[ISCSIConfig](#iscsiconfig)_ | iscsi holds iSCSI configuration. |  | Optional <br /> |
+| `nfs` _[NFSConfig](#nfsconfig)_ | nfs holds NFS configuration. |  | Optional <br /> |
 
 
 #### ReclaimPolicy
@@ -1016,10 +1092,10 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `targetID` _string_ | targetID is the NVMe Qualified Name (NQN) of the NVMe-oF subsystem. |  | Optional <br /> |
+| `targetID` _string_ | targetID is the protocol-specific export identifier: NQN for NVMe-oF,<br />IQN for iSCSI, or the server export path for NFS. |  | Optional <br /> |
 | `address` _string_ | address is the IP address of the storage node (same as<br />PillarAgent.Status.ResolvedAddress with the port stripped). |  | Optional <br /> |
-| `port` _integer_ | port is the TCP port on which the NVMe-oF target listens. |  | Optional <br /> |
-| `volumeRef` _string_ | volumeRef is the protocol-level reference for this volume (the NVMe-oF<br />subsystem name). |  | Optional <br /> |
+| `port` _integer_ | port is the TCP port on which the protocol target listens.<br />NFS uses its fixed port 2049. |  | Optional <br /> |
+| `volumeRef` _string_ | volumeRef is the protocol-level reference for this volume. |  | Optional <br /> |
 
 
 #### VolumeExportSpec
@@ -1044,6 +1120,7 @@ _Appears in:_
 | `aclEnabled` _boolean_ | aclEnabled is true when the target admits only the initiators of<br />published nodes; false admits any initiator. |  | Required <br /> |
 | `inCapsuleDataSize` _integer_ | inCapsuleDataSize is the NVMe-oF/TCP in-capsule data size in bytes the<br />export requires on its port; absent when the export accepts the port's<br />value.  NVMe-oF/TCP only. |  | Minimum: 1024 <br />Optional <br /> |
 | `maxDataTransferSize` _integer_ | maxDataTransferSize is the NVMe-oF/TCP maximum data transfer size in<br />bytes (0 = no limit) the export allows its port to advertise at most;<br />absent when the export accepts the port's value.  NVMe-oF/TCP only. |  | Enum: [0 8192 16384 32768 65536 131072 262144 524288 1048576 2097152 4194304 8388608 16777216 33554432 67108864 134217728 268435456 536870912 1073741824] <br />Optional <br /> |
+| `nfs` _[NFSExportSpec](#nfsexportspec)_ | nfs contains the durable NFS-specific export configuration. |  | Optional <br /> |
 
 
 #### VolumePublication
@@ -1086,9 +1163,9 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `volumeType` _[ZFSVolumeType](#zfsvolumetype)_ | volumeType selects the ZFS volume kind.  Only "zvol" is implemented. | zvol | Enum: [zvol] <br />Optional <br /> |
+| `volumeType` _[ZFSVolumeType](#zfsvolumetype)_ | volumeType selects the ZFS volume kind. | zvol | Enum: [zvol dataset] <br />Optional <br /> |
 | `pool` _string_ | pool is the ZFS pool name (e.g. "hot-data"). |  | MinLength: 1 <br />Required <br /> |
-| `parentDataset` _string_ | parentDataset is the ZFS dataset path under which pillar-csi will<br />create per-volume zvols (e.g. "k8s").  It must equal the parentDataset<br />of the agent's backend configuration for this pool (chart<br />agent.backends[].zfs.parentDataset; empty = pool root): on a mismatch<br />the store is not Ready (PoolDiscovered=False, BackendLayoutMismatch)<br />and CreateVolume fails instead of placing volumes elsewhere. |  | Optional <br /> |
+| `parentDataset` _string_ | parentDataset is the ZFS dataset path under which pillar-csi will<br />create per-volume zvols or datasets (e.g. "k8s").  It must equal the<br />parentDataset of the agent's backend configuration for this pool. |  | Optional <br /> |
 | `properties` _object (keys:string, values:string)_ | properties are arbitrary ZFS properties applied to every volume created<br />in this pool (e.g. compression, volblocksize). |  | Optional <br /> |
 
 
@@ -1118,13 +1195,14 @@ _Underlying type:_ _string_
 ZFSVolumeType enumerates the ZFS volume kinds the driver can create.
 
 _Validation:_
-- Enum: [zvol]
+- Enum: [zvol dataset]
 
 _Appears in:_
 - [ZFSBackendConfig](#zfsbackendconfig)
 
 | Field | Description |
 | --- | --- |
-| `zvol` | ZFSVolumeTypeZvol creates block-device zvols.  It is currently the<br />only implemented kind; zfs datasets are a future variant.<br /> |
+| `zvol` | ZFSVolumeTypeZvol creates block-device zvols.<br /> |
+| `dataset` | ZFSVolumeTypeDataset creates filesystem ZFS datasets.<br /> |
 
 

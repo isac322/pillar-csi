@@ -520,8 +520,8 @@ var _ = Describe("PillarStore Controller", func() {
 
 		It("should set PoolDiscovered=True when pool name is in target's discoveredPools", func() {
 			discoveredPools := []pillarcsiv1alpha1.DiscoveredPool{
-				{Name: zfsPoolName, Type: "zfs"},
-				{Name: "other-pool", Type: "zfs"},
+				{Name: zfsPoolName, Type: "zfs-zvol"},
+				{Name: "other-pool", Type: "zfs-zvol"},
 			}
 			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol"})
 
@@ -538,8 +538,8 @@ var _ = Describe("PillarStore Controller", func() {
 
 		It("should set PoolDiscovered=False when pool name is NOT in target's discoveredPools", func() {
 			discoveredPools := []pillarcsiv1alpha1.DiscoveredPool{
-				{Name: "other-pool", Type: "zfs"},
-				{Name: "another-pool", Type: "zfs"},
+				{Name: "other-pool", Type: "zfs-zvol"},
+				{Name: "another-pool", Type: "zfs-zvol"},
 			}
 			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol"})
 
@@ -556,7 +556,7 @@ var _ = Describe("PillarStore Controller", func() {
 
 		It("should set BackendSupported=True when backend type is in target capabilities", func() {
 			discoveredPools := []pillarcsiv1alpha1.DiscoveredPool{
-				{Name: zfsPoolName, Type: "zfs"},
+				{Name: zfsPoolName, Type: "zfs-zvol"},
 			}
 			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol", "lvm-lv"})
 
@@ -573,7 +573,7 @@ var _ = Describe("PillarStore Controller", func() {
 
 		It("should set BackendSupported=False when backend type is NOT in target capabilities", func() {
 			discoveredPools := []pillarcsiv1alpha1.DiscoveredPool{
-				{Name: zfsPoolName, Type: "zfs"},
+				{Name: zfsPoolName, Type: "zfs-zvol"},
 			}
 			// Target only supports lvm-lv but the pool uses zfs-zvol.
 			setTargetReadyWithData(discoveredPools, []string{"lvm-lv"})
@@ -591,7 +591,7 @@ var _ = Describe("PillarStore Controller", func() {
 
 		It("should set Ready=True when TargetReady, PoolDiscovered, and BackendSupported are all True", func() {
 			discoveredPools := []pillarcsiv1alpha1.DiscoveredPool{
-				{Name: zfsPoolName, Type: "zfs"},
+				{Name: zfsPoolName, Type: "zfs-zvol"},
 			}
 			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol"})
 
@@ -613,7 +613,7 @@ var _ = Describe("PillarStore Controller", func() {
 		It("should set Ready=False when pool is not discovered even if backend is supported", func() {
 			// Pool not found in discovered pools.
 			discoveredPools := []pillarcsiv1alpha1.DiscoveredPool{
-				{Name: "other-pool", Type: "zfs"},
+				{Name: "other-pool", Type: "zfs-zvol"},
 			}
 			setTargetReadyWithData(discoveredPools, []string{"zfs-zvol"})
 
@@ -707,6 +707,32 @@ var _ = Describe("PillarStore Controller", func() {
 			Expect(status).To(Equal(metav1.ConditionTrue))
 
 			status, reason, _ := evaluatePoolDiscovered(lvmStore("missing-vg", ""), agent)
+			Expect(status).To(Equal(metav1.ConditionFalse))
+			Expect(reason).To(Equal("PoolNotFound"))
+		})
+		It("should match the exact backend kind when one pool has zvol and dataset variants", func() {
+			datasetStore := &pillarcsiv1alpha1.PillarStore{Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: "agent-a",
+				Backend: pillarcsiv1alpha1.BackendSpec{
+					ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
+						Pool:          "hot-data",
+						VolumeType:    pillarcsiv1alpha1.ZFSVolumeTypeDataset,
+						ParentDataset: "datasets",
+					},
+				},
+			}}
+			agent := agentWith(
+				pillarcsiv1alpha1.DiscoveredPool{Name: "hot-data", Type: "zfs-zvol", ParentDataset: "wrong"},
+				pillarcsiv1alpha1.DiscoveredPool{Name: "hot-data", Type: "zfs-dataset", ParentDataset: "datasets"},
+			)
+			status, reason, _ := evaluatePoolDiscovered(datasetStore, agent)
+			Expect(status).To(Equal(metav1.ConditionTrue))
+			Expect(reason).To(Equal("PoolDiscovered"))
+
+			agent.Status.DiscoveredPools = []pillarcsiv1alpha1.DiscoveredPool{
+				{Name: "hot-data", Type: "zfs-zvol", ParentDataset: "datasets"},
+			}
+			status, reason, _ = evaluatePoolDiscovered(datasetStore, agent)
 			Expect(status).To(Equal(metav1.ConditionFalse))
 			Expect(reason).To(Equal("PoolNotFound"))
 		})
@@ -852,7 +878,7 @@ var _ = Describe("PillarStore Controller", func() {
 			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
 				{
 					Name:      capZFSPool,
-					Type:      "zfs",
+					Type:      "zfs-zvol",
 					Total:     quantityPtr("100Gi"),
 					Available: quantityPtr("75Gi"),
 				},
@@ -878,13 +904,27 @@ var _ = Describe("PillarStore Controller", func() {
 			Expect(fetched.Status.Capacity.Used.Cmp(expectedUsed)).To(Equal(0),
 				"Used should equal Total - Available = 25Gi")
 		})
+		It("should sync capacity from the matching backend kind, not a same-name variant", func() {
+			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
+				{Name: capZFSPool, Type: "zfs-dataset", Total: quantityPtr("1Ti"), Available: quantityPtr("900Gi")},
+				{Name: capZFSPool, Type: "zfs-zvol", Total: quantityPtr("200Gi"), Available: quantityPtr("150Gi")},
+			}, []string{"zfs-zvol", "zfs-dataset"})
+
+			_, err := doCapReconcile()
+			Expect(err).NotTo(HaveOccurred())
+
+			fetched := fetchCapPool()
+			Expect(fetched.Status.Capacity).NotTo(BeNil())
+			Expect(fetched.Status.Capacity.Total.Cmp(resource.MustParse("200Gi"))).To(Equal(0))
+			Expect(fetched.Status.Capacity.Available.Cmp(resource.MustParse("150Gi"))).To(Equal(0))
+		})
 
 		It("should set Used=0 when Available exceeds Total (corrupted agent data)", func() {
 			// Available > Total — guard against negative Used.
 			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
 				{
 					Name:      capZFSPool,
-					Type:      "zfs",
+					Type:      "zfs-zvol",
 					Total:     quantityPtr("10Gi"),
 					Available: quantityPtr("20Gi"), // exceeds total
 				},
@@ -904,7 +944,7 @@ var _ = Describe("PillarStore Controller", func() {
 		It("should leave capacity nil when DiscoveredPool has no Total or Available", func() {
 			// Pool exists in DiscoveredPools but carries no capacity data.
 			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
-				{Name: capZFSPool, Type: "zfs"}, // no Total/Available
+				{Name: capZFSPool, Type: "zfs-zvol"}, // no Total/Available
 			}, []string{"zfs-zvol"})
 
 			_, err := doCapReconcile()
@@ -920,7 +960,7 @@ var _ = Describe("PillarStore Controller", func() {
 			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
 				{
 					Name:      capZFSPool,
-					Type:      "zfs",
+					Type:      "zfs-zvol",
 					Total:     quantityPtr("50Gi"),
 					Available: quantityPtr("40Gi"),
 				},
@@ -931,7 +971,7 @@ var _ = Describe("PillarStore Controller", func() {
 
 			// Second reconcile — pool name no longer in discovered pools.
 			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
-				{Name: "other-pool", Type: "zfs", Total: quantityPtr("10Gi"), Available: quantityPtr("10Gi")},
+				{Name: "other-pool", Type: "zfs-zvol", Total: quantityPtr("10Gi"), Available: quantityPtr("10Gi")},
 			}, []string{"zfs-zvol"})
 			_, err = doCapReconcile()
 			Expect(err).NotTo(HaveOccurred())
@@ -944,7 +984,7 @@ var _ = Describe("PillarStore Controller", func() {
 		It("should clear capacity when pool transitions from discovered to not-discovered", func() {
 			// Start with capacity synced.
 			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
-				{Name: capZFSPool, Type: "zfs", Total: quantityPtr("200Gi"), Available: quantityPtr("150Gi")},
+				{Name: capZFSPool, Type: "zfs-zvol", Total: quantityPtr("200Gi"), Available: quantityPtr("150Gi")},
 			}, []string{"zfs-zvol"})
 			_, err := doCapReconcile()
 			Expect(err).NotTo(HaveOccurred())
@@ -968,7 +1008,7 @@ var _ = Describe("PillarStore Controller", func() {
 			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
 				{
 					Name:  capZFSPool,
-					Type:  "zfs",
+					Type:  "zfs-zvol",
 					Total: quantityPtr("500Gi"),
 					// Available intentionally absent.
 				},
@@ -1043,7 +1083,7 @@ var _ = Describe("PillarStore Controller", func() {
 
 		It("should set Ready=True with synced capacity when all conditions pass", func() {
 			setCapTarget([]pillarcsiv1alpha1.DiscoveredPool{
-				{Name: capZFSPool, Type: "zfs", Total: quantityPtr("100Gi"), Available: quantityPtr("60Gi")},
+				{Name: capZFSPool, Type: "zfs-zvol", Total: quantityPtr("100Gi"), Available: quantityPtr("60Gi")},
 			}, []string{"zfs-zvol"})
 
 			_, err := doCapReconcile()

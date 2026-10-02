@@ -796,7 +796,13 @@ func (x *IscsiChap) GetMutualPassword() string {
 type NfsExportParams struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// NFS protocol version, e.g. "4.2".
-	Version       string `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
+	Version string `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
+	// IP address on which the NFS server listens.
+	BindAddress string `protobuf:"bytes,2,opt,name=bind_address,json=bindAddress,proto3" json:"bind_address,omitempty"`
+	// Identity squashing policy: "root", "none", or "all".
+	Squash string `protobuf:"bytes,3,opt,name=squash,proto3" json:"squash,omitempty"`
+	// Whether every client is served read-only.
+	Readonly      bool `protobuf:"varint,4,opt,name=readonly,proto3" json:"readonly,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -836,6 +842,27 @@ func (x *NfsExportParams) GetVersion() string {
 		return x.Version
 	}
 	return ""
+}
+
+func (x *NfsExportParams) GetBindAddress() string {
+	if x != nil {
+		return x.BindAddress
+	}
+	return ""
+}
+
+func (x *NfsExportParams) GetSquash() string {
+	if x != nil {
+		return x.Squash
+	}
+	return ""
+}
+
+func (x *NfsExportParams) GetReadonly() bool {
+	if x != nil {
+		return x.Readonly
+	}
+	return false
 }
 
 // SmbExportParams holds SMB/CIFS export configuration.
@@ -3827,9 +3854,12 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1a\n" +
 	"\bpassword\x18\x02 \x01(\tR\bpassword\x12'\n" +
 	"\x0fmutual_username\x18\x03 \x01(\tR\x0emutualUsername\x12'\n" +
-	"\x0fmutual_password\x18\x04 \x01(\tR\x0emutualPassword\"+\n" +
+	"\x0fmutual_password\x18\x04 \x01(\tR\x0emutualPassword\"\x82\x01\n" +
 	"\x0fNfsExportParams\x12\x18\n" +
-	"\aversion\x18\x01 \x01(\tR\aversion\"0\n" +
+	"\aversion\x18\x01 \x01(\tR\aversion\x12!\n" +
+	"\fbind_address\x18\x02 \x01(\tR\vbindAddress\x12\x16\n" +
+	"\x06squash\x18\x03 \x01(\tR\x06squash\x12\x1a\n" +
+	"\breadonly\x18\x04 \x01(\bR\breadonly\"0\n" +
 	"\x0fSmbExportParams\x12\x1d\n" +
 	"\n" +
 	"share_name\x18\x01 \x01(\tR\tshareName\"\x99\x02\n" +
