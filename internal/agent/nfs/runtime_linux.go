@@ -451,7 +451,7 @@ func (r *kernelRuntime) start(
 	if err != nil {
 		return err
 	}
-	_, err = r.configureListener(ports)
+	_, err = r.configureListener(ctx, ports)
 	if err != nil {
 		return err
 	}
@@ -687,7 +687,7 @@ func (*kernelRuntime) configureVersions(threadCount int) error {
 	return nil
 }
 
-func (r *kernelRuntime) configureListener(ports string) (string, error) {
+func (r *kernelRuntime) configureListener(ctx context.Context, ports string) (string, error) {
 	if ports != "" {
 		return ports, nil
 	}
@@ -695,7 +695,11 @@ func (r *kernelRuntime) configureListener(ports string) (string, error) {
 	if strings.Contains(r.config.BindAddress, ":") {
 		family = "tcp6"
 	}
-	listener, err := net.Listen(family, net.JoinHostPort(r.config.BindAddress, "2049"))
+	// Linux nfsd accepts only TCP/UDP listener sockets; Go enables MPTCP
+	// listeners by default when supported, and nfsd rejects protocol 262.
+	var listenConfig net.ListenConfig
+	listenConfig.SetMultipathTCP(false)
+	listener, err := listenConfig.Listen(ctx, family, net.JoinHostPort(r.config.BindAddress, "2049"))
 	if err != nil {
 		return "", fmt.Errorf("NFS listener unavailable: %w", err)
 	}
