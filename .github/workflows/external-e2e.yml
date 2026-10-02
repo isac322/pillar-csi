@@ -76,7 +76,7 @@ jobs:
         uses: actions/checkout@v7
       - name: Download exact-checkout runtime images
         if: ${{ inputs.runtime_image_artifact != '' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.runtime_image_artifact }}
           path: ${{ runner.temp }}/pillar-csi-runtime-images
