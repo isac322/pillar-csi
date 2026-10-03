@@ -123,11 +123,13 @@ func (*Backend) ListVolumes(context.Context) ([]*agentv1.VolumeInfo, error) { re
 func (*Backend) DevicePath(string) string { return "" }
 
 // InspectImport validates an existing directory and reports its native identity
-// and exact effective project-quota capacity without mutating the source.
+// and exact effective project-quota capacity without mutating the source. A
+// recorded descriptor revalidates identity and quota without a first-claim walk.
 func (b *Backend) InspectImport(
 	ctx context.Context,
 	source string,
 	requiredBytes int64,
+	expected *agentv1.FilesystemAdoption,
 	expectedLayout backend.Layout,
 ) (*backend.ImportInspection, error) {
 	err := b.validateLayout(expectedLayout)
@@ -136,7 +138,7 @@ func (b *Backend) InspectImport(
 	}
 	// A read-only inspection keeps ownership of its descriptor until inspect
 	// closes it; only ImportFilesystem requests a transferred pin.
-	result := b.inspectResult(ctx, source, requiredBytes, nil, false)
+	result := b.inspectResult(ctx, source, requiredBytes, expected, false)
 	if result.err != nil {
 		return nil, fmt.Errorf("directory backend inspect %q: %w", source, result.err)
 	}

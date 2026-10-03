@@ -49,16 +49,18 @@ func (s *Server) InspectImport(
 	if layout != b.Layout() {
 		return nil, status.Errorf(codes.FailedPrecondition, "filesystem inspection configured layout changed")
 	}
-	found, err := inspector.InspectImport(ctx, req.GetSource(), req.GetRequiredBytes(), layout)
+	expected := req.GetExpectedFilesystemAdoption()
+	expectedErr := validateExpectedImportInspection(expected, b.Type(), req.GetSource())
+	if expectedErr != nil {
+		return nil, expectedErr
+	}
+	found, err := inspector.InspectImport(ctx, req.GetSource(), req.GetRequiredBytes(), expected, layout)
 	if err != nil {
 		return nil, importVolumeError(err)
 	}
-	if found == nil || found.CapacityBytes != req.GetRequiredBytes() {
-		return nil, status.Errorf(codes.FailedPrecondition, "inspection did not establish exact capacity")
-	}
-	_, fenceErr := filesystemFenceKey(found.Filesystem)
-	if fenceErr != nil {
-		return nil, fenceErr
+	inspectionErr := validateImportInspection(found, req.GetRequiredBytes(), expected)
+	if inspectionErr != nil {
+		return nil, inspectionErr
 	}
 	namespaceErr := s.checkFilesystemSourceNamespace(found.Filesystem)
 	if namespaceErr != nil {
@@ -69,6 +71,38 @@ func (s *Server) InspectImport(
 		return nil, ownerErr
 	}
 	return &agentv1.InspectImportResponse{FilesystemAdoption: found.Filesystem, CapacityBytes: found.CapacityBytes}, nil
+}
+
+func validateExpectedImportInspection(
+	expected *agentv1.FilesystemAdoption,
+	backendType agentv1.BackendType,
+	source string,
+) error {
+	if expected != nil {
+		_, descriptorErr := filesystemFenceKey(expected)
+		if descriptorErr != nil {
+			return descriptorErr
+		}
+		if filesystemBackendType(expected) != backendType || expected.GetCanonicalSource() != source {
+			return status.Errorf(codes.FailedPrecondition, "filesystem inspection recorded kind or source changed")
+		}
+	}
+	return nil
+}
+
+func validateImportInspection(
+	found *backend.ImportInspection,
+	requiredBytes int64,
+	expected *agentv1.FilesystemAdoption,
+) error {
+	if found == nil || found.CapacityBytes != requiredBytes {
+		return status.Errorf(codes.FailedPrecondition, "inspection did not establish exact capacity")
+	}
+	if expected != nil && !proto.Equal(found.Filesystem, expected) {
+		return status.Errorf(codes.FailedPrecondition, "filesystem inspection recorded native identity changed")
+	}
+	_, fenceErr := filesystemFenceKey(found.Filesystem)
+	return fenceErr
 }
 
 func filesystemFenceKey(a *agentv1.FilesystemAdoption) (string, error) {
@@ -475,7 +509,7 @@ func inspectFirstFilesystemClaim(
 	if !ok {
 		return status.Errorf(codes.Unimplemented, "directory backend cannot prove first-claim quota scope")
 	}
-	inspected, err := inspector.InspectImport(ctx, a.GetCanonicalSource(), capacity, layout)
+	inspected, err := inspector.InspectImport(ctx, a.GetCanonicalSource(), capacity, nil, layout)
 	if err != nil {
 		return importVolumeError(err)
 	}

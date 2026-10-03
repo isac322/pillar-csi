@@ -53,16 +53,25 @@ func TestInspectRejectsOutsideAndLayoutAlias(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	b := New("pool", root)
-	if _, err := b.InspectImport(context.Background(), outside, 1, backend.Layout{HostRoot: root}); err == nil {
+	if _, err := b.InspectImport(context.Background(), outside, 1, nil, backend.Layout{HostRoot: root}); err == nil {
 		t.Fatal("outside source unexpectedly accepted")
 	}
-	if _, err := b.InspectImport(context.Background(), root, 1, backend.Layout{HostRoot: filepath.Join(root, "alias")}); err == nil {
+	if _, err := b.InspectImport(
+		context.Background(),
+		root,
+		1,
+		nil,
+		backend.Layout{HostRoot: filepath.Join(root, "alias")},
+	); err == nil {
 		t.Fatal("layout alias unexpectedly accepted")
 	}
 }
 
 func TestFormatUUIDCanonicalLowercase(t *testing.T) {
-	got := formatUUID([]byte{0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89, 0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE})
+	got := formatUUID([]byte{
+		0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89,
+		0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE,
+	})
 	if got != "abcdef01-2345-6789-1032-547698badcfe" {
 		t.Fatalf("formatUUID = %q", got)
 	}

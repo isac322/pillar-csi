@@ -254,7 +254,7 @@ func datasetMountRow(t *testing.T, path, root string) string {
 func (f *importDatasetFixture) inspect() *backend.ImportInspection {
 	f.t.Helper()
 	found, err := f.backend.InspectImport(
-		context.Background(), "tank/k8s/existing", 4096,
+		context.Background(), "tank/k8s/existing", 4096, nil,
 		backend.Layout{ParentDataset: "k8s"},
 	)
 	if err != nil {
@@ -509,7 +509,7 @@ func TestDatasetMountedChildBeforeAnotherRowRefusesUnmountedParentAdoption(t *te
 	// Empty mountinfo cannot reject this second native quota scope for us.
 	f.childRows = "tank/k8s/existing/mounted\t/external/child\tyes\n" +
 		"tank/k8s/existing/later\tlegacy\tno\n"
-	inspection, inspectErr := f.backend.InspectImport(context.Background(), "tank/k8s/existing", 4096, layout)
+	inspection, inspectErr := f.backend.InspectImport(context.Background(), "tank/k8s/existing", 4096, nil, layout)
 	var inspectRefusal *backend.ImportRefusedError
 	if inspection != nil || !errors.As(inspectErr, &inspectRefusal) || inspectRefusal.Reason != reasonInUse {
 		t.Fatalf("mounted child inspection = %v, error = %v", inspection, inspectErr)
@@ -551,7 +551,7 @@ func TestDatasetExactQuotaRequiresOwnLiveScope(t *testing.T) {
 			f.properties["usedbysnapshots"], f.properties["used"] = tc.other, tc.other
 			f.ancestorQuota = tc.ancestor
 			_, err := f.backend.InspectImport(
-				context.Background(), "tank/k8s/existing", 4096,
+				context.Background(), "tank/k8s/existing", 4096, nil,
 				backend.Layout{ParentDataset: "k8s"},
 			)
 			if tc.accepted {
@@ -624,7 +624,7 @@ func TestDatasetQuotaAccountingScopesAndSourceAbsence(t *testing.T) {
 			f.properties[scope] = "1024"
 			f.properties["used"] = "1024"
 			_, err := f.backend.InspectImport(
-				context.Background(), "tank/k8s/existing", 4096,
+				context.Background(), "tank/k8s/existing", 4096, nil,
 				backend.Layout{ParentDataset: "k8s"},
 			)
 			var refused *backend.ImportRefusedError

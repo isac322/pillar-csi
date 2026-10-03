@@ -630,6 +630,24 @@ func TestAdoptedActivationGuardIsolatesUnsafeRecovery(t *testing.T) {
 	if err := restarted.Start(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	assertAdoptedStartupGuard(t, r, guarded, bad)
+	assertOnlyGoodDataset(t, r, good, bad)
+	if err := restarted.Health(); err == nil || !strings.Contains(err.Error(), bad.VolumeID) {
+		t.Fatalf("unsafe adopted export was not surfaced by health: %v", err)
+	}
+	assertAdoptedOwnershipHintsPreserved(t, restarted, bad)
+
+	rejectBad = false
+	if err := restarted.Put(t.Context(), bad, true, true); err != nil {
+		t.Fatalf("healthy adopted export was not readmitted: %v", err)
+	}
+	if restarted.Health() != nil || !reflect.DeepEqual(admitted(r), []string{"192.0.2.20", "192.0.2.21"}) {
+		t.Fatal("healthy adopted export did not recover")
+	}
+}
+
+func assertAdoptedStartupGuard(t *testing.T, r *memoryRuntime, guarded []string, bad Export) {
+	t.Helper()
 	if !slices.Contains(guarded, bad.VolumeID) {
 		t.Fatal("startup did not validate persisted adopted export")
 	}
@@ -638,23 +656,15 @@ func TestAdoptedActivationGuardIsolatesUnsafeRecovery(t *testing.T) {
 			t.Fatal("unsafe adopted export remained admitted when runtime started")
 		}
 	}
-	assertOnlyGoodDataset(t, r, good, bad)
-	if err := restarted.Health(); err == nil || !strings.Contains(err.Error(), bad.VolumeID) {
-		t.Fatalf("unsafe adopted export was not surfaced by health: %v", err)
-	}
+}
+
+func assertAdoptedOwnershipHintsPreserved(t *testing.T, m *Manager, bad Export) {
+	t.Helper()
 	withoutHints := bad
 	withoutHints.SourceKey = ""
 	withoutHints.FenceUID = ""
-	if err := restarted.Put(t.Context(), withoutHints, true, true); err == nil {
+	if err := m.Put(t.Context(), withoutHints, true, true); err == nil {
 		t.Fatal("reconcile erased adopted ownership hints")
-	}
-
-	rejectBad = false
-	if err := restarted.Put(t.Context(), bad, true, true); err != nil {
-		t.Fatalf("healthy adopted export was not readmitted: %v", err)
-	}
-	if restarted.Health() != nil || !reflect.DeepEqual(admitted(r), []string{"192.0.2.20", "192.0.2.21"}) {
-		t.Fatal("healthy adopted export did not recover")
 	}
 }
 

@@ -1206,7 +1206,7 @@ func verifyFilesystemProxyMount(path string, adoption *filesystemContextAdoption
 	if err != nil {
 		return nil, err
 	}
-	mounts, err := readMountInfoFile(procMountInfoPath)
+	mounts, err := readMountInfoFile()
 	if err != nil {
 		return nil, fmt.Errorf("read filesystem mount table: %w", err)
 	}
@@ -1230,7 +1230,11 @@ func verifyFilesystemProxyMount(path string, adoption *filesystemContextAdoption
 		return nil, fmt.Errorf("stat filesystem mount %q: %w", path, err)
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat.Dev < 0 || uint64(stat.Dev) != unix.Mkdev(mount.Major, mount.Minor) {
+	var device uint64
+	if ok {
+		device, ok = filesystemStatDevice(stat)
+	}
+	if !ok || device != unix.Mkdev(mount.Major, mount.Minor) {
 		return nil, fmt.Errorf("filesystem mount %q device no longer matches its mount root", path)
 	}
 	return info, nil
@@ -1279,18 +1283,18 @@ func verifyFilesystemSourceIdentity(path string, adoption *filesystemContextAdop
 	if err != nil {
 		return fmt.Errorf("statfs filesystem source %q: %w", path, err)
 	}
-	var expectedMagic int64
+	var matchesType bool
 	switch adoption.FilesystemType {
 	case "ext4":
-		expectedMagic = 0xef53
+		matchesType = filesystem.Type == 0xef53
 	case "xfs":
-		expectedMagic = 0x58465342
+		matchesType = filesystem.Type == 0x58465342
 	case "zfs":
-		expectedMagic = 0x2fc12fc1
+		matchesType = filesystem.Type == 0x2fc12fc1
 	default:
 		return fmt.Errorf("unsupported adopted filesystem type %q", adoption.FilesystemType)
 	}
-	if int64(filesystem.Type) != expectedMagic {
+	if !matchesType {
 		return fmt.Errorf("filesystem source %q does not have expected type %q", path, adoption.FilesystemType)
 	}
 	if adoption.Inode != 0 {

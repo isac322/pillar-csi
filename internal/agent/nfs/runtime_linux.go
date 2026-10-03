@@ -579,10 +579,11 @@ func (r *kernelRuntime) verifyExports(ctx context.Context, state *diskState) err
 func verifyLedgerRows(rows []entry, ledger []Export, kernel bool) error {
 	for _, row := range rows {
 		known := false
-		for _, e := range ledger {
+		for i := range ledger {
+			e := &ledger[i]
 			identityMatches := optionValue(row.Options, "fsid") == e.fsid()
 			if kernel {
-				identityMatches = kernelIdentityMatches(e, row.Options)
+				identityMatches = kernelIdentityMatches(*e, row.Options)
 			}
 			if row.Path == e.Path && identityMatches && slices.Contains(e.clients(), row.Client) {
 				known = true

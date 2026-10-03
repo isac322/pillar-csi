@@ -76,6 +76,7 @@ func (b *proxyTestBackend) InspectImport(
 	_ context.Context,
 	_ string,
 	required int64,
+	_ *agentv1.FilesystemAdoption,
 	layout backend.Layout,
 ) (*backend.ImportInspection, error) {
 	if required != b.capacity || layout != b.layout || !b.present {

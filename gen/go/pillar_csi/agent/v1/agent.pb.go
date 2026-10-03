@@ -2228,8 +2228,11 @@ type InspectImportRequest struct {
 	// Expected placement declared by the store; compared exactly with the agent.
 	ExpectedParentDataset string `protobuf:"bytes,5,opt,name=expected_parent_dataset,json=expectedParentDataset,proto3" json:"expected_parent_dataset,omitempty"`
 	ExpectedHostRoot      string `protobuf:"bytes,6,opt,name=expected_host_root,json=expectedHostRoot,proto3" json:"expected_host_root,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// Recorded identity for read-only revalidation after adoption. When absent,
+	// inspection must prove the complete first-claim filesystem/quota scope.
+	ExpectedFilesystemAdoption *FilesystemAdoption `protobuf:"bytes,7,opt,name=expected_filesystem_adoption,json=expectedFilesystemAdoption,proto3" json:"expected_filesystem_adoption,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *InspectImportRequest) Reset() {
@@ -2302,6 +2305,13 @@ func (x *InspectImportRequest) GetExpectedHostRoot() string {
 		return x.ExpectedHostRoot
 	}
 	return ""
+}
+
+func (x *InspectImportRequest) GetExpectedFilesystemAdoption() *FilesystemAdoption {
+	if x != nil {
+		return x.ExpectedFilesystemAdoption
+	}
+	return nil
 }
 
 type InspectImportResponse struct {
@@ -4450,14 +4460,15 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"\rfilesystem_id\x18\x06 \x01(\tR\ffilesystemId\x12\x14\n" +
 	"\x05inode\x18\a \x01(\x04R\x05inode\x12\x1d\n" +
 	"\n" +
-	"project_id\x18\b \x01(\rR\tprojectId\"\x9d\x02\n" +
+	"project_id\x18\b \x01(\rR\tprojectId\"\x88\x03\n" +
 	"\x14InspectImportRequest\x12\x1b\n" +
 	"\tpool_name\x18\x01 \x01(\tR\bpoolName\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12C\n" +
 	"\fbackend_type\x18\x03 \x01(\x0e2 .pillar_csi.agent.v1.BackendTypeR\vbackendType\x12%\n" +
 	"\x0erequired_bytes\x18\x04 \x01(\x03R\rrequiredBytes\x126\n" +
 	"\x17expected_parent_dataset\x18\x05 \x01(\tR\x15expectedParentDataset\x12,\n" +
-	"\x12expected_host_root\x18\x06 \x01(\tR\x10expectedHostRoot\"\x98\x01\n" +
+	"\x12expected_host_root\x18\x06 \x01(\tR\x10expectedHostRoot\x12i\n" +
+	"\x1cexpected_filesystem_adoption\x18\a \x01(\v2'.pillar_csi.agent.v1.FilesystemAdoptionR\x1aexpectedFilesystemAdoption\"\x98\x01\n" +
 	"\x15InspectImportResponse\x12X\n" +
 	"\x13filesystem_adoption\x18\x01 \x01(\v2'.pillar_csi.agent.v1.FilesystemAdoptionR\x12filesystemAdoption\x12%\n" +
 	"\x0ecapacity_bytes\x18\x02 \x01(\x03R\rcapacityBytes\"\xa7\x03\n" +
@@ -4736,98 +4747,99 @@ var file_pillar_csi_agent_v1_agent_proto_depIdxs = []int32{
 	2,  // 22: pillar_csi.agent.v1.CreateVolumeRequest.access_type:type_name -> pillar_csi.agent.v1.VolumeAccessType
 	3,  // 23: pillar_csi.agent.v1.CreateVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
 	0,  // 24: pillar_csi.agent.v1.InspectImportRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	30, // 25: pillar_csi.agent.v1.InspectImportResponse.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
-	0,  // 26: pillar_csi.agent.v1.ImportVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	3,  // 27: pillar_csi.agent.v1.ImportVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	30, // 28: pillar_csi.agent.v1.ImportVolumeRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
-	7,  // 29: pillar_csi.agent.v1.ImportVolumeRequest.backend_params:type_name -> pillar_csi.agent.v1.BackendParams
-	0,  // 30: pillar_csi.agent.v1.DeleteVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	3,  // 31: pillar_csi.agent.v1.DeleteVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	30, // 32: pillar_csi.agent.v1.DeleteVolumeRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
-	1,  // 33: pillar_csi.agent.v1.ReleaseVolumeRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	3,  // 34: pillar_csi.agent.v1.ReleaseVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	30, // 35: pillar_csi.agent.v1.ReleaseVolumeRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
-	0,  // 36: pillar_csi.agent.v1.ExpandVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	3,  // 37: pillar_csi.agent.v1.ExpandVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	1,  // 38: pillar_csi.agent.v1.ExportVolumeRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	13, // 39: pillar_csi.agent.v1.ExportVolumeRequest.export_params:type_name -> pillar_csi.agent.v1.ExportParams
-	3,  // 40: pillar_csi.agent.v1.ExportVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	30, // 41: pillar_csi.agent.v1.ExportVolumeRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
-	7,  // 42: pillar_csi.agent.v1.ExportVolumeRequest.backend_params:type_name -> pillar_csi.agent.v1.BackendParams
-	14, // 43: pillar_csi.agent.v1.ExportVolumeResponse.export_info:type_name -> pillar_csi.agent.v1.ExportInfo
-	1,  // 44: pillar_csi.agent.v1.UnexportVolumeRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	3,  // 45: pillar_csi.agent.v1.UnexportVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	30, // 46: pillar_csi.agent.v1.UnexportVolumeRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
-	0,  // 47: pillar_csi.agent.v1.SendVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	0,  // 48: pillar_csi.agent.v1.ReceiveVolumeChunk.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	1,  // 49: pillar_csi.agent.v1.AllowInitiatorRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	3,  // 50: pillar_csi.agent.v1.AllowInitiatorRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	13, // 51: pillar_csi.agent.v1.AllowInitiatorRequest.export_params:type_name -> pillar_csi.agent.v1.ExportParams
-	30, // 52: pillar_csi.agent.v1.AllowInitiatorRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
-	7,  // 53: pillar_csi.agent.v1.AllowInitiatorRequest.backend_params:type_name -> pillar_csi.agent.v1.BackendParams
-	1,  // 54: pillar_csi.agent.v1.DenyInitiatorRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	3,  // 55: pillar_csi.agent.v1.DenyInitiatorRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	30, // 56: pillar_csi.agent.v1.DenyInitiatorRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
-	1,  // 57: pillar_csi.agent.v1.SetLocalAttachRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	3,  // 58: pillar_csi.agent.v1.SetLocalAttachRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	30, // 59: pillar_csi.agent.v1.SetLocalAttachRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
-	7,  // 60: pillar_csi.agent.v1.SetLocalAttachRequest.backend_params:type_name -> pillar_csi.agent.v1.BackendParams
-	0,  // 61: pillar_csi.agent.v1.VolumeDesiredState.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	7,  // 62: pillar_csi.agent.v1.VolumeDesiredState.backend_params:type_name -> pillar_csi.agent.v1.BackendParams
-	56, // 63: pillar_csi.agent.v1.VolumeDesiredState.exports:type_name -> pillar_csi.agent.v1.ExportDesiredState
-	3,  // 64: pillar_csi.agent.v1.VolumeDesiredState.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	30, // 65: pillar_csi.agent.v1.VolumeDesiredState.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
-	1,  // 66: pillar_csi.agent.v1.ExportDesiredState.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	13, // 67: pillar_csi.agent.v1.ExportDesiredState.export_params:type_name -> pillar_csi.agent.v1.ExportParams
-	55, // 68: pillar_csi.agent.v1.ReconcileStateRequest.volumes:type_name -> pillar_csi.agent.v1.VolumeDesiredState
-	58, // 69: pillar_csi.agent.v1.ReconcileStateResponse.results:type_name -> pillar_csi.agent.v1.ReconcileItemResult
-	64, // 70: pillar_csi.agent.v1.ReconcileStateResponse.reconciled_at:type_name -> google.protobuf.Timestamp
-	14, // 71: pillar_csi.agent.v1.ListExportsResponse.ExportsEntry.value:type_name -> pillar_csi.agent.v1.ExportInfo
-	17, // 72: pillar_csi.agent.v1.AgentService.GetCapabilities:input_type -> pillar_csi.agent.v1.GetCapabilitiesRequest
-	19, // 73: pillar_csi.agent.v1.AgentService.GetCapacity:input_type -> pillar_csi.agent.v1.GetCapacityRequest
-	21, // 74: pillar_csi.agent.v1.AgentService.ListVolumes:input_type -> pillar_csi.agent.v1.ListVolumesRequest
-	23, // 75: pillar_csi.agent.v1.AgentService.ListExports:input_type -> pillar_csi.agent.v1.ListExportsRequest
-	26, // 76: pillar_csi.agent.v1.AgentService.HealthCheck:input_type -> pillar_csi.agent.v1.HealthCheckRequest
-	28, // 77: pillar_csi.agent.v1.AgentService.CreateVolume:input_type -> pillar_csi.agent.v1.CreateVolumeRequest
-	31, // 78: pillar_csi.agent.v1.AgentService.InspectImport:input_type -> pillar_csi.agent.v1.InspectImportRequest
-	33, // 79: pillar_csi.agent.v1.AgentService.ImportVolume:input_type -> pillar_csi.agent.v1.ImportVolumeRequest
-	35, // 80: pillar_csi.agent.v1.AgentService.DeleteVolume:input_type -> pillar_csi.agent.v1.DeleteVolumeRequest
-	39, // 81: pillar_csi.agent.v1.AgentService.ExpandVolume:input_type -> pillar_csi.agent.v1.ExpandVolumeRequest
-	37, // 82: pillar_csi.agent.v1.AgentService.ReleaseVolume:input_type -> pillar_csi.agent.v1.ReleaseVolumeRequest
-	41, // 83: pillar_csi.agent.v1.AgentService.ExportVolume:input_type -> pillar_csi.agent.v1.ExportVolumeRequest
-	43, // 84: pillar_csi.agent.v1.AgentService.UnexportVolume:input_type -> pillar_csi.agent.v1.UnexportVolumeRequest
-	49, // 85: pillar_csi.agent.v1.AgentService.AllowInitiator:input_type -> pillar_csi.agent.v1.AllowInitiatorRequest
-	51, // 86: pillar_csi.agent.v1.AgentService.DenyInitiator:input_type -> pillar_csi.agent.v1.DenyInitiatorRequest
-	53, // 87: pillar_csi.agent.v1.AgentService.SetLocalAttach:input_type -> pillar_csi.agent.v1.SetLocalAttachRequest
-	45, // 88: pillar_csi.agent.v1.AgentService.SendVolume:input_type -> pillar_csi.agent.v1.SendVolumeRequest
-	47, // 89: pillar_csi.agent.v1.AgentService.ReceiveVolume:input_type -> pillar_csi.agent.v1.ReceiveVolumeChunk
-	57, // 90: pillar_csi.agent.v1.AgentService.ReconcileState:input_type -> pillar_csi.agent.v1.ReconcileStateRequest
-	60, // 91: pillar_csi.agent.v1.AgentService.Drain:input_type -> pillar_csi.agent.v1.DrainRequest
-	18, // 92: pillar_csi.agent.v1.AgentService.GetCapabilities:output_type -> pillar_csi.agent.v1.GetCapabilitiesResponse
-	20, // 93: pillar_csi.agent.v1.AgentService.GetCapacity:output_type -> pillar_csi.agent.v1.GetCapacityResponse
-	22, // 94: pillar_csi.agent.v1.AgentService.ListVolumes:output_type -> pillar_csi.agent.v1.ListVolumesResponse
-	24, // 95: pillar_csi.agent.v1.AgentService.ListExports:output_type -> pillar_csi.agent.v1.ListExportsResponse
-	27, // 96: pillar_csi.agent.v1.AgentService.HealthCheck:output_type -> pillar_csi.agent.v1.HealthCheckResponse
-	29, // 97: pillar_csi.agent.v1.AgentService.CreateVolume:output_type -> pillar_csi.agent.v1.CreateVolumeResponse
-	32, // 98: pillar_csi.agent.v1.AgentService.InspectImport:output_type -> pillar_csi.agent.v1.InspectImportResponse
-	34, // 99: pillar_csi.agent.v1.AgentService.ImportVolume:output_type -> pillar_csi.agent.v1.ImportVolumeResponse
-	36, // 100: pillar_csi.agent.v1.AgentService.DeleteVolume:output_type -> pillar_csi.agent.v1.DeleteVolumeResponse
-	40, // 101: pillar_csi.agent.v1.AgentService.ExpandVolume:output_type -> pillar_csi.agent.v1.ExpandVolumeResponse
-	38, // 102: pillar_csi.agent.v1.AgentService.ReleaseVolume:output_type -> pillar_csi.agent.v1.ReleaseVolumeResponse
-	42, // 103: pillar_csi.agent.v1.AgentService.ExportVolume:output_type -> pillar_csi.agent.v1.ExportVolumeResponse
-	44, // 104: pillar_csi.agent.v1.AgentService.UnexportVolume:output_type -> pillar_csi.agent.v1.UnexportVolumeResponse
-	50, // 105: pillar_csi.agent.v1.AgentService.AllowInitiator:output_type -> pillar_csi.agent.v1.AllowInitiatorResponse
-	52, // 106: pillar_csi.agent.v1.AgentService.DenyInitiator:output_type -> pillar_csi.agent.v1.DenyInitiatorResponse
-	54, // 107: pillar_csi.agent.v1.AgentService.SetLocalAttach:output_type -> pillar_csi.agent.v1.SetLocalAttachResponse
-	46, // 108: pillar_csi.agent.v1.AgentService.SendVolume:output_type -> pillar_csi.agent.v1.SendVolumeChunk
-	48, // 109: pillar_csi.agent.v1.AgentService.ReceiveVolume:output_type -> pillar_csi.agent.v1.ReceiveVolumeResponse
-	59, // 110: pillar_csi.agent.v1.AgentService.ReconcileState:output_type -> pillar_csi.agent.v1.ReconcileStateResponse
-	61, // 111: pillar_csi.agent.v1.AgentService.Drain:output_type -> pillar_csi.agent.v1.DrainResponse
-	92, // [92:112] is the sub-list for method output_type
-	72, // [72:92] is the sub-list for method input_type
-	72, // [72:72] is the sub-list for extension type_name
-	72, // [72:72] is the sub-list for extension extendee
-	0,  // [0:72] is the sub-list for field type_name
+	30, // 25: pillar_csi.agent.v1.InspectImportRequest.expected_filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
+	30, // 26: pillar_csi.agent.v1.InspectImportResponse.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
+	0,  // 27: pillar_csi.agent.v1.ImportVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
+	3,  // 28: pillar_csi.agent.v1.ImportVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	30, // 29: pillar_csi.agent.v1.ImportVolumeRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
+	7,  // 30: pillar_csi.agent.v1.ImportVolumeRequest.backend_params:type_name -> pillar_csi.agent.v1.BackendParams
+	0,  // 31: pillar_csi.agent.v1.DeleteVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
+	3,  // 32: pillar_csi.agent.v1.DeleteVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	30, // 33: pillar_csi.agent.v1.DeleteVolumeRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
+	1,  // 34: pillar_csi.agent.v1.ReleaseVolumeRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
+	3,  // 35: pillar_csi.agent.v1.ReleaseVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	30, // 36: pillar_csi.agent.v1.ReleaseVolumeRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
+	0,  // 37: pillar_csi.agent.v1.ExpandVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
+	3,  // 38: pillar_csi.agent.v1.ExpandVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	1,  // 39: pillar_csi.agent.v1.ExportVolumeRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
+	13, // 40: pillar_csi.agent.v1.ExportVolumeRequest.export_params:type_name -> pillar_csi.agent.v1.ExportParams
+	3,  // 41: pillar_csi.agent.v1.ExportVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	30, // 42: pillar_csi.agent.v1.ExportVolumeRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
+	7,  // 43: pillar_csi.agent.v1.ExportVolumeRequest.backend_params:type_name -> pillar_csi.agent.v1.BackendParams
+	14, // 44: pillar_csi.agent.v1.ExportVolumeResponse.export_info:type_name -> pillar_csi.agent.v1.ExportInfo
+	1,  // 45: pillar_csi.agent.v1.UnexportVolumeRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
+	3,  // 46: pillar_csi.agent.v1.UnexportVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	30, // 47: pillar_csi.agent.v1.UnexportVolumeRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
+	0,  // 48: pillar_csi.agent.v1.SendVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
+	0,  // 49: pillar_csi.agent.v1.ReceiveVolumeChunk.backend_type:type_name -> pillar_csi.agent.v1.BackendType
+	1,  // 50: pillar_csi.agent.v1.AllowInitiatorRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
+	3,  // 51: pillar_csi.agent.v1.AllowInitiatorRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	13, // 52: pillar_csi.agent.v1.AllowInitiatorRequest.export_params:type_name -> pillar_csi.agent.v1.ExportParams
+	30, // 53: pillar_csi.agent.v1.AllowInitiatorRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
+	7,  // 54: pillar_csi.agent.v1.AllowInitiatorRequest.backend_params:type_name -> pillar_csi.agent.v1.BackendParams
+	1,  // 55: pillar_csi.agent.v1.DenyInitiatorRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
+	3,  // 56: pillar_csi.agent.v1.DenyInitiatorRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	30, // 57: pillar_csi.agent.v1.DenyInitiatorRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
+	1,  // 58: pillar_csi.agent.v1.SetLocalAttachRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
+	3,  // 59: pillar_csi.agent.v1.SetLocalAttachRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	30, // 60: pillar_csi.agent.v1.SetLocalAttachRequest.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
+	7,  // 61: pillar_csi.agent.v1.SetLocalAttachRequest.backend_params:type_name -> pillar_csi.agent.v1.BackendParams
+	0,  // 62: pillar_csi.agent.v1.VolumeDesiredState.backend_type:type_name -> pillar_csi.agent.v1.BackendType
+	7,  // 63: pillar_csi.agent.v1.VolumeDesiredState.backend_params:type_name -> pillar_csi.agent.v1.BackendParams
+	56, // 64: pillar_csi.agent.v1.VolumeDesiredState.exports:type_name -> pillar_csi.agent.v1.ExportDesiredState
+	3,  // 65: pillar_csi.agent.v1.VolumeDesiredState.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	30, // 66: pillar_csi.agent.v1.VolumeDesiredState.filesystem_adoption:type_name -> pillar_csi.agent.v1.FilesystemAdoption
+	1,  // 67: pillar_csi.agent.v1.ExportDesiredState.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
+	13, // 68: pillar_csi.agent.v1.ExportDesiredState.export_params:type_name -> pillar_csi.agent.v1.ExportParams
+	55, // 69: pillar_csi.agent.v1.ReconcileStateRequest.volumes:type_name -> pillar_csi.agent.v1.VolumeDesiredState
+	58, // 70: pillar_csi.agent.v1.ReconcileStateResponse.results:type_name -> pillar_csi.agent.v1.ReconcileItemResult
+	64, // 71: pillar_csi.agent.v1.ReconcileStateResponse.reconciled_at:type_name -> google.protobuf.Timestamp
+	14, // 72: pillar_csi.agent.v1.ListExportsResponse.ExportsEntry.value:type_name -> pillar_csi.agent.v1.ExportInfo
+	17, // 73: pillar_csi.agent.v1.AgentService.GetCapabilities:input_type -> pillar_csi.agent.v1.GetCapabilitiesRequest
+	19, // 74: pillar_csi.agent.v1.AgentService.GetCapacity:input_type -> pillar_csi.agent.v1.GetCapacityRequest
+	21, // 75: pillar_csi.agent.v1.AgentService.ListVolumes:input_type -> pillar_csi.agent.v1.ListVolumesRequest
+	23, // 76: pillar_csi.agent.v1.AgentService.ListExports:input_type -> pillar_csi.agent.v1.ListExportsRequest
+	26, // 77: pillar_csi.agent.v1.AgentService.HealthCheck:input_type -> pillar_csi.agent.v1.HealthCheckRequest
+	28, // 78: pillar_csi.agent.v1.AgentService.CreateVolume:input_type -> pillar_csi.agent.v1.CreateVolumeRequest
+	31, // 79: pillar_csi.agent.v1.AgentService.InspectImport:input_type -> pillar_csi.agent.v1.InspectImportRequest
+	33, // 80: pillar_csi.agent.v1.AgentService.ImportVolume:input_type -> pillar_csi.agent.v1.ImportVolumeRequest
+	35, // 81: pillar_csi.agent.v1.AgentService.DeleteVolume:input_type -> pillar_csi.agent.v1.DeleteVolumeRequest
+	39, // 82: pillar_csi.agent.v1.AgentService.ExpandVolume:input_type -> pillar_csi.agent.v1.ExpandVolumeRequest
+	37, // 83: pillar_csi.agent.v1.AgentService.ReleaseVolume:input_type -> pillar_csi.agent.v1.ReleaseVolumeRequest
+	41, // 84: pillar_csi.agent.v1.AgentService.ExportVolume:input_type -> pillar_csi.agent.v1.ExportVolumeRequest
+	43, // 85: pillar_csi.agent.v1.AgentService.UnexportVolume:input_type -> pillar_csi.agent.v1.UnexportVolumeRequest
+	49, // 86: pillar_csi.agent.v1.AgentService.AllowInitiator:input_type -> pillar_csi.agent.v1.AllowInitiatorRequest
+	51, // 87: pillar_csi.agent.v1.AgentService.DenyInitiator:input_type -> pillar_csi.agent.v1.DenyInitiatorRequest
+	53, // 88: pillar_csi.agent.v1.AgentService.SetLocalAttach:input_type -> pillar_csi.agent.v1.SetLocalAttachRequest
+	45, // 89: pillar_csi.agent.v1.AgentService.SendVolume:input_type -> pillar_csi.agent.v1.SendVolumeRequest
+	47, // 90: pillar_csi.agent.v1.AgentService.ReceiveVolume:input_type -> pillar_csi.agent.v1.ReceiveVolumeChunk
+	57, // 91: pillar_csi.agent.v1.AgentService.ReconcileState:input_type -> pillar_csi.agent.v1.ReconcileStateRequest
+	60, // 92: pillar_csi.agent.v1.AgentService.Drain:input_type -> pillar_csi.agent.v1.DrainRequest
+	18, // 93: pillar_csi.agent.v1.AgentService.GetCapabilities:output_type -> pillar_csi.agent.v1.GetCapabilitiesResponse
+	20, // 94: pillar_csi.agent.v1.AgentService.GetCapacity:output_type -> pillar_csi.agent.v1.GetCapacityResponse
+	22, // 95: pillar_csi.agent.v1.AgentService.ListVolumes:output_type -> pillar_csi.agent.v1.ListVolumesResponse
+	24, // 96: pillar_csi.agent.v1.AgentService.ListExports:output_type -> pillar_csi.agent.v1.ListExportsResponse
+	27, // 97: pillar_csi.agent.v1.AgentService.HealthCheck:output_type -> pillar_csi.agent.v1.HealthCheckResponse
+	29, // 98: pillar_csi.agent.v1.AgentService.CreateVolume:output_type -> pillar_csi.agent.v1.CreateVolumeResponse
+	32, // 99: pillar_csi.agent.v1.AgentService.InspectImport:output_type -> pillar_csi.agent.v1.InspectImportResponse
+	34, // 100: pillar_csi.agent.v1.AgentService.ImportVolume:output_type -> pillar_csi.agent.v1.ImportVolumeResponse
+	36, // 101: pillar_csi.agent.v1.AgentService.DeleteVolume:output_type -> pillar_csi.agent.v1.DeleteVolumeResponse
+	40, // 102: pillar_csi.agent.v1.AgentService.ExpandVolume:output_type -> pillar_csi.agent.v1.ExpandVolumeResponse
+	38, // 103: pillar_csi.agent.v1.AgentService.ReleaseVolume:output_type -> pillar_csi.agent.v1.ReleaseVolumeResponse
+	42, // 104: pillar_csi.agent.v1.AgentService.ExportVolume:output_type -> pillar_csi.agent.v1.ExportVolumeResponse
+	44, // 105: pillar_csi.agent.v1.AgentService.UnexportVolume:output_type -> pillar_csi.agent.v1.UnexportVolumeResponse
+	50, // 106: pillar_csi.agent.v1.AgentService.AllowInitiator:output_type -> pillar_csi.agent.v1.AllowInitiatorResponse
+	52, // 107: pillar_csi.agent.v1.AgentService.DenyInitiator:output_type -> pillar_csi.agent.v1.DenyInitiatorResponse
+	54, // 108: pillar_csi.agent.v1.AgentService.SetLocalAttach:output_type -> pillar_csi.agent.v1.SetLocalAttachResponse
+	46, // 109: pillar_csi.agent.v1.AgentService.SendVolume:output_type -> pillar_csi.agent.v1.SendVolumeChunk
+	48, // 110: pillar_csi.agent.v1.AgentService.ReceiveVolume:output_type -> pillar_csi.agent.v1.ReceiveVolumeResponse
+	59, // 111: pillar_csi.agent.v1.AgentService.ReconcileState:output_type -> pillar_csi.agent.v1.ReconcileStateResponse
+	61, // 112: pillar_csi.agent.v1.AgentService.Drain:output_type -> pillar_csi.agent.v1.DrainResponse
+	93, // [93:113] is the sub-list for method output_type
+	73, // [73:93] is the sub-list for method input_type
+	73, // [73:73] is the sub-list for extension type_name
+	73, // [73:73] is the sub-list for extension extendee
+	0,  // [0:73] is the sub-list for field type_name
 }
 
 func init() { file_pillar_csi_agent_v1_agent_proto_init() }

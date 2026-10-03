@@ -155,7 +155,7 @@ fi
 if [ -d "$mount" ]; then
   for dir in "$mount"/e71-*; do [ -e "$dir" ] || continue; rm -rf -- "$dir"; done
 fi`, shellQuote(sourceRoot), fsType, fsType)
-		if _, err := f.nativeExec(ctx, "sh", "-ceu", script); err != nil {
+		if _, err := f.nativeExec(ctx, "/bin/busybox", "sh", "-ceu", script); err != nil {
 			return err
 		}
 	}

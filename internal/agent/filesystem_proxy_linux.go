@@ -56,7 +56,11 @@ func (nativeFilesystemProxyMounter) Mount(source, target string) error {
 func cleanupNativeProxyMount(target string, cause error) error {
 	err := unix.Unmount(target, 0)
 	if err != nil {
-		return errors.Join(cause, fmt.Errorf("unmount partial bind %s: %w", target, err))
+		return fmt.Errorf(
+			"cleanup partial bind mount %s: %w",
+			target,
+			errors.Join(cause, fmt.Errorf("unmount partial bind %s: %w", target, err)),
+		)
 	}
 	return cause
 }
