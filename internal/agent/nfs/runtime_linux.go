@@ -1241,6 +1241,10 @@ func exportOperand(client, path string) string {
 }
 
 func runExportfs(ctx context.Context, args ...string) error {
+	err := ensurePrivateEtab(etabPath)
+	if err != nil {
+		return fmt.Errorf("prepare NFS admission table for export operation: %w", err)
+	}
 	// Private grant/revoke callers construct options and delimit operands with "--"; no shell is involved.
 	//nolint:gosec // G204: the executable is the fixed nfs-utils export utility.
 	output, err := exec.CommandContext(ctx, exportUtility, args...).CombinedOutput()
