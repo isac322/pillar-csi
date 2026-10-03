@@ -170,7 +170,13 @@ func (e Export) options() string {
 	case squashAll:
 		squash = "all_squash"
 	}
-	return mode + ",sync,no_subtree_check,secure,sec=sys,fsid=" + e.fsid() + "," + squash
+	options := mode + ",sync,no_subtree_check,secure,sec=sys,fsid=" + e.fsid() + "," + squash
+	// NFSv4 clients must cross the dedicated pseudoroot's owned child mounts.
+	// Child exports remain individually admitted and never inherit this flag.
+	if e.VolumeID == rootVolumeID {
+		options += ",crossmnt"
+	}
+	return options
 }
 
 type entry struct{ Path, Client, Options string }
@@ -806,35 +812,47 @@ func optionValue(options, key string) string {
 	return ""
 }
 
+func optionFlagsValid(flags []string) bool {
+	return !slices.Contains(flags, "nohide")
+}
+
+func optionsTraversalMatches(actual, wanted []string) bool {
+	return slices.Contains(actual, "crossmnt") == slices.Contains(wanted, "crossmnt")
+}
+
+func optionConflictPresent(option string, flags []string) bool {
+	var opposite string
+	switch option {
+	case "ro":
+		opposite = "rw"
+	case "rw":
+		opposite = "ro"
+	case optionRootSquash:
+		opposite = optionNoSquash
+	case optionNoSquash:
+		opposite = optionRootSquash
+	case "all_squash":
+		opposite = "no_all_squash"
+	case "secure":
+		opposite = "insecure"
+	case "sync":
+		opposite = "async"
+	case "no_subtree_check":
+		opposite = "subtree_check"
+	case "crossmnt":
+		opposite = "nocrossmnt"
+	}
+	return opposite != "" && slices.Contains(flags, opposite)
+}
+
 func optionsMatch(actual, wanted string) bool {
 	flags := strings.Split(actual, ",")
-	if slices.Contains(flags, "crossmnt") || slices.Contains(flags, "nohide") {
+	wantedFlags := strings.Split(wanted, ",")
+	if !optionFlagsValid(flags) || !optionsTraversalMatches(flags, wantedFlags) {
 		return false
 	}
 	for option := range strings.SplitSeq(wanted, ",") {
-		if !slices.Contains(flags, option) {
-			return false
-		}
-		var opposite string
-		switch option {
-		case "ro":
-			opposite = "rw"
-		case "rw":
-			opposite = "ro"
-		case optionRootSquash:
-			opposite = optionNoSquash
-		case optionNoSquash:
-			opposite = optionRootSquash
-		case "all_squash":
-			opposite = "no_all_squash"
-		case "secure":
-			opposite = "insecure"
-		case "sync":
-			opposite = "async"
-		case "no_subtree_check":
-			opposite = "subtree_check"
-		}
-		if opposite != "" && slices.Contains(flags, opposite) {
+		if !slices.Contains(flags, option) || optionConflictPresent(option, flags) {
 			return false
 		}
 	}

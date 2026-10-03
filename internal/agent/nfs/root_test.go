@@ -3,6 +3,8 @@
 package nfs
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -89,8 +91,53 @@ func assertRootPolicy(t *testing.T, options string) {
 	t.Helper()
 	flags := strings.Split(options, ",")
 	if !strings.HasPrefix(options, "ro,") ||
-		!slices.Contains(flags, optionRootSquash) || slices.Contains(flags, "crossmnt") {
+		!slices.Contains(flags, optionRootSquash) ||
+		!slices.Contains(flags, "crossmnt") ||
+		slices.Contains(flags, "nohide") {
 		t.Fatalf("unsafe pseudoroot policy %s", options)
+	}
+}
+
+func TestOwnedNestedChildUsesCrossmntPseudoroot(t *testing.T) {
+	t.Parallel()
+	r := &memoryRuntime{}
+	m := testManager(t, r, t.TempDir())
+	e := testExport(t, m)
+	e.VolumeID = "pool/nested"
+	e.Clients = []string{"192.0.2.20"}
+	e.Path = filepath.Join(m.config.ExportRoot, "pool", "nested", "volume")
+	if err := os.MkdirAll(e.Path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(filepath.Join(m.config.ExportRoot, "pool")); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := m.Put(t.Context(), e, true, true); err != nil {
+		t.Fatal(err)
+	}
+	var rootSeen, childSeen bool
+	for _, row := range r.rows {
+		switch row.Path {
+		case m.config.ExportRoot:
+			rootSeen = true
+			assertRootPolicy(t, row.Options)
+		case e.Path:
+			childSeen = true
+			flags := strings.Split(row.Options, ",")
+			if slices.Contains(flags, "crossmnt") || slices.Contains(flags, "nohide") {
+				t.Fatalf("nested child weakened pseudoroot policy: %s", row.Options)
+			}
+			if row.Client != e.Clients[0] {
+				t.Fatalf("nested child admitted unexpected client %q", row.Client)
+			}
+		default:
+			t.Fatalf("unexpected foreign admission for nested child: %#v", row)
+		}
+	}
+	if !rootSeen || !childSeen {
+		t.Fatalf("nested owned child admission incomplete: root=%v child=%v", rootSeen, childSeen)
 	}
 }
 
@@ -111,20 +158,25 @@ func TestClientRoutingStaysWithinOwnedPseudoroot(t *testing.T) {
 
 func TestExportPolicyReadbackRejectsWeakerKernelAdmission(t *testing.T) {
 	t.Parallel()
-	wanted := "ro,sync,no_subtree_check,secure,sec=sys,fsid=123,root_squash"
+	rootWanted := "ro,sync,no_subtree_check,secure,sec=sys,fsid=0,root_squash,crossmnt"
 	for _, actual := range []string{
-		"rw,sync,no_subtree_check,secure,sec=sys,fsid=123,root_squash",
-		wanted + ",no_root_squash",
-		wanted + ",insecure",
-		wanted + ",crossmnt",
-		wanted + ",nohide",
-		strings.Replace(wanted, "fsid=123", "fsid=456", 1),
+		"rw,sync,no_subtree_check,secure,sec=sys,fsid=0,root_squash,crossmnt",
+		rootWanted + ",no_root_squash",
+		rootWanted + ",insecure",
+		strings.TrimSuffix(rootWanted, ",crossmnt"),
+		rootWanted + ",nocrossmnt",
+		rootWanted + ",nohide",
+		strings.Replace(rootWanted, "fsid=0", "fsid=123", 1),
 	} {
-		if optionsMatch(actual, wanted) {
+		if optionsMatch(actual, rootWanted) {
 			t.Fatalf("weaker or foreign admission accepted: %q", actual)
 		}
 	}
-	if !optionsMatch(wanted+",wdelay,hide,nocrossmnt", wanted) {
+	childWanted := strings.TrimSuffix(rootWanted, ",crossmnt")
+	if optionsMatch(childWanted+",crossmnt", childWanted) {
+		t.Fatal("crossmnt accepted on a child export")
+	}
+	if !optionsMatch(childWanted+",wdelay,hide,nocrossmnt", childWanted) {
 		t.Fatal("security-equivalent nfs-utils defaults rejected")
 	}
 }
