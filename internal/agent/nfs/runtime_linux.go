@@ -29,6 +29,7 @@ const nfsdRoot = "/proc/fs/nfsd"
 const pipefsDir = "/var/lib/nfs/rpc_pipefs"
 const trackerDir = "/var/lib/nfs/nfsdcld"
 const trackerName = "nfsdcld"
+const etabPath = "/var/lib/nfs/etab"
 const nfsTCPPort = "tcp 2049"
 
 //nolint:misspell // Exact nfs-utils executable name, not the English word "exports".
@@ -429,11 +430,11 @@ func (r *kernelRuntime) start(
 	if err != nil {
 		return err
 	}
-	err = r.verifyExports(ctx, state)
+	err = r.preparePaths()
 	if err != nil {
 		return err
 	}
-	err = r.preparePaths()
+	err = r.verifyExports(ctx, state)
 	if err != nil {
 		return err
 	}
@@ -623,6 +624,10 @@ func (r *kernelRuntime) preparePaths() error {
 		if err != nil {
 			return fmt.Errorf("create NFS tracking directory %q: %w", dir, err)
 		}
+	}
+	err = ensurePrivateEtab(etabPath)
+	if err != nil {
+		return err
 	}
 	var stat unix.Statfs_t
 	err = unix.Statfs(pipefsDir, &stat)
@@ -1193,8 +1198,32 @@ func parseEtab(data string) ([]entry, error) {
 	return entries, nil
 }
 
+func ensurePrivateEtab(path string) error {
+	//nolint:gosec // G304: fixed private nfs-utils state path; O_NOFOLLOW rejects symlinks.
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return fmt.Errorf("open private NFS admission table %q: %w", path, err)
+	}
+	info, statErr := file.Stat()
+	closeErr := file.Close()
+	if statErr != nil {
+		return fmt.Errorf("stat private NFS admission table %q: %w", path, errors.Join(statErr, closeErr))
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close private NFS admission table %q: %w", path, closeErr)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("private NFS admission table %q is not a regular file", path)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 {
+		return fmt.Errorf("private NFS admission table %q must be root-owned", path)
+	}
+	return nil
+}
+
 func (*kernelRuntime) list(_ context.Context) ([]entry, error) {
-	data, err := os.ReadFile("/var/lib/nfs/etab")
+	data, err := os.ReadFile(etabPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

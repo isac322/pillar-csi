@@ -6,9 +6,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"syscall"
@@ -93,6 +95,48 @@ func TestAdmissionTableParsingRefusesUnprovableOwnership(t *testing.T) {
 		if _, err := parseEtab(data); err == nil {
 			t.Fatalf("unprovable admission table accepted: %q", data)
 		}
+	}
+}
+
+func TestEnsurePrivateEtabCreatesAndPreservesTable(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() != 0 {
+		t.Skip("private NFS admission table must be root-owned")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "etab")
+	if err := ensurePrivateEtab(path); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("private admission table mode = %s, want regular file", info.Mode())
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 {
+		t.Fatalf("private admission table owner = %#v, want root", info.Sys())
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("private admission table mode = %o, is group/world accessible", info.Mode().Perm())
+	}
+	const content = "/data 192.0.2.10(ro,fsid=1)\n"
+	writeErr := os.WriteFile(path, []byte(content), 0o600)
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	ensureErr := ensurePrivateEtab(path)
+	if ensureErr != nil {
+		t.Fatal(ensureErr)
+	}
+	got, readErr := fs.ReadFile(os.DirFS(dir), "etab")
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != content {
+		t.Fatalf("private admission table content = %q, want %q", got, content)
 	}
 }
 
