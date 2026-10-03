@@ -37,12 +37,14 @@ type statsNativeBackend struct {
 func (b *statsNativeBackend) Type() agentv1.BackendType { return b.kind }
 func (b *statsNativeBackend) Layout() backend.Layout    { return b.layout }
 func (b *statsNativeBackend) InspectImport(
-	_ context.Context, source string, required int64, layout backend.Layout,
+	_ context.Context, source string, required int64, expected *agentv1.FilesystemAdoption,
+	layout backend.Layout,
 ) (*backend.ImportInspection, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if source != b.adoption.GetCanonicalSource() || layout != b.layout || required != b.capacity {
-		return nil, &backend.ImportRefusedError{Reason: "native source, layout or exact quota changed"}
+	if source != b.adoption.GetCanonicalSource() || !proto.Equal(expected, b.adoption) ||
+		layout != b.layout || required != b.capacity {
+		return nil, &backend.ImportRefusedError{Reason: "native source, identity, layout or exact quota changed"}
 	}
 	adoption, ok := proto.Clone(b.adoption).(*agentv1.FilesystemAdoption)
 	if !ok {

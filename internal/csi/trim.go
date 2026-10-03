@@ -217,7 +217,7 @@ func newTrimmer(n *NodeServer, opts TrimOptions, fitrim fitrimFunc, fsSize fsSiz
 		tryLock:          n.volumeLocks.tryLock,
 		fitrim:           fitrim,
 		fsSize:           fsSize,
-		mounts:           func() ([]mountInfoEntry, error) { return readMountInfoFile(procMountInfoPath) },
+		mounts:           readMountInfoFile,
 		deviceMatches:    sysfsDeviceMatcher(trimSysfsRoot),
 		noticed:          make(map[string]time.Time),
 	}
@@ -596,16 +596,16 @@ func findMount(mounts []mountInfoEntry, path string) (mountInfoEntry, bool) {
 	return mountInfoEntry{}, false
 }
 
-// readMountInfoFile parses the mountinfo file at path.
-func readMountInfoFile(path string) ([]mountInfoEntry, error) {
-	f, err := os.Open(path) //nolint:gosec // G304: fixed procfs path
+// readMountInfoFile parses the current process's mountinfo file.
+func readMountInfoFile() ([]mountInfoEntry, error) {
+	f, err := os.Open(procMountInfoPath)
 	if err != nil {
-		return nil, fmt.Errorf("open %q: %w", path, err)
+		return nil, fmt.Errorf("open %q: %w", procMountInfoPath, err)
 	}
 	defer func() { _ = f.Close() }() //nolint:errcheck // read-only file
 	mounts, err := parseMountInfo(f)
 	if err != nil {
-		return nil, fmt.Errorf("parse %q: %w", path, err)
+		return nil, fmt.Errorf("parse %q: %w", procMountInfoPath, err)
 	}
 	return mounts, nil
 }

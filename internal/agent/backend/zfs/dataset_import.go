@@ -108,7 +108,8 @@ func (p *pinnedDataset) Close() error {
 // InspectImport verifies an existing dataset's native identity, mounts, and exact
 // effective quota without changing its properties or filesystem.
 func (d *DatasetBackend) InspectImport(
-	ctx context.Context, source string, requiredBytes int64, expectedLayout backend.Layout,
+	ctx context.Context, source string, requiredBytes int64,
+	expected *agentv1.FilesystemAdoption, expectedLayout backend.Layout,
 ) (*backend.ImportInspection, error) {
 	if requiredBytes <= 0 {
 		return nil, fmt.Errorf("zfs filesystem import: exact capacity must be positive")
@@ -125,7 +126,10 @@ func (d *DatasetBackend) InspectImport(
 	if err != nil {
 		return nil, d.refuseImport(dataset, reasonMissing, err.Error())
 	}
-	mountPath, err := d.importMountPath(dataset, state, nil)
+	if expected != nil && state.guid != expected.GetResourceId() {
+		return nil, d.refuseImport(dataset, reasonLayout, "recorded dataset GUID differs")
+	}
+	mountPath, err := d.importMountPath(dataset, state, expected)
 	if err != nil {
 		return nil, err
 	}
@@ -134,9 +138,20 @@ func (d *DatasetBackend) InspectImport(
 		return nil, err
 	}
 	adoption := adoptionFor(dataset, state)
-	owned, ownedErr := d.ownedProxyPath(adoption)
-	if mountPath != d.agentPath(state.mountpoint) || (ownedErr == nil && mountPath == owned) {
-		adoption.HostPath = ""
+	if expected != nil {
+		// An owned proxy never turns its current mountpoint into provenance.
+		if expected.GetHostPath() == "" {
+			adoption.HostPath = ""
+		}
+		if !sameFilesystemAdoption(expected, adoption) {
+			return nil, d.refuseImport(dataset, reasonLayout,
+				"recorded filesystem identity, source path, or mount state differs")
+		}
+	} else {
+		owned, ownedErr := d.ownedProxyPath(adoption)
+		if mountPath != d.agentPath(state.mountpoint) || (ownedErr == nil && mountPath == owned) {
+			adoption.HostPath = ""
+		}
 	}
 	return &backend.ImportInspection{Filesystem: adoption, CapacityBytes: capacity}, nil
 }

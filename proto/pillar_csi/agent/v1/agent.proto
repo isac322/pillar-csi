@@ -703,6 +703,9 @@ message InspectImportRequest {
   // Expected placement declared by the store; compared exactly with the agent.
   string expected_parent_dataset = 5;
   string expected_host_root = 6;
+  // Recorded identity for read-only revalidation after adoption. When absent,
+  // inspection must prove the complete first-claim filesystem/quota scope.
+  FilesystemAdoption expected_filesystem_adoption = 7;
 }
 
 message InspectImportResponse {

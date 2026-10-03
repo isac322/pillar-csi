@@ -221,12 +221,18 @@ func filesystemStatsInspectRequest(state *FileStageState) (*agentv1.InspectImpor
 	if err != nil {
 		return nil, err
 	}
+	expected := &agentv1.FilesystemAdoption{
+		Kind: state.Kind, CanonicalSource: state.CanonicalSource, ResourceId: state.ResourceID,
+		HostPath: state.HostPath, FilesystemType: state.FilesystemType, FilesystemId: state.FilesystemID,
+		Inode: state.Inode, ProjectId: state.ProjectID,
+	}
 	req := &agentv1.InspectImportRequest{
-		PoolName:              state.PoolName,
-		Source:                state.CanonicalSource,
-		RequiredBytes:         state.CapacityBytes,
-		ExpectedParentDataset: state.ExpectedParentDataset,
-		ExpectedHostRoot:      state.ExpectedHostRoot,
+		PoolName:                   state.PoolName,
+		Source:                     state.CanonicalSource,
+		RequiredBytes:              state.CapacityBytes,
+		ExpectedParentDataset:      state.ExpectedParentDataset,
+		ExpectedHostRoot:           state.ExpectedHostRoot,
+		ExpectedFilesystemAdoption: expected,
 	}
 	switch state.Kind {
 	case filesystemKindDirectory:

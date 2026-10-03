@@ -140,6 +140,8 @@ spec:
   duration: {{ .Values.mtls.certManager.duration }}
   renewBefore: {{ .Values.mtls.certManager.renewBefore }}
   commonName: {{ printf "%s-file-node.%s.svc" $fullname $ns }}
+  uris:
+    - spiffe://pillar-csi/file-node
   usages:
     - digital signature
     - key encipherment

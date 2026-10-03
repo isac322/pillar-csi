@@ -29,7 +29,7 @@ type filesystemTestBackend struct {
 }
 
 func (b *filesystemTestBackend) InspectImport(
-	_ context.Context, _ string, required int64, layout backend.Layout,
+	_ context.Context, _ string, required int64, _ *agentv1.FilesystemAdoption, layout backend.Layout,
 ) (*backend.ImportInspection, error) {
 	if b.inspectErr != nil {
 		return nil, b.inspectErr

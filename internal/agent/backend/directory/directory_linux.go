@@ -10,14 +10,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
-	"unsafe"
+
+	"golang.org/x/sys/unix"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/agent/backend"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -50,77 +53,75 @@ const (
 	fsQuotaProjectOption = "prjquota"
 )
 
+// Blank fields retain unused Linux UAPI members, including their alignment.
 type fsxattr struct {
-	xflags     uint32
-	extsize    uint32
-	nextents   uint32
-	projid     uint32
-	cowextsize uint32
-	pad        [8]byte
+	xflags uint32
+	_      uint32 // fsx_extsize
+	_      uint32 // fsx_nextents
+	projid uint32
+	_      uint32  // fsx_cowextsize
+	_      [8]byte // fsx_pad
 }
 
 type ifDqblk struct {
 	bhardlimit uint64
-	bsoftlimit uint64
-	curspace   uint64
-	ihardlimit uint64
-	isoftlimit uint64
+	_          uint64 // dqb_bsoftlimit
+	_          uint64 // dqb_curspace
+	_          uint64 // dqb_ihardlimit
+	_          uint64 // dqb_isoftlimit
 	curinodes  uint64
-	btime      uint64
-	itime      uint64
+	_          uint64 // dqb_btime
+	_          uint64 // dqb_itime
 	valid      uint32
-	pad        uint32
+	_          uint32 // trailing padding
 }
 
 type fsDiskQuota struct {
-	version      int8
+	_            int8 // d_version
 	flags        int8
-	fieldmask    uint16
-	id           uint32
+	_            uint16 // d_fieldmask
+	_            uint32 // d_id
 	blkHardlimit uint64
-	blkSoftlimit uint64
-	inoHardlimit uint64
-	inoSoftlimit uint64
-	bcount       uint64
+	_            uint64 // d_blk_softlimit
+	_            uint64 // d_ino_hardlimit
+	_            uint64 // d_ino_softlimit
+	_            uint64 // d_bcount
 	icount       uint64
-	itimer       int32
-	btimer       int32
-	iwarns       uint16
-	bwarns       uint16
-	padding2     int32
-	rtbHardlimit uint64
-	rtbSoftlimit uint64
-	rtbcount     uint64
-	rtbtimer     int32
-	rtbwarns     uint16
-	padding3     int16
-	padding4     [8]byte
-}
-type fsQfilestatV struct {
-	ino      uint64
-	nblks    uint64
-	nextents uint32
-	pad      uint32
+	_            int32   // d_itimer
+	_            int32   // d_btimer
+	_            uint16  // d_iwarns
+	_            uint16  // d_bwarns
+	_            int32   // d_padding2
+	_            uint64  // d_rtb_hardlimit
+	_            uint64  // d_rtb_softlimit
+	_            uint64  // d_rtbcount
+	_            int32   // d_rtbtimer
+	_            uint16  // d_rtbwarns
+	_            int16   // d_padding3
+	_            [8]byte // d_padding4
 }
 
 // fsQuotaStatV mirrors struct fs_quota_statv from linux/dqblk_xfs.h.
 type fsQuotaStatV struct {
-	version      int8
-	pad1         uint8
-	flags        uint16
-	incoreDquots uint32
-	userQuota    fsQfilestatV
-	groupQuota   fsQfilestatV
-	projectQuota fsQfilestatV
-	btimeLimit   int32
-	itimeLimit   int32
-	rtbtimeLimit int32
-	bwarnLimit   uint16
-	iwarnLimit   uint16
-	rtbWarnLimit uint16
-	pad3         uint16
-	pad4         uint32
-	pad2         [7]uint64
+	version int8
+	_       uint8 // qs_pad1
+	flags   uint16
+	_       uint32 // qs_incoredqs
+	_       [3]struct {
+		_ uint64 // qfs_ino
+		_ uint64 // qfs_nblks
+		_ uint32 // qfs_nextents
+		_ uint32 // qfs_pad
+	} // qs_uquota, qs_gquota, qs_pquota
+	_ int32     // qs_btimelimit
+	_ int32     // qs_itimelimit
+	_ int32     // qs_rtbtimelimit
+	_ uint16    // qs_bwarnlimit
+	_ uint16    // qs_iwarnlimit
+	_ uint16    // qs_rtbwarnlimit
+	_ uint16    // qs_pad3
+	_ uint32    // qs_pad4
+	_ [7]uint64 // qs_pad2
 }
 
 type dirPin struct {
@@ -151,30 +152,117 @@ func (b *Backend) inspect(
 	if requiredBytes <= 0 {
 		return nil, nil, fmt.Errorf("directory import: required capacity must be positive")
 	}
-	if source == "" || !filepath.IsAbs(source) {
+	paths, err := b.resolveSource(source)
+	if err != nil {
+		return nil, nil, err
+	}
+	fd, err := openPinnedDir(paths.rootSys, paths.sourceSys)
+	if err != nil {
 		return nil, nil, &backend.ImportRefusedError{
+			Reason: reasonMissing,
+			Detail: fmt.Sprintf("secure open %q: %v", paths.canonicalHost, err),
+		}
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			closeErr := unix.Close(fd)
+			if closeErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf(
+					"directory source %q: close inspection pin: %w", paths.canonicalHost, closeErr,
+				))
+				inspection = nil
+			}
+		}
+	}()
+	inspection, err = b.inspectPinnedSource(ctx, fd, paths, requiredBytes, expected)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !pin {
+		return inspection, nil, nil
+	}
+	closed = true
+	return inspection, &dirPin{fd: fd, mountSource: fmt.Sprintf("/proc/self/fd/%d", fd)}, nil
+}
+
+func (b *Backend) inspectPinnedSource(
+	ctx context.Context,
+	fd int,
+	paths resolvedSource,
+	requiredBytes int64,
+	expected *agentv1.FilesystemAdoption,
+) (*backend.ImportInspection, error) {
+	st, err := validatePinnedSource(fd, paths.sourceSys, paths.canonicalHost)
+	if err != nil {
+		return nil, err
+	}
+	filesystem, err := b.inspectFilesystem(fd, paths.sourceSys, paths.canonicalHost, st)
+	if err != nil {
+		return nil, err
+	}
+	err = validateQuota(filesystem.quota, requiredBytes)
+	if err != nil {
+		return nil, err
+	}
+	if expected == nil {
+		err = verifyProjectTree(ctx, fd, filesystem.project, filesystem.quota.inodes)
+		if err != nil {
+			return nil, err
+		}
+	}
+	adoption := &agentv1.FilesystemAdoption{
+		Kind:            adoptionKind,
+		CanonicalSource: filepath.Clean(paths.canonicalHost),
+		ResourceId:      filesystem.fsUUID + ":" + strconv.FormatUint(st.Ino, 10),
+		FilesystemType:  filesystem.fsType,
+		FilesystemId:    filesystem.fsUUID,
+		Inode:           st.Ino,
+		ProjectId:       filesystem.project,
+	}
+	if expected != nil {
+		err = equalAdoption(adoption, expected)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &backend.ImportInspection{Filesystem: adoption, CapacityBytes: filesystem.quota.capacity}, nil
+}
+
+type resolvedSource struct {
+	rootSys       string
+	sourceSys     string
+	canonicalHost string
+}
+
+func (b *Backend) resolveSource(source string) (resolvedSource, error) {
+	if source == "" || !filepath.IsAbs(source) {
+		return resolvedSource{}, &backend.ImportRefusedError{
 			Reason: reasonMissing,
 			Detail: fmt.Sprintf("source %q is not absolute", source),
 		}
 	}
 	rootHost, err := filepath.Abs(filepath.Clean(b.hostRoot))
 	if err != nil {
-		return nil, nil, fmt.Errorf("directory root: %w", err)
+		return resolvedSource{}, fmt.Errorf("directory root: %w", err)
 	}
 	rootSys, err := filepath.EvalSymlinks(b.sysPath(rootHost))
 	if err != nil {
-		return nil, nil, fmt.Errorf("directory root %q: %w", rootHost, err)
+		return resolvedSource{}, fmt.Errorf("directory root %q: %w", rootHost, err)
 	}
 	sourceHost, err := filepath.Abs(filepath.Clean(source))
 	if err != nil {
-		return nil, nil, fmt.Errorf("directory source: %w", err)
+		return resolvedSource{}, fmt.Errorf("directory source: %w", err)
 	}
 	sourceSys, err := filepath.EvalSymlinks(b.sysPath(sourceHost))
 	if err != nil {
-		return nil, nil, &backend.ImportRefusedError{Reason: reasonMissing, Detail: fmt.Sprintf("source %q: %v", source, err)}
+		return resolvedSource{}, &backend.ImportRefusedError{
+			Reason: reasonMissing,
+			Detail: fmt.Sprintf("source %q: %v", source, err),
+		}
 	}
 	if !within(rootSys, sourceSys) {
-		return nil, nil, &backend.ImportRefusedError{
+		return resolvedSource{}, &backend.ImportRefusedError{
 			Reason: reasonLayout,
 			Detail: fmt.Sprintf(
 				"canonical source %q is outside configured host root %q",
@@ -183,71 +271,70 @@ func (b *Backend) inspect(
 			),
 		}
 	}
-	canonicalHost := sourceSys
-	if b.hostRootPrefix != "" {
-		prefixSys, prefixErr := filepath.EvalSymlinks(b.hostRootPrefix)
-		if prefixErr != nil {
-			return nil, nil, fmt.Errorf("directory host root prefix %q: %w", b.hostRootPrefix, prefixErr)
-		}
-		if !within(prefixSys, sourceSys) {
-			return nil, nil, fmt.Errorf("directory source %q escaped host prefix %q", sourceSys, prefixSys)
-		}
-		canonicalHost = "/" + strings.TrimPrefix(strings.TrimPrefix(sourceSys, prefixSys), string(filepath.Separator))
-		if canonicalHost == "//" {
-			canonicalHost = "/"
-		}
+	paths := resolvedSource{rootSys: rootSys, sourceSys: sourceSys, canonicalHost: sourceSys}
+	if b.hostRootPrefix == "" {
+		return paths, nil
 	}
-	fd, err := openPinnedDir(rootSys, sourceSys)
+	prefixSys, err := filepath.EvalSymlinks(b.hostRootPrefix)
 	if err != nil {
-		return nil, nil, &backend.ImportRefusedError{
-			Reason: reasonMissing,
-			Detail: fmt.Sprintf("secure open %q: %v", canonicalHost, err),
-		}
+		return resolvedSource{}, fmt.Errorf("directory host root prefix %q: %w", b.hostRootPrefix, err)
 	}
-	closed := false
-	defer func() {
-		if !closed {
-			if closeErr := unix.Close(fd); closeErr != nil {
-				retErr = errors.Join(retErr, fmt.Errorf("directory source %q: close inspection pin: %w", canonicalHost, closeErr))
-				inspection = nil
-			}
-		}
-	}()
+	if !within(prefixSys, sourceSys) {
+		return resolvedSource{}, fmt.Errorf("directory source %q escaped host prefix %q", sourceSys, prefixSys)
+	}
+	paths.canonicalHost = "/" + strings.TrimPrefix(strings.TrimPrefix(sourceSys, prefixSys), string(filepath.Separator))
+	if paths.canonicalHost == "//" {
+		paths.canonicalHost = "/"
+	}
+	return paths, nil
+}
+
+func validatePinnedSource(fd int, sourceSys, canonicalHost string) (unix.Stat_t, error) {
 	var st unix.Stat_t
-	err = unix.Fstat(fd, &st)
+	err := unix.Fstat(fd, &st)
 	if err != nil {
-		return nil, nil, fmt.Errorf("directory source %q: fstat: %w", canonicalHost, err)
+		return unix.Stat_t{}, fmt.Errorf("directory source %q: fstat: %w", canonicalHost, err)
 	}
 	var pathStat unix.Stat_t
 	err = unix.Stat(sourceSys, &pathStat)
 	if err != nil {
-		return nil, nil, fmt.Errorf("directory source %q: stat after secure open: %w", canonicalHost, err)
+		return unix.Stat_t{}, fmt.Errorf("directory source %q: stat after secure open: %w", canonicalHost, err)
 	}
 	if st.Dev != pathStat.Dev || st.Ino != pathStat.Ino {
-		return nil, nil, &backend.ImportRefusedError{
+		return unix.Stat_t{}, &backend.ImportRefusedError{
 			Reason: reasonIdentity,
 			Detail: fmt.Sprintf("source %q changed while being pinned", canonicalHost),
 		}
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFDIR {
-		return nil, nil, &backend.ImportRefusedError{Reason: reasonWrongType, Detail: "source is not a directory"}
+		return unix.Stat_t{}, &backend.ImportRefusedError{Reason: reasonWrongType, Detail: "source is not a directory"}
 	}
-	mount, err := findMount(
-		b.mountInfoPath,
-		sourceSys,
-		uint32(unix.Major(uint64(st.Dev))),
-		uint32(unix.Minor(uint64(st.Dev))),
-	)
+	return st, nil
+}
+
+type filesystemInspection struct {
+	fsType  string
+	fsUUID  string
+	project uint32
+	quota   quotaResult
+}
+
+func (b *Backend) inspectFilesystem(
+	fd int,
+	sourceSys, canonicalHost string,
+	st unix.Stat_t,
+) (filesystemInspection, error) {
+	mount, err := findMount(b.mountInfoPath, sourceSys, unix.Major(st.Dev), unix.Minor(st.Dev))
 	if err != nil {
-		return nil, nil, err
+		return filesystemInspection{}, err
 	}
 	err = rejectSubmounts(b.mountInfoPath, sourceSys, mount.mountPoint)
 	if err != nil {
-		return nil, nil, err
+		return filesystemInspection{}, err
 	}
 	fsType := strings.ToLower(mount.fsType)
 	if fsType != "ext4" && fsType != "xfs" {
-		return nil, nil, &backend.ImportRefusedError{
+		return filesystemInspection{}, &backend.ImportRefusedError{
 			Reason: reasonWrongType,
 			Detail: fmt.Sprintf(
 				"filesystem type %q is unsupported; only ext4 and xfs are supported",
@@ -257,30 +344,47 @@ func (b *Backend) inspect(
 	}
 	fsUUID, err := readNativeUUID(mount, b.hostRootPrefix)
 	if err != nil {
-		return nil, nil, fmt.Errorf("directory source %q: native %s UUID: %w", canonicalHost, fsType, err)
+		return filesystemInspection{}, fmt.Errorf(
+			"directory source %q: native %s UUID: %w",
+			canonicalHost,
+			fsType,
+			err,
+		)
 	}
 	project, inherit, err := readProject(fd)
 	if err != nil {
-		return nil, nil, fmt.Errorf("directory source %q: project attributes: %w", canonicalHost, err)
+		return filesystemInspection{}, fmt.Errorf(
+			"directory source %q: project attributes: %w",
+			canonicalHost,
+			err,
+		)
 	}
 	if project == 0 || !inherit {
-		return nil, nil, &backend.ImportRefusedError{
+		return filesystemInspection{}, &backend.ImportRefusedError{
 			Reason: reasonQuota,
 			Detail: fmt.Sprintf("project %d is zero or not inheritable", project),
 		}
 	}
 	quota, err := readProjectQuota(mount, project, b.hostRootPrefix)
 	if err != nil {
-		return nil, nil, fmt.Errorf("directory source %q: project quota: %w", canonicalHost, err)
+		return filesystemInspection{}, fmt.Errorf(
+			"directory source %q: project quota: %w",
+			canonicalHost,
+			err,
+		)
 	}
+	return filesystemInspection{fsType: fsType, fsUUID: fsUUID, project: project, quota: quota}, nil
+}
+
+func validateQuota(quota quotaResult, requiredBytes int64) error {
 	if quota.capacity <= 0 {
-		return nil, nil, &backend.ImportRefusedError{
+		return &backend.ImportRefusedError{
 			Reason: reasonQuota,
 			Detail: "project quota is unbounded or has no hard limit",
 		}
 	}
 	if quota.capacity != requiredBytes {
-		return nil, nil, &backend.ImportRefusedError{
+		return &backend.ImportRefusedError{
 			Reason: reasonTooSmall,
 			Detail: fmt.Sprintf(
 				"effective project hard bound is %d bytes, requested %d",
@@ -290,38 +394,12 @@ func (b *Backend) inspect(
 		}
 	}
 	if quota.inodes == 0 {
-		return nil, nil, &backend.ImportRefusedError{
+		return &backend.ImportRefusedError{
 			Reason: reasonQuota,
 			Detail: "project quota reports zero or unknown inode scope",
 		}
 	}
-	if expected == nil {
-		err = verifyProjectTree(ctx, fd, project, quota.inodes)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-	adoption := &agentv1.FilesystemAdoption{
-		Kind:            adoptionKind,
-		CanonicalSource: filepath.Clean(canonicalHost),
-		ResourceId:      fsUUID + ":" + strconv.FormatUint(uint64(st.Ino), 10),
-		FilesystemType:  fsType,
-		FilesystemId:    fsUUID,
-		Inode:           uint64(st.Ino),
-		ProjectId:       project,
-	}
-	if expected != nil {
-		err = equalAdoption(adoption, expected)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-	inspection = &backend.ImportInspection{Filesystem: adoption, CapacityBytes: quota.capacity}
-	if !pin {
-		return inspection, nil, nil
-	}
-	closed = true
-	return inspection, &dirPin{fd: fd, mountSource: fmt.Sprintf("/proc/self/fd/%d", fd)}, nil
+	return nil
 }
 
 func within(root, path string) bool {
@@ -333,66 +411,98 @@ func within(root, path string) bool {
 }
 
 func openPinnedDir(root, source string) (int, error) {
-	rootFD, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	rootFD, err := unix.Open(
+		root,
+		unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK,
+		0,
+	)
 	if err != nil {
-		return -1, err
+		return -1, fmt.Errorf("open directory root pin: %w", err)
 	}
 	rel, err := filepath.Rel(root, source)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		closeErr := unix.Close(rootFD)
 		if err == nil {
 			err = syscall.EPERM
 		}
-		if closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close directory root pin: %w", closeErr))
-		}
-		return -1, err
+		return -1, closePinnedDir(rootFD, err)
 	}
 	if rel == "." {
 		return rootFD, nil
 	}
 	current := rootFD
-	for _, component := range strings.Split(rel, string(filepath.Separator)) {
-		if component == "" || component == "." || component == ".." {
-			closeErr := unix.Close(current)
-			if closeErr != nil {
-				return -1, errors.Join(syscall.EPERM, fmt.Errorf("close directory pin: %w", closeErr))
-			}
-			return -1, syscall.EPERM
-		}
-		next, openErr := unix.Openat(
-			current,
-			component,
-			unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK,
-			0,
-		)
-		closeErr := unix.Close(current)
+	for component := range strings.SplitSeq(rel, string(filepath.Separator)) {
+		next, openErr := openPinnedComponent(current, component)
 		if openErr != nil {
-			if closeErr != nil {
-				openErr = errors.Join(openErr, fmt.Errorf("close directory pin: %w", closeErr))
-			}
 			return -1, openErr
-		}
-		if closeErr != nil {
-			nextCloseErr := unix.Close(next)
-			closeErr = fmt.Errorf("close directory pin: %w", closeErr)
-			if nextCloseErr != nil {
-				closeErr = errors.Join(closeErr, fmt.Errorf("close next directory pin: %w", nextCloseErr))
-			}
-			return -1, closeErr
 		}
 		current = next
 	}
 	return current, nil
 }
 
-func findMount(path, target string, major, minor uint32) (best mountRecord, retErr error) {
-	f, err := os.Open(path)
+func closePinnedDir(fd int, cause error) error {
+	closeErr := unix.Close(fd)
+	if closeErr != nil {
+		cause = errors.Join(cause, fmt.Errorf("close directory pin: %w", closeErr))
+	}
+	return fmt.Errorf("open pinned directory: %w", cause)
+}
+
+func openPinnedComponent(current int, component string) (int, error) {
+	if component == "" || component == "." || component == ".." {
+		return -1, closePinnedDir(current, syscall.EPERM)
+	}
+	next, openErr := unix.Openat(
+		current,
+		component,
+		unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK,
+		0,
+	)
+	closeErr := unix.Close(current)
+	if openErr != nil {
+		if closeErr != nil {
+			openErr = errors.Join(openErr, fmt.Errorf("close directory pin: %w", closeErr))
+		}
+		return -1, fmt.Errorf("open directory component %q: %w", component, openErr)
+	}
+	if closeErr != nil {
+		nextCloseErr := unix.Close(next)
+		closeErr = fmt.Errorf("close directory pin: %w", closeErr)
+		if nextCloseErr != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("close next directory pin: %w", nextCloseErr))
+		}
+		return -1, fmt.Errorf("open directory component %q: %w", component, closeErr)
+	}
+	return next, nil
+}
+
+func openMountInfo(path string) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return mountRecord{}, fmt.Errorf("open mountinfo %q: %w", path, err)
+		return nil, fmt.Errorf("open mountinfo %q: %w", path, err)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		closeErr := unix.Close(fd)
+		if closeErr != nil {
+			return nil, fmt.Errorf("create mountinfo file %q: %w", path, errors.Join(
+				errors.New("invalid mountinfo file descriptor"),
+				fmt.Errorf("close mountinfo: %w", closeErr),
+			))
+		}
+		return nil, errors.New("invalid mountinfo file descriptor")
+	}
+	return file, nil
+}
+
+func findMount(path, target string, major, minor uint32) (best mountRecord, retErr error) {
+	f, err := openMountInfo(path)
+	if err != nil {
+		return mountRecord{}, err
 	}
 	defer func() {
-		if closeErr := f.Close(); closeErr != nil {
+		closeErr := f.Close()
+		if closeErr != nil {
 			best = mountRecord{}
 			retErr = errors.Join(retErr, fmt.Errorf("close mountinfo %q: %w", path, closeErr))
 		}
@@ -400,44 +510,13 @@ func findMount(path, target string, major, minor uint32) (best mountRecord, retE
 	bestLen := -1
 	s := bufio.NewScanner(f)
 	for s.Scan() {
-		fields := strings.Fields(s.Text())
-		sep := -1
-		for i, field := range fields {
-			if field == "-" {
-				sep = i
-				break
-			}
-		}
-		if sep < 6 || len(fields) <= sep+2 {
+		record, ok := parseMountRecord(s.Text(), target, major, minor)
+		if !ok {
 			continue
 		}
-		dev := strings.Split(fields[2], ":")
-		if len(dev) != 2 {
-			continue
-		}
-		mj, e1 := strconv.ParseUint(dev[0], 10, 32)
-		mn, e2 := strconv.ParseUint(dev[1], 10, 32)
-		if e1 != nil || e2 != nil || uint32(mj) != major || uint32(mn) != minor {
-			continue
-		}
-		mp := decodeMountField(fields[4])
-		if !withinOrEqual(mp, target) {
-			continue
-		}
-		if len(mp) > bestLen {
-			bestLen = len(mp)
-			options := fields[5]
-			if len(fields) > sep+3 {
-				options += "," + fields[sep+3]
-			}
-			best = mountRecord{
-				mountPoint: mp,
-				major:      uint32(mj),
-				minor:      uint32(mn),
-				fsType:     fields[sep+1],
-				source:     decodeMountField(fields[sep+2]),
-				options:    options,
-			}
+		if len(record.mountPoint) > bestLen {
+			bestLen = len(record.mountPoint)
+			best = record
 		}
 	}
 	err = s.Err()
@@ -455,13 +534,53 @@ func findMount(path, target string, major, minor uint32) (best mountRecord, retE
 	return best, nil
 }
 
+func parseMountRecord(line, target string, major, minor uint32) (mountRecord, bool) {
+	fields := strings.Fields(line)
+	sep := -1
+	for i, field := range fields {
+		if field == "-" {
+			sep = i
+			break
+		}
+	}
+	if sep < 6 || len(fields) <= sep+2 {
+		return mountRecord{}, false
+	}
+	majorText, minorText, ok := strings.Cut(fields[2], ":")
+	if !ok {
+		return mountRecord{}, false
+	}
+	mj, majorErr := strconv.ParseUint(majorText, 10, 32)
+	mn, minorErr := strconv.ParseUint(minorText, 10, 32)
+	if majorErr != nil || minorErr != nil || mj != uint64(major) || mn != uint64(minor) {
+		return mountRecord{}, false
+	}
+	mp := decodeMountField(fields[4])
+	if !withinOrEqual(mp, target) {
+		return mountRecord{}, false
+	}
+	options := fields[5]
+	if len(fields) > sep+3 {
+		options += "," + fields[sep+3]
+	}
+	return mountRecord{
+		mountPoint: mp,
+		major:      major,
+		minor:      minor,
+		fsType:     fields[sep+1],
+		source:     decodeMountField(fields[sep+2]),
+		options:    options,
+	}, true
+}
+
 func rejectSubmounts(path, source, rootMount string) (retErr error) {
-	f, err := os.Open(path)
+	f, err := openMountInfo(path)
 	if err != nil {
 		return fmt.Errorf("open mountinfo for submount validation: %w", err)
 	}
 	defer func() {
-		if closeErr := f.Close(); closeErr != nil {
+		closeErr := f.Close()
+		if closeErr != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("close mountinfo %q: %w", path, closeErr))
 		}
 	}()
@@ -501,19 +620,13 @@ func readNativeUUID(m mountRecord, prefix string) (uuid string, retErr error) {
 	if !filepath.IsAbs(source) {
 		return "", fmt.Errorf("mount source %q is not an absolute block path", source)
 	}
-	fd, err := unix.Open(source, unix.O_RDONLY|unix.O_CLOEXEC, 0)
-	if err != nil && prefix != "" {
-		firstErr := err
-		fd, err = unix.Open(filepath.Join(prefix, source), unix.O_RDONLY|unix.O_CLOEXEC, 0)
-		if err != nil {
-			err = errors.Join(firstErr, fmt.Errorf("open prefixed mount source: %w", err))
-		}
-	}
+	fd, err := openNativeSource(source, prefix)
 	if err != nil {
 		return "", err
 	}
 	defer func() {
-		if closeErr := unix.Close(fd); closeErr != nil {
+		closeErr := unix.Close(fd)
+		if closeErr != nil {
 			uuid = ""
 			retErr = errors.Join(retErr, fmt.Errorf("close mount source %q: %w", source, closeErr))
 		}
@@ -526,7 +639,7 @@ func readNativeUUID(m mountRecord, prefix string) (uuid string, retErr error) {
 	if ds.Mode&unix.S_IFMT != unix.S_IFBLK {
 		return "", fmt.Errorf("mount source %q is not a block device", source)
 	}
-	if uint32(unix.Major(uint64(ds.Rdev))) != m.major || uint32(unix.Minor(uint64(ds.Rdev))) != m.minor {
+	if unix.Major(ds.Rdev) != m.major || unix.Minor(ds.Rdev) != m.minor {
 		return "", fmt.Errorf(
 			"mount source %q device identity does not match mountinfo %d:%d",
 			source,
@@ -534,35 +647,64 @@ func readNativeUUID(m mountRecord, prefix string) (uuid string, retErr error) {
 			m.minor,
 		)
 	}
-	if strings.EqualFold(m.fsType, "ext4") {
-		var buf [1144]byte
-		n, err := unix.Pread(fd, buf[:], 0)
-		if err != nil || n != len(buf) {
-			if err == nil {
-				err = errors.New("short ext4 superblock read")
-			}
-			return "", fmt.Errorf("read ext4 superblock: %w", err)
+	return readNativeSuperblock(fd, m.fsType)
+}
+
+func openNativeSource(source, prefix string) (int, error) {
+	fd, err := unix.Open(source, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err == nil || prefix == "" {
+		if err != nil {
+			return -1, fmt.Errorf("open mount source %q: %w", source, err)
 		}
-		if binary.LittleEndian.Uint16(buf[1080:]) != 0xef53 {
-			return "", fmt.Errorf("invalid ext4 superblock magic")
-		}
-		return formatUUID(buf[1128:1144]), nil
+		return fd, nil
 	}
-	if strings.EqualFold(m.fsType, "xfs") {
-		var buf [48]byte
-		n, err := unix.Pread(fd, buf[:], 0)
-		if err != nil || n != len(buf) {
-			if err == nil {
-				err = errors.New("short XFS superblock read")
-			}
-			return "", fmt.Errorf("read XFS superblock: %w", err)
-		}
-		if string(buf[:4]) != "XFSB" {
-			return "", fmt.Errorf("invalid XFS superblock magic")
-		}
-		return formatUUID(buf[32:48]), nil
+	firstErr := err
+	fd, err = unix.Open(filepath.Join(prefix, source), unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		err = errors.Join(firstErr, fmt.Errorf("open prefixed mount source: %w", err))
+		return -1, fmt.Errorf("open mount source %q: %w", source, err)
 	}
-	return "", fmt.Errorf("unsupported filesystem type %q", m.fsType)
+	return fd, nil
+}
+
+func readNativeSuperblock(fd int, fsType string) (string, error) {
+	if strings.EqualFold(fsType, "ext4") {
+		return readExt4UUID(fd)
+	}
+	if strings.EqualFold(fsType, "xfs") {
+		return readXFSUUID(fd)
+	}
+	return "", fmt.Errorf("unsupported filesystem type %q", fsType)
+}
+
+func readExt4UUID(fd int) (string, error) {
+	var buf [1144]byte
+	n, err := unix.Pread(fd, buf[:], 0)
+	if err != nil || n != len(buf) {
+		if err == nil {
+			err = errors.New("short ext4 superblock read")
+		}
+		return "", fmt.Errorf("read ext4 superblock: %w", err)
+	}
+	if binary.LittleEndian.Uint16(buf[1080:]) != 0xef53 {
+		return "", fmt.Errorf("invalid ext4 superblock magic")
+	}
+	return formatUUID(buf[1128:1144]), nil
+}
+
+func readXFSUUID(fd int) (string, error) {
+	var buf [48]byte
+	n, err := unix.Pread(fd, buf[:], 0)
+	if err != nil || n != len(buf) {
+		if err == nil {
+			err = errors.New("short XFS superblock read")
+		}
+		return "", fmt.Errorf("read XFS superblock: %w", err)
+	}
+	if string(buf[:4]) != "XFSB" {
+		return "", fmt.Errorf("invalid XFS superblock magic")
+	}
+	return formatUUID(buf[32:48]), nil
 }
 
 func formatUUID(raw []byte) string {
@@ -584,11 +726,13 @@ func formatUUID(raw []byte) string {
 	return string(out)
 }
 
-func readProject(fd int) (uint32, bool, error) {
+func readProject(fd int) (projectID uint32, inherit bool, retErr error) {
 	var attr fsxattr
-	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(fsIoctlGetXattr), uintptr(unsafe.Pointer(&attr)))
+	attrPointer := reflect.ValueOf(&attr).Pointer()
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(fsIoctlGetXattr), attrPointer)
+	runtime.KeepAlive(&attr)
 	if errno != 0 {
-		return 0, false, errno
+		return 0, false, fmt.Errorf("read project attributes ioctl: %w", errno)
 	}
 	return attr.projid, attr.xflags&fsXFlagProjInherit != 0, nil
 }
@@ -598,66 +742,83 @@ type quotaResult struct {
 	inodes   uint64
 }
 
-func readQuotaStatus(device string) (fsQuotaStatV, error) {
+func readQuotaStatus(device string) error {
 	var status fsQuotaStatV
 	status.version = fsQstatVVersion1
-	err := quotaCtl(qcmdGetQuotaStatV, device, 0, unsafe.Pointer(&status))
+	err := quotaCtl(qcmdGetQuotaStatV, device, 0, &status)
 	if err != nil {
-		return fsQuotaStatV{}, fmt.Errorf("read project quota status: %w", err)
+		return fmt.Errorf("read project quota status: %w", err)
 	}
 	if status.version != fsQstatVVersion1 {
-		return fsQuotaStatV{}, fmt.Errorf("unsupported project quota status version %d", status.version)
+		return fmt.Errorf("unsupported project quota status version %d", status.version)
 	}
 	if status.flags&(fsQuotaPDQAcct|fsQuotaPDQEnfd) != (fsQuotaPDQAcct | fsQuotaPDQEnfd) {
-		return fsQuotaStatV{}, errors.New("project quota accounting or enforcement is disabled")
+		return errors.New("project quota accounting or enforcement is disabled")
 	}
-	return status, nil
+	return nil
 }
 
 func readProjectQuota(m mountRecord, project uint32, prefix string) (quotaResult, error) {
-	device := m.source
-	if prefix != "" && filepath.IsAbs(device) {
-		candidate := filepath.Join(prefix, device)
-		_, err := os.Stat(candidate)
-		if err == nil {
-			device = candidate
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return quotaResult{}, fmt.Errorf("stat quota device %q: %w", candidate, err)
-		}
+	device, err := resolveQuotaDevice(m.source, prefix)
+	if err != nil {
+		return quotaResult{}, err
 	}
 	if device == "" {
 		return quotaResult{}, errors.New("mount has no quota device")
 	}
 	if strings.EqualFold(m.fsType, "ext4") {
-		if !hasMountOption(m.options, fsQuotaProjectOption) {
-			return quotaResult{}, errors.New("ext4 project quota enforcement is not enabled")
-		}
-		_, statusErr := readQuotaStatus(device)
-		if statusErr != nil {
-			return quotaResult{}, fmt.Errorf("read ext4 project quota status: %w", statusErr)
-		}
-		var q ifDqblk
-		err := quotaCtl(qcmdExt4GetQuota, device, uintptr(project), unsafe.Pointer(&q))
-		if err != nil {
-			return quotaResult{}, err
-		}
-		if q.valid&qifBHard == 0 || q.valid&qifInodes == 0 {
-			return quotaResult{}, errors.New("project hard-limit or inode-usage fields are not valid")
-		}
-		capacity, err := checkedQuotaBytes(q.bhardlimit, 10)
-		return quotaResult{capacity: capacity, inodes: q.curinodes}, err
+		return readExt4Quota(m.options, device, project)
 	}
-	if !strings.EqualFold(m.fsType, "xfs") {
-		return quotaResult{}, fmt.Errorf("unsupported quota filesystem %q", m.fsType)
+	if strings.EqualFold(m.fsType, "xfs") {
+		return readXFSQuota(device, project)
 	}
-	_, statusErr := readQuotaStatus(device)
-	if statusErr != nil {
-		return quotaResult{}, fmt.Errorf("read XFS project quota status: %w", statusErr)
+	return quotaResult{}, fmt.Errorf("unsupported quota filesystem %q", m.fsType)
+}
+
+func resolveQuotaDevice(device, prefix string) (string, error) {
+	if prefix == "" || !filepath.IsAbs(device) {
+		return device, nil
+	}
+	candidate := filepath.Join(prefix, device)
+	_, err := os.Stat(candidate)
+	if err == nil {
+		return candidate, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("stat quota device %q: %w", candidate, err)
+	}
+	return device, nil
+}
+
+func readExt4Quota(options, device string, project uint32) (quotaResult, error) {
+	if !hasMountOption(options, fsQuotaProjectOption) {
+		return quotaResult{}, errors.New("ext4 project quota enforcement is not enabled")
+	}
+	err := readQuotaStatus(device)
+	if err != nil {
+		return quotaResult{}, fmt.Errorf("read ext4 project quota status: %w", err)
+	}
+	var q ifDqblk
+	err = quotaCtl(qcmdExt4GetQuota, device, uintptr(project), &q)
+	if err != nil {
+		return quotaResult{}, fmt.Errorf("read ext4 project quota: %w", err)
+	}
+	if q.valid&qifBHard == 0 || q.valid&qifInodes == 0 {
+		return quotaResult{}, errors.New("project hard-limit or inode-usage fields are not valid")
+	}
+	capacity, err := checkedQuotaBytes(q.bhardlimit, 10)
+	return quotaResult{capacity: capacity, inodes: q.curinodes}, err
+}
+
+func readXFSQuota(device string, project uint32) (quotaResult, error) {
+	err := readQuotaStatus(device)
+	if err != nil {
+		return quotaResult{}, fmt.Errorf("read XFS project quota status: %w", err)
 	}
 	var q fsDiskQuota
-	err := quotaCtl(qcmdXFSGetQuota, device, uintptr(project), unsafe.Pointer(&q))
+	err = quotaCtl(qcmdXFSGetQuota, device, uintptr(project), &q)
 	if err != nil {
-		return quotaResult{}, err
+		return quotaResult{}, fmt.Errorf("read XFS project quota: %w", err)
 	}
 	if q.flags&fsProjectQuota == 0 {
 		return quotaResult{}, errors.New("XFS project quota flag is absent")
@@ -667,30 +828,28 @@ func readProjectQuota(m mountRecord, project uint32, prefix string) (quotaResult
 }
 
 func hasMountOption(options, want string) bool {
-	for _, option := range strings.Split(options, ",") {
-		if option == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Split(options, ","), want)
 }
 
-func quotaCtl(command uint32, device string, id uintptr, result unsafe.Pointer) error {
+func quotaCtl(command uint32, device string, id uintptr, result any) error {
 	dev, err := syscall.BytePtrFromString(device)
 	if err != nil {
-		return err
+		return fmt.Errorf("encode quota device %q: %w", device, err)
 	}
+	resultPointer := reflect.ValueOf(result).Pointer()
 	_, _, errno := unix.Syscall6(
 		unix.SYS_QUOTACTL,
 		uintptr(command),
-		uintptr(unsafe.Pointer(dev)),
+		reflect.ValueOf(dev).Pointer(),
 		id,
-		uintptr(result),
+		resultPointer,
 		0,
 		0,
 	)
+	runtime.KeepAlive(dev)
+	runtime.KeepAlive(result)
 	if errno != 0 {
-		return errno
+		return fmt.Errorf("quota ioctl %d on %q: %w", command, device, errno)
 	}
 	return nil
 }
@@ -700,7 +859,11 @@ func checkedQuotaBytes(blocks uint64, shift uint) (int64, error) {
 	if blocks == 0 || shift >= 63 || blocks > maxInt64>>shift {
 		return 0, errors.New("quota hard-limit conversion overflows or is unbounded")
 	}
-	return int64(blocks << shift), nil
+	bytes := blocks << shift
+	if bytes > maxInt64 {
+		return 0, errors.New("quota hard-limit conversion overflows or is unbounded")
+	}
+	return int64(bytes), nil
 }
 
 type projectWalk struct {
@@ -715,12 +878,16 @@ type linkCount struct {
 	seen  uint64
 }
 
+func normalizeLinkCount[T ~uint32 | ~uint64](links T) uint64 {
+	return uint64(links)
+}
+
 func verifyProjectTree(ctx context.Context, rootFD int, project uint32, quotaInodes uint64) error {
 	w := &projectWalk{ctx: ctx, project: project, multilink: make(map[[2]uint64]*linkCount)}
 	var root unix.Stat_t
 	err := unix.Fstat(rootFD, &root)
 	if err != nil {
-		return err
+		return fmt.Errorf("stat pinned source: %w", err)
 	}
 	if root.Mode&unix.S_IFMT != unix.S_IFDIR {
 		return errors.New("pinned source is not a directory")
@@ -792,11 +959,11 @@ func (w *projectWalk) visit(fd int, st unix.Stat_t, isDir bool, label string) er
 }
 
 func (w *projectWalk) record(st unix.Stat_t) {
-	key := [2]uint64{uint64(st.Dev), uint64(st.Ino)}
+	key := [2]uint64{st.Dev, st.Ino}
 	if st.Mode&unix.S_IFMT != unix.S_IFDIR && st.Nlink > 1 {
 		links := w.multilink[key]
 		if links == nil {
-			links = &linkCount{total: uint64(st.Nlink)}
+			links = &linkCount{total: normalizeLinkCount(st.Nlink)}
 			w.multilink[key] = links
 			w.count++
 		}
@@ -809,12 +976,12 @@ func (w *projectWalk) record(st unix.Stat_t) {
 func (w *projectWalk) walkDir(fd int, label string) error {
 	var buf [64 * 1024]byte
 	for {
-		err := w.ctx.Err()
+		err := w.checkContext(label)
 		if err != nil {
-			return fmt.Errorf("walk directory %q: %w", label, err)
+			return err
 		}
 		n, err := unix.Getdents(fd, buf[:])
-		if err == unix.EINTR {
+		if errors.Is(err, unix.EINTR) {
 			continue
 		}
 		if err != nil {
@@ -823,38 +990,57 @@ func (w *projectWalk) walkDir(fd int, label string) error {
 		if n == 0 {
 			return nil
 		}
-		for offset := 0; offset < n; {
-			err = w.ctx.Err()
-			if err != nil {
-				return fmt.Errorf("walk directory %q: %w", label, err)
-			}
-			if n-offset < 19 {
-				return errors.New("short linux directory entry")
-			}
-			recordLen := int(binary.LittleEndian.Uint16(buf[offset+16 : offset+18]))
-			if recordLen < 19 || offset+recordLen > n {
-				return errors.New("invalid linux directory entry length")
-			}
-			nameBytes := buf[offset+19 : offset+recordLen]
-			end := 0
-			for end < len(nameBytes) && nameBytes[end] != 0 {
-				end++
-			}
-			if end == 0 {
-				offset += recordLen
-				continue
-			}
-			name := string(nameBytes[:end])
-			offset += recordLen
-			if name == "." || name == ".." {
-				continue
-			}
-			err = w.visitEntry(fd, name)
-			if err != nil {
-				return fmt.Errorf("inspect entry %q: %w", name, err)
-			}
+		err = w.walkDirEntries(fd, label, buf[:n])
+		if err != nil {
+			return err
 		}
 	}
+}
+
+func (w *projectWalk) checkContext(label string) error {
+	err := w.ctx.Err()
+	if err != nil {
+		return fmt.Errorf("walk directory %q: %w", label, err)
+	}
+	return nil
+}
+
+func (w *projectWalk) walkDirEntries(fd int, label string, buf []byte) error {
+	for offset := 0; offset < len(buf); {
+		err := w.checkContext(label)
+		if err != nil {
+			return err
+		}
+		recordLen, name, err := parseLinuxDirent(buf[offset:])
+		if err != nil {
+			return err
+		}
+		offset += recordLen
+		if name == "" || name == "." || name == ".." {
+			continue
+		}
+		err = w.visitEntry(fd, name)
+		if err != nil {
+			return fmt.Errorf("inspect entry %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func parseLinuxDirent(buf []byte) (recordLen int, name string, retErr error) {
+	if len(buf) < 19 {
+		return 0, "", errors.New("short linux directory entry")
+	}
+	recordLen = int(binary.LittleEndian.Uint16(buf[16:18]))
+	if recordLen < 19 || recordLen > len(buf) {
+		return 0, "", errors.New("invalid linux directory entry length")
+	}
+	nameBytes := buf[19:recordLen]
+	end := 0
+	for end < len(nameBytes) && nameBytes[end] != 0 {
+		end++
+	}
+	return recordLen, string(nameBytes[:end]), nil
 }
 
 func (w *projectWalk) visitEntry(parentFD int, name string) (retErr error) {
@@ -885,7 +1071,8 @@ func (w *projectWalk) visitEntry(parentFD int, name string) (retErr error) {
 		return fmt.Errorf("open entry %q without following links: %w", name, err)
 	}
 	defer func() {
-		if closeErr := unix.Close(fd); closeErr != nil {
+		closeErr := unix.Close(fd)
+		if closeErr != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("close entry %q: %w", name, closeErr))
 		}
 	}()
@@ -971,8 +1158,12 @@ func (p *pinnedFilesystem) VerifyMount(ctx context.Context, targetPath string) e
 	if !filepath.IsAbs(target) {
 		return fmt.Errorf("verify target %q: target path is not absolute", targetPath)
 	}
+	return p.verifyPinnedTarget(ctx, targetPath, target)
+}
+
+func (p *pinnedFilesystem) verifyPinnedTarget(ctx context.Context, targetPath, target string) error {
 	var source, dst unix.Stat_t
-	err = unix.Fstat(p.fd, &source)
+	err := unix.Fstat(p.fd, &source)
 	if err != nil {
 		return fmt.Errorf("verify pinned source: %w", err)
 	}
@@ -986,8 +1177,8 @@ func (p *pinnedFilesystem) VerifyMount(ctx context.Context, targetPath string) e
 	mount, err := findMount(
 		p.backend.mountInfoPath,
 		target,
-		uint32(unix.Major(uint64(dst.Dev))),
-		uint32(unix.Minor(uint64(dst.Dev))),
+		unix.Major(dst.Dev),
+		unix.Minor(dst.Dev),
 	)
 	if err != nil {
 		return fmt.Errorf("verify target %q: %w", targetPath, err)
@@ -1030,7 +1221,7 @@ func (p *pinnedFilesystem) Close() error {
 	return nil
 }
 
-func capacity(ctx context.Context, path string) (totalBytes int64, availableBytes int64, retErr error) {
+func capacity(ctx context.Context, path string) (totalBytes, availableBytes int64, retErr error) {
 	err := ctx.Err()
 	if err != nil {
 		return 0, 0, fmt.Errorf("directory capacity %q: %w", path, err)
@@ -1040,7 +1231,8 @@ func capacity(ctx context.Context, path string) (totalBytes int64, availableByte
 		return 0, 0, fmt.Errorf("open directory root %q: %w", path, err)
 	}
 	defer func() {
-		if closeErr := unix.Close(fd); closeErr != nil {
+		closeErr := unix.Close(fd)
+		if closeErr != nil {
 			totalBytes = 0
 			availableBytes = 0
 			retErr = errors.Join(retErr, fmt.Errorf("close directory root %q: %w", path, closeErr))
@@ -1067,10 +1259,15 @@ func capacity(ctx context.Context, path string) (totalBytes int64, availableByte
 	}
 	return total, avail, nil
 }
+
 func checkedFSBytes(blocks, size uint64) (int64, error) {
 	const maxInt64 = uint64(1<<63 - 1)
 	if size == 0 || blocks > maxInt64/size {
 		return 0, errors.New("filesystem capacity conversion overflows")
 	}
-	return int64(blocks * size), nil
+	bytes := blocks * size
+	if bytes > maxInt64 {
+		return 0, errors.New("filesystem capacity conversion overflows")
+	}
+	return int64(bytes), nil
 }

@@ -242,14 +242,17 @@ type ImportInspection struct {
 }
 
 // VolumeInspector resolves canonical source and stable native identity before
-// the controller reserves a resource. It must verify expected placement and
-// exact existing quota, rejecting unknown, unbounded, or shared quota scopes.
+// the controller reserves a resource, or revalidates a recorded descriptor.
+// It must verify expected placement and exact existing quota, rejecting unknown,
+// unbounded, or shared quota scopes. A nil expected descriptor requires complete
+// first-claim scope proof; a nonnil descriptor requires matching native identity.
 // Inspection never creates resources, applies properties, or claims ownership.
 type VolumeInspector interface {
 	InspectImport(
 		ctx context.Context,
 		source string,
 		requiredBytes int64,
+		expected *agentv1.FilesystemAdoption,
 		expectedLayout Layout,
 	) (*ImportInspection, error)
 }
