@@ -129,6 +129,30 @@ func (n *filesystemNetworkFixture) consumer(ctx context.Context, name, node stri
 				fmt.Fprintf(&diagnostics, "\nDiagnostic command failed: %v", diagnosticErr)
 			}
 		}
+		const maxAgentDiagnosticBytes = 32 * 1024
+		agentNamespace := resolveHelmNamespace()
+		agentSelector := "app.kubernetes.io/component=agent"
+		agentArgs := []string{"-n", agentNamespace, "get", "pods", "-l", agentSelector, "--field-selector", "spec.nodeName=" + n.StorageNode, "-o", "jsonpath={.items[0].metadata.name}"}
+		agentPodName, agentErr := n.Kubectl(diagnosticCtx, "", agentArgs...)
+		agentPodOutput := agentPodName
+		if len(agentPodOutput) > maxAgentDiagnosticBytes {
+			agentPodOutput = "[earlier output truncated]\n" + agentPodOutput[len(agentPodOutput)-maxAgentDiagnosticBytes:]
+		}
+		fmt.Fprintf(&diagnostics, "\n\nkubectl -n %s %s:\n%s", agentNamespace, strings.Join(agentArgs[2:], " "), agentPodOutput)
+		if agentErr != nil {
+			fmt.Fprintf(&diagnostics, "\nDiagnostic command failed: %v", agentErr)
+		}
+		if agentErr == nil && agentPodName != "" {
+			execArgs := []string{"-n", agentNamespace, "exec", agentPodName, "-c", "agent", "--", "/bin/busybox", "sh", "-ceu", "cat /var/lib/nfs/etab; exportfs -v"}
+			agentOutput, execErr := n.Kubectl(diagnosticCtx, "", execArgs...)
+			if len(agentOutput) > maxAgentDiagnosticBytes {
+				agentOutput = "[earlier output truncated]\n" + agentOutput[len(agentOutput)-maxAgentDiagnosticBytes:]
+			}
+			fmt.Fprintf(&diagnostics, "\n\nkubectl -n %s %s:\n%s", agentNamespace, strings.Join(execArgs[2:], " "), agentOutput)
+			if execErr != nil {
+				fmt.Fprintf(&diagnostics, "\nDiagnostic command failed: %v", execErr)
+			}
+		}
 		Fail(fmt.Sprintf("Pod %s/%s did not become Ready: %v\nWait output:\n%s%s", n.Namespace, name, waitErr, waitOutput, diagnostics.String()))
 	}
 	Expect(n.Must(ctx, "-n", n.Namespace, "get", "pod", name, "-o", "jsonpath={.spec.nodeName}")).To(Equal(node))
