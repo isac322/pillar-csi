@@ -258,6 +258,7 @@ func bootstrapSuiteHelm(
 		}
 		helmArgs = append(helmArgs,
 			"--set", "fileDriver.enabled=true",
+			"--set", "fileDriver.nfs.enabled=true",
 			"--set", "fileDriver.name=files.pillar-csi.bhyoo.com",
 			"--set", "fileDriver.sourceHostRoot=/host",
 			"--set", "fileDriver.proxyRoot=/var/lib/pillar-csi/agent/datasets",
