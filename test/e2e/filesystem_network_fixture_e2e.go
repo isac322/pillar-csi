@@ -109,7 +109,28 @@ func (n *filesystemNetworkFixture) consumer(ctx context.Context, name, node stri
 	data, err := json.Marshal(pod)
 	Expect(err).NotTo(HaveOccurred())
 	n.apply(ctx, string(data))
-	n.Must(ctx, "-n", n.Namespace, "wait", "--for=condition=Ready", "pod/"+name, "--timeout=3m")
+	waitOutput, waitErr := n.Kubectl(ctx, "", "-n", n.Namespace, "wait", "--for=condition=Ready", "pod/"+name, "--timeout=3m")
+	if waitErr != nil {
+		diagnosticCtx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		var diagnostics strings.Builder
+		for _, args := range [][]string{
+			{"get", "pod", name, "-o", "yaml"},
+			{"describe", "pod", name},
+			{"get", "events", "--field-selector=involvedObject.kind=Pod,involvedObject.name=" + name, "-o", "wide"},
+		} {
+			output, diagnosticErr := n.Kubectl(diagnosticCtx, "", append([]string{"-n", n.Namespace}, args...)...)
+			const maxDiagnosticBytes = 32 * 1024
+			if len(output) > maxDiagnosticBytes {
+				output = "[earlier output truncated]\n" + output[len(output)-maxDiagnosticBytes:]
+			}
+			fmt.Fprintf(&diagnostics, "\n\nkubectl -n %s %s:\n%s", n.Namespace, strings.Join(args, " "), output)
+			if diagnosticErr != nil {
+				fmt.Fprintf(&diagnostics, "\nDiagnostic command failed: %v", diagnosticErr)
+			}
+		}
+		Fail(fmt.Sprintf("Pod %s/%s did not become Ready: %v\nWait output:\n%s%s", n.Namespace, name, waitErr, waitOutput, diagnostics.String()))
+	}
 	Expect(n.Must(ctx, "-n", n.Namespace, "get", "pod", name, "-o", "jsonpath={.spec.nodeName}")).To(Equal(node))
 	n.Pods = append(n.Pods, name)
 	n.PodUIDs = append(n.PodUIDs, n.Must(ctx, "-n", n.Namespace, "get", "pod", name, "-o", "jsonpath={.metadata.uid}"))
