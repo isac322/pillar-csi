@@ -3,10 +3,12 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +41,18 @@ type FilesystemAdoptionSnapshot struct {
 	Mode            string
 	Properties      map[string]string
 	TreeHash        string
+}
+
+func nfsKubectl(ctx context.Context, stdin string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "kubectl", append([]string{"--kubeconfig=" + os.Getenv("KUBECONFIG"), "--request-timeout=20s"}, args...)...) //nolint:gosec
+	cmd.Stdin = strings.NewReader(stdin)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if err != nil {
+		return strings.TrimSpace(stdout.String()), fmt.Errorf("kubectl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 func NewFilesystemAdoptionFixture(tc string) *FilesystemAdoptionFixture {
