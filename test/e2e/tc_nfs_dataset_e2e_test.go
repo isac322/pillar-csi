@@ -6,13 +6,11 @@ package e2e
 // Registration is unconditional so read-only catalog enumeration discovers all
 // cases. Prerequisite failures are failures, never conditional skips.
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -36,18 +34,6 @@ const (
 	nfsPVC          = "dataset"
 	nfsHelperLedger = "/tmp/pillar-e37-nfs-helper-ledger"
 )
-
-func nfsKubectl(ctx context.Context, stdin string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "kubectl", append([]string{"--kubeconfig=" + os.Getenv("KUBECONFIG"), "--request-timeout=20s"}, args...)...) //nolint:gosec
-	cmd.Stdin = strings.NewReader(stdin)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	if err != nil {
-		return strings.TrimSpace(stdout.String()), fmt.Errorf("kubectl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return strings.TrimSpace(stdout.String()), nil
-}
 
 func nfsMust(ctx context.Context, args ...string) string {
 	out, err := nfsKubectl(ctx, "", args...)
