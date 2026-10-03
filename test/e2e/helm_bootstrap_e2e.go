@@ -47,6 +47,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -104,6 +105,10 @@ type helmBootstrapState struct {
 	Namespace string `json:"namespace"`
 	// ChartPath is the absolute path of the Helm chart that was installed.
 	ChartPath string `json:"chartPath"`
+	// Native fixture ownership is serialized rather than reconstructed from
+	// mutable process environment during cleanup.
+	NativeSourceRoot  string `json:"nativeSourceRoot,omitempty"`
+	NativeStorageNode string `json:"nativeStorageNode,omitempty"`
 }
 
 // synchronizedSuitePayload is the JSON blob produced by SynchronizedBeforeSuite
@@ -167,7 +172,7 @@ func bootstrapSuiteHelm(
 	ctx context.Context,
 	clusterState *kindBootstrapState,
 	output io.Writer,
-) (*helmBootstrapState, error) {
+) (_ *helmBootstrapState, err error) {
 	if clusterState == nil {
 		return nil, fmt.Errorf("[helm-bootstrap] cluster state is nil")
 	}
@@ -203,6 +208,7 @@ func bootstrapSuiteHelm(
 		"--wait",
 		"--timeout", "5m",
 	}
+	var nativeSourceRoot, nativeStorageNode string
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("E2E_NFS_E2E")), "true") {
 		pool := strings.TrimSpace(os.Getenv(suiteZFSPoolEnvVar))
 		parent := strings.TrimSpace(os.Getenv(suiteNFSParentDatasetEnvVar))
@@ -217,13 +223,55 @@ func bootstrapSuiteHelm(
 				"--set", component+".image.tag="+tag,
 				"--set", component+".image.pullPolicy=Never")
 		}
+		// E71 filesystem cases consume the explicit file CSI identity.  E37
+		// keeps its legacy classes and identity; enabling the second route here
+		// does not rewrite existing StorageClasses or PVs.
+		sourceRoot := "/var/lib/pillar-csi/e71-sources"
+		storageNode := strings.TrimSpace(os.Getenv(suiteBackendContainerEnvVar))
+		if storageNode == "" {
+			return nil, fmt.Errorf("[helm-bootstrap] filesystem lane requires %s", suiteBackendContainerEnvVar)
+		}
+		if _, err := kindContainerExec(ctx, storageNode, "mkdir", "-p", sourceRoot); err != nil {
+			return nil, fmt.Errorf("[helm-bootstrap] create owned source allow-root: %w", err)
+		}
+		// Roll back only this owned native fixture on partial preparation or
+		// install failure. Kernel loop devices outlive a deleted Kind node.
+		defer func() {
+			if err == nil {
+				return
+			}
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), helmTeardownTimeout)
+			defer cancel()
+			if cleanupErr := CleanupFilesystemAdoptionNativeSources(cleanupCtx, storageNode, sourceRoot); cleanupErr != nil {
+				err = errors.Join(err, fmt.Errorf("[helm-bootstrap] native fixture rollback: %w", cleanupErr))
+			}
+		}()
+		if err := PrepareFilesystemAdoptionNativeSources(ctx, storageNode, sourceRoot); err != nil {
+			return nil, fmt.Errorf("[helm-bootstrap] prepare existing native source fixtures: %w", err)
+		}
+		nativeSourceRoot, nativeStorageNode = sourceRoot, storageNode
+		if err := os.Setenv("PILLAR_E2E_FILESYSTEM_SOURCE_ROOT", sourceRoot); err != nil {
+			return nil, fmt.Errorf("[helm-bootstrap] export filesystem source root: %w", err)
+		}
+		if err := os.Setenv("PILLAR_E2E_FILESYSTEM_PHYSICAL_ROOT", "/"); err != nil {
+			return nil, fmt.Errorf("[helm-bootstrap] export filesystem physical root: %w", err)
+		}
 		helmArgs = append(helmArgs,
+			"--set", "fileDriver.enabled=true",
+			"--set", "fileDriver.nfs.enabled=true",
+			"--set", "fileDriver.name=files.pillar-csi.bhyoo.com",
+			"--set", "fileDriver.sourceHostRoot=/host",
+			"--set", "fileDriver.proxyRoot=/var/lib/pillar-csi/agent/datasets",
 			"--set", "agent.backends[0].zfs.pool="+pool,
 			"--set", "agent.backends[0].zfs.volumeType=zvol",
 			"--set", "agent.backends[0].zfs.parentDataset="+parent,
 			"--set", "agent.backends[1].zfs.pool="+pool,
 			"--set", "agent.backends[1].zfs.volumeType=dataset",
 			"--set", "agent.backends[1].zfs.parentDataset="+parent,
+			"--set", "agent.backends[2].directory.logicalPool=e71-files",
+			"--set", "agent.backends[2].directory.hostRoot="+sourceRoot,
+			"--set", "agent.backends[3].directory.logicalPool=e71-files-alias",
+			"--set", "agent.backends[3].directory.hostRoot="+sourceRoot,
 			"--set", "agent.tolerations[0].operator=Exists",
 			"--set", "node.tolerations[0].operator=Exists",
 		)
@@ -246,26 +294,27 @@ func bootstrapSuiteHelm(
 		release, namespace)
 
 	return &helmBootstrapState{
-		Installed: true,
-		Release:   release,
-		Namespace: namespace,
-		ChartPath: chartPath,
+		Installed:         true,
+		Release:           release,
+		Namespace:         namespace,
+		ChartPath:         chartPath,
+		NativeSourceRoot:  nativeSourceRoot,
+		NativeStorageNode: nativeStorageNode,
 	}, nil
 }
 
 // teardownSuiteHelm uninstalls the suite-level Helm release that was
 // pre-installed by bootstrapSuiteHelm.
 //
-// Called from SynchronizedAfterSuite primary phase (Ginkgo node-1 only),
-// before the Kind cluster is deleted. Errors are logged but not returned
-// because the Kind cluster — and all its resources — will be deleted
-// immediately after this call regardless.
+// Called from SynchronizedAfterSuite primary phase (Ginkgo node-1 only).
+// Errors are returned so uninstall or native loop cleanup failures fail the
+// physical lane instead of being hidden by subsequent cluster deletion.
 //
 // clusterState is the Kind cluster state used to derive the kubeconfig path.
 // Passing it explicitly avoids a dependency on test-file globals (suiteKindCluster).
-func teardownSuiteHelm(ctx context.Context, state *helmBootstrapState, clusterState *kindBootstrapState, output io.Writer) {
+func teardownSuiteHelm(ctx context.Context, state *helmBootstrapState, clusterState *kindBootstrapState, output io.Writer) error {
 	if state == nil || !state.Installed {
-		return
+		return nil
 	}
 	if output == nil {
 		output = io.Discard
@@ -276,9 +325,7 @@ func teardownSuiteHelm(ctx context.Context, state *helmBootstrapState, clusterSt
 		kubeconfigPath = clusterState.KubeconfigPath
 	}
 	if kubeconfigPath == "" {
-		_, _ = fmt.Fprintf(output,
-			"[helm-bootstrap] teardown: KUBECONFIG not set — skipping helm uninstall\n")
-		return
+		return fmt.Errorf("[helm-bootstrap] teardown: KUBECONFIG is unavailable")
 	}
 
 	_, _ = fmt.Fprintf(output,
@@ -295,12 +342,17 @@ func teardownSuiteHelm(ctx context.Context, state *helmBootstrapState, clusterSt
 	cmd.Stderr = output
 
 	if err := cmd.Run(); err != nil {
-		_, _ = fmt.Fprintf(output,
-			"[helm-bootstrap] uninstall %q failed (non-fatal — cluster will be deleted): %v\n",
-			state.Release, err)
-		return
+		return fmt.Errorf("[helm-bootstrap] uninstall %q: %w", state.Release, err)
 	}
 	_, _ = fmt.Fprintf(output,
 		"[helm-bootstrap] release %q uninstalled from namespace %q\n",
 		state.Release, state.Namespace)
+	if state.NativeSourceRoot != "" {
+		if err := CleanupFilesystemAdoptionNativeSources(ctx,
+			state.NativeStorageNode,
+			state.NativeSourceRoot); err != nil {
+			return fmt.Errorf("[helm-bootstrap] native fixture cleanup: %w", err)
+		}
+	}
+	return nil
 }

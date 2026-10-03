@@ -113,6 +113,10 @@ type nodeStageState struct {
 	// Local holds the device-mapper claim of a local attach.  Non-nil when
 	// AttachMode == AttachModeLocal.
 	Local *LocalStageState `json:"local,omitempty"`
+	// File records a direct bind mount of a controller-owned filesystem proxy.
+	// It is intentionally separate from Local, which is the legacy block
+	// device-mapper claim and must never be used for adopted filesystems.
+	File *FileStageState `json:"file,omitempty"`
 
 	// VolumeID is the CSI volume ID the record belongs to.  The state file
 	// name replaces "/" with "_", which cannot be inverted, so the periodic
@@ -160,6 +164,31 @@ type LocalStageState struct {
 	// BackingDevice is the backend block device (zvol or logical volume)
 	// the linear target maps.
 	BackingDevice string `json:"backing_device"`
+}
+
+// FileStageState is the durable identity of an adopted filesystem bind stage.
+// ProxyPath is the agent-owned mount proxy, while CanonicalSource and
+// ResourceID preserve the original native identity for restart checks.
+type FileStageState struct {
+	ProxyPath             string `json:"proxy_path"`
+	CanonicalSource       string `json:"canonical_source"`
+	ResourceID            string `json:"resource_id"`
+	FilesystemType        string `json:"filesystem_type"`
+	FilesystemID          string `json:"filesystem_id,omitempty"`
+	Inode                 uint64 `json:"inode,omitempty"`
+	ProjectID             uint32 `json:"project_id,omitempty"`
+	CapacityBytes         int64  `json:"capacity_bytes"`
+	VolumeID              string `json:"volume_id,omitempty"`
+	Kind                  string `json:"kind,omitempty"`
+	HostPath              string `json:"host_path,omitempty"`
+	BackendType           string `json:"backend_type,omitempty"`
+	PoolName              string `json:"pool_name,omitempty"`
+	ExpectedParentDataset string `json:"expected_parent_dataset,omitempty"`
+	ExpectedHostRoot      string `json:"expected_host_root,omitempty"`
+	AgentEndpoint         string `json:"agent_endpoint,omitempty"`
+	AgentName             string `json:"agent_name,omitempty"`
+	AgentVolumeID         string `json:"agent_volume_id,omitempty"`
+	Local                 bool   `json:"local,omitempty"`
 }
 
 // localStageState builds the stage state of a local attach.  ProtocolType

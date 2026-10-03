@@ -40,13 +40,13 @@ package csi
 //   - The phase does not tell whether the storage node holds anything: the
 //     agent may have created the backend resource (and even the export) of an
 //     attempt whose later CRD write or response was lost.  An abandoned
-//     lifecycle is therefore always ended by the same fenced teardown as
-//     DeleteVolume (UnexportVolume and DeleteVolume, both idempotent) before
-//     its record is removed — except an import lifecycle that never durably
-//     recorded adoption (status.importAcquired unset, no backend device path
-//     or export info): its backend resource is pre-existing data this driver
-//     never owned, so it is ended with ReleaseVolume, which retires the
-//     lifecycle at the agent without touching the zvol.
+//     lifecycle is ended by the same fenced teardown as DeleteVolume before
+//     its record is removed. Adopted filesystems use UnexportVolume followed
+//     by ReleaseVolume, preserving the original source. Legacy adopted
+//     zvols and dynamically created volumes retain destructive deletion.
+//     Imports without durable adoption (status.importAcquired unset, no
+//     backend device path or export info) use ReleaseVolume only; a lost
+//     response must never justify destroying pre-existing data.
 import (
 	"context"
 	"fmt"
@@ -62,6 +62,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/isac322/pillar-csi/api/v1alpha1"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
@@ -229,6 +230,9 @@ func (s *ControllerServer) ReapAbandonedVolume(ctx context.Context, pvsName stri
 	if err != nil || !found {
 		return false, err
 	}
+	if scopedDriverForVolume(pvs) != s.effectiveDriverName() {
+		return false, nil
+	}
 	volumeID := pvs.Spec.VolumeID
 	unlock := s.volumeLocks.lock(volumeID)
 	defer unlock()
@@ -238,6 +242,9 @@ func (s *ControllerServer) ReapAbandonedVolume(ctx context.Context, pvsName stri
 	pvs, found, err = s.readVolumeState(ctx, pvsName)
 	if err != nil || !found {
 		return false, err
+	}
+	if scopedDriverForVolume(pvs) != s.effectiveDriverName() {
+		return false, nil
 	}
 	abandoned, err := s.provisioningAbandoned(ctx, pvs)
 	if err != nil || !abandoned {
@@ -268,6 +275,10 @@ func (s *ControllerServer) reapAbandoned(
 	pvsName string,
 	pvs *v1alpha1.PillarVolumeState,
 ) (string, error) {
+	err := s.validateVolumeDriver(pvs)
+	if err != nil {
+		return reapResultKept, err
+	}
 	volumeID := pvs.Spec.VolumeID
 	decidedUID := pvs.UID
 	marked, fence, err := s.markVolumeDeleting(ctx, pvsName, volumeID, func(cur *v1alpha1.PillarVolumeState) error {
@@ -289,16 +300,25 @@ func (s *ControllerServer) reapAbandoned(
 
 	teardownCtx, cancel := context.WithTimeout(ctx, reapTeardownTimeout)
 	defer cancel()
+	var filesystemAdoption *agentv1.FilesystemAdoption
+	if marked.Spec.FilesystemAdoption != nil {
+		filesystemAdoption, err = filesystemAdoptionProto(marked.Spec.FilesystemAdoption)
+		if err != nil {
+			return reapResultError, fmt.Errorf(
+				"convert abandoned filesystem adoption: %w", err)
+		}
+	}
 	err = s.teardownMarkedVolume(teardownCtx, volumeTeardown{
-		volumeID:     volumeID,
-		pvName:       pvsName,
-		uid:          marked.UID,
-		targetName:   marked.Spec.AgentRef,
-		protocolType: mapProtocolType(marked.Spec.ProtocolType),
-		backendType:  mapBackendType(marked.Spec.BackendType),
-		agentVolID:   marked.Spec.AgentVolumeID,
-		fence:        fence,
-		releaseOnly:  importNeverAdopted(marked),
+		volumeID:           volumeID,
+		pvName:             pvsName,
+		uid:                marked.UID,
+		targetName:         marked.Spec.AgentRef,
+		protocolType:       mapProtocolType(marked.Spec.ProtocolType),
+		backendType:        mapBackendType(marked.Spec.BackendType),
+		agentVolID:         marked.Spec.AgentVolumeID,
+		fence:              fence,
+		releaseOnly:        importNeverAdopted(marked),
+		filesystemAdoption: filesystemAdoption,
 	})
 	if err != nil {
 		return reapResultError, fmt.Errorf("tear down abandoned volume %q: %w", volumeID, err)
@@ -315,6 +335,9 @@ func (s *ControllerServer) provisioningAbandoned(
 	ctx context.Context,
 	pvs *v1alpha1.PillarVolumeState,
 ) (bool, error) {
+	if scopedDriverForVolume(pvs) != s.effectiveDriverName() {
+		return false, nil
+	}
 	if !reapablePhase(pvs) {
 		return false, nil
 	}
@@ -337,12 +360,17 @@ func (s *ControllerServer) persistentVolumeExists(
 	ctx context.Context,
 	pvs *v1alpha1.PillarVolumeState,
 ) (bool, error) {
+	if scopedDriverForVolume(pvs) != s.effectiveDriverName() {
+		return false, nil
+	}
 	pv := &corev1.PersistentVolume{}
 	err := s.apiReader.Get(ctx, types.NamespacedName{Name: pvs.Name}, pv)
-	if err == nil {
+	if err == nil && pv.Spec.CSI != nil &&
+		pv.Spec.CSI.Driver == s.effectiveDriverName() &&
+		pv.Spec.CSI.VolumeHandle == pvs.Spec.VolumeID {
 		return true, nil
 	}
-	if !k8serrors.IsNotFound(err) {
+	if err != nil && !k8serrors.IsNotFound(err) {
 		return false, fmt.Errorf("get PersistentVolume %q: %w", pvs.Name, err)
 	}
 
@@ -353,7 +381,7 @@ func (s *ControllerServer) persistentVolumeExists(
 	}
 	for i := range pvList.Items {
 		src := pvList.Items[i].Spec.CSI
-		if src != nil && src.Driver == s.driverName && src.VolumeHandle == pvs.Spec.VolumeID {
+		if src != nil && src.Driver == s.effectiveDriverName() && src.VolumeHandle == pvs.Spec.VolumeID {
 			return true, nil
 		}
 	}

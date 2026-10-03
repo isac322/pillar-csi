@@ -23,6 +23,7 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/isac322/pillar-csi/api/v1alpha1"
 )
@@ -230,5 +231,129 @@ func TestCreateVolume_PVCFilesystemDocBeatsCapabilityFSType(t *testing.T) {
 	}
 	if got := resp.GetVolume().GetVolumeContext()[paramFSType]; got != defaultFsType {
 		t.Errorf("VolumeContext[%s] = %q, want the PVC document's ext4", paramFSType, got)
+	}
+}
+
+func TestResolveClassLayer_ExplicitDriverSelection(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, selected, controller string
+		want                       codes.Code
+	}{
+		{"default old", "", v1alpha1.DefaultCSIDriver, codes.OK},
+		{"default cannot route files", "", v1alpha1.FileCSIDriver, codes.InvalidArgument},
+		{"explicit files", v1alpha1.FileCSIDriver, v1alpha1.FileCSIDriver, codes.OK},
+		{"explicit files cannot route old", v1alpha1.FileCSIDriver, v1alpha1.DefaultCSIDriver, codes.InvalidArgument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binding := &v1alpha1.PillarStorageClass{Name: "selected", Spec: v1alpha1.PillarStorageClassSpec{
+				CSIDriver: tc.selected, StoreRef: testStoreName, ProtocolRef: testProtocolName}}
+			env := newControllerTestEnv(t, binding)
+			env.srv.driverName = tc.controller
+			_, err := env.srv.resolveClassLayer(context.Background(), map[string]string{paramBinding: "selected"}, true)
+			if status.Code(err) != tc.want {
+				t.Fatalf("binding routing error %v, want %v", err, tc.want)
+			}
+			// A replay must also reject a live binding pointed at another driver.
+			_, err = env.srv.resolveClassLayer(context.Background(), map[string]string{paramBinding: "selected"}, false)
+			if status.Code(err) != tc.want {
+				t.Fatalf("binding retry routing error %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveFilesystem_FileDriverLocalAttachDoesNotChangeOldNFS(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		driver string
+		want   codes.Code
+	}{
+		{v1alpha1.DefaultCSIDriver, codes.InvalidArgument},
+		{v1alpha1.FileCSIDriver, codes.OK},
+	} {
+		class := &classLayer{driverName: tc.driver, localAttach: true}
+		fs, err := resolveProtocolFilesystem(nil, nil, class, nil, v1alpha1.ProtocolIDNFS)
+		if status.Code(err) != tc.want {
+			t.Fatalf("%s localAttach: %v", tc.driver, err)
+		}
+		if err == nil && fs.FSType != ProtocolNFS {
+			t.Fatalf("NFS resolution changed to %+v", fs)
+		}
+	}
+}
+
+func TestApplyBackendOverride_DirectoryMemberCompatibility(t *testing.T) {
+	t.Parallel()
+	_, resolved := filesystemDirectoryFixture()
+	override := &v1alpha1.BackendOverrides{Directory: &v1alpha1.DirectoryBackendOverrides{}}
+	if err := applyBackendOverride(&resolved.Backend, override, "binding"); err != nil {
+		t.Fatalf("matching directory override refused: %v", err)
+	}
+	other := v1alpha1.BackendSpec{LVM: &v1alpha1.LVMBackendConfig{VolumeGroup: "data"}}
+	if err := applyBackendOverride(&other, override, "binding"); err == nil {
+		t.Fatal("directory override silently applied to LVM")
+	}
+}
+
+func TestResolveVolumeConfig_DirectoryRequiresFilesDriver(t *testing.T) {
+	t.Parallel()
+	for _, driver := range []string{v1alpha1.DefaultCSIDriver, v1alpha1.FileCSIDriver} {
+		t.Run(driver, func(t *testing.T) {
+			env := newControllerTestEnv(t,
+				&v1alpha1.PillarStore{Name: "directories", Spec: v1alpha1.PillarStoreSpec{
+					AgentRef: "storage-node-1", Backend: v1alpha1.BackendSpec{Directory: &v1alpha1.DirectoryBackendConfig{
+						LogicalPool: "imports", HostRoot: "/srv/imports"}}}},
+				&v1alpha1.PillarProtocol{Name: "file-nfs", Spec: v1alpha1.PillarProtocolSpec{
+					Protocol: v1alpha1.ProtocolSpec{NFS: &v1alpha1.NFSConfig{}}}})
+			env.srv.driverName = driver
+			params := map[string]string{paramStoreRef: "directories", paramProtocolRef: "file-nfs"}
+			got, err := env.srv.resolveVolumeConfig(context.Background(), params, nil, nil)
+			if driver == v1alpha1.DefaultCSIDriver {
+				if status.Code(err) != codes.InvalidArgument {
+					t.Fatalf("old driver directory resolution: %v", err)
+				}
+			} else if err != nil || got.resolved.Backend.Directory.HostRoot != "/srv/imports" {
+				t.Fatalf("files driver lost trusted directory layout: %+v %v", got, err)
+			}
+		})
+	}
+}
+
+func TestReplayResolution_PreservesFilesystemSelectors(t *testing.T) {
+	t.Parallel()
+	class := &classLayer{protocol: &v1alpha1.PillarProtocol{Name: "nfs"}}
+	protocol := v1alpha1.ProtocolSpec{NFS: &v1alpha1.NFSConfig{}}
+	_, recorded := filesystemDirectoryFixture()
+	recorded.Protocol = protocol
+	replayed, err := replayResolution(class, pvcDocs{ImportDirectory: "/srv/imports/app"}, protocol, recorded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.importDirectory != "/srv/imports/app" || replayed.importZFSDataset != "" || replayed.importDataset != "" {
+		t.Fatalf("retry lost filesystem adoption intent: %+v", replayed)
+	}
+}
+
+func TestClaimDocs_CompletedLifecycleAllowsOnlyMissingClaim(t *testing.T) {
+	t.Parallel()
+	params := map[string]string{paramPVCNameMeta: "retired", paramPVCNamespaceMeta: "default"}
+	env := newControllerTestEnv(t)
+	if _, err := env.srv.claimDocs(context.Background(), params, false); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("initial resolution silently dropped absent claim: %v", err)
+	}
+	docs, err := env.srv.claimDocs(context.Background(), params, true)
+	if err != nil || docs.ImportDirectory != "" || docs.ImportZFSDataset != "" || docs.ImportZvol != "" {
+		t.Fatalf("completed lifecycle cannot reuse stored adoption after claim removal: %+v %v", docs, err)
+	}
+	pvc := &corev1.PersistentVolumeClaim{Name: "retired", Namespace: "default",
+		Annotations: map[string]string{v1alpha1.AnnotationImportDirectory: ""}}
+	if err := env.srv.k8sClient.Create(context.Background(), pvc); err != nil {
+		t.Fatal(err)
+	}
+	for _, allowAbsent := range []bool{false, true} {
+		if _, err := env.srv.claimDocs(context.Background(), params, allowAbsent); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("allowAbsent=%v bypassed current claim selector validation: %v", allowAbsent, err)
+		}
 	}
 }

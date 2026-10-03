@@ -240,6 +240,145 @@ spec:
           resources:
             {{- toYaml .Values.node.resources | nindent 12 }}
 
+        {{- if .Values.fileDriver.enabled }}
+        # ── file CSI node service (filesystem adoption identity) ─────────────
+        - name: file-node
+          image: {{ include "pillar-csi.image" (dict "image" .Values.node.image "defaultTag" .Chart.AppVersion) }}
+          imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.node.image "global" .Values.imagePullPolicy) }}
+          securityContext:
+            runAsUser: 0
+            privileged: true
+            capabilities:
+              add:
+                - SYS_ADMIN
+          args:
+            - --driver-name={{ .Values.fileDriver.name }}
+            - --filesystem-host-root={{ .Values.fileDriver.sourceHostRoot }}
+            - --csi-socket={{ .Values.fileDriver.nodeSocketPath }}
+            - --state-dir=/var/lib/pillar-csi/node/files
+            {{- if .Values.mtls.enabled }}
+            - --agent-tls-cert={{ include "pillar-csi.mtls.certDir" . }}/tls.crt
+            - --agent-tls-key={{ include "pillar-csi.mtls.certDir" . }}/tls.key
+            - --agent-tls-ca={{ include "pillar-csi.mtls.certDir" . }}/ca.crt
+            {{- $serverName := include "pillar-csi.mtls.serverName" . }}
+            {{- if $serverName }}
+            - --agent-tls-server-name={{ $serverName }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - --metrics-bind-address={{ include "pillar-csi.metricsBindAddress" (dict "hostNetwork" .Values.node.hostNetwork "port" .Values.fileDriver.node.metricsPort) }}
+            {{- end }}
+            - --trim-interval=0
+            {{- range .Values.node.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- if or .Values.metrics.enabled .Values.tracing.enabled }}
+            {{- include "pillar-csi.telemetryPodEnv" . | trim | nindent 12 }}
+            {{- end }}
+            {{- if .Values.tracing.enabled }}
+            {{- include "pillar-csi.otelEnv" . | trim | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: file-healthz
+              containerPort: {{ .Values.fileDriver.node.livenessPort }}
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: file-metrics
+              containerPort: {{ .Values.fileDriver.node.metricsPort }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: file-healthz
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/busybox", "sleep", "5"]
+          volumeMounts:
+            - name: file-plugin-dir
+              mountPath: {{ .Values.fileDriver.nodeSocketPath | dir }}
+            - name: pods-mount-dir
+              mountPath: /var/lib/kubelet/pods
+              mountPropagation: Bidirectional
+            - name: kubelet-csi-dir
+              mountPath: /var/lib/kubelet/plugins/kubernetes.io/csi
+              mountPropagation: Bidirectional
+            - name: file-source-host-root
+              mountPath: {{ .Values.fileDriver.sourceHostRoot }}
+              readOnly: true
+              mountPropagation: HostToContainer
+            - name: file-proxy-root
+              mountPath: {{ .Values.fileDriver.proxyRoot }}
+              mountPropagation: HostToContainer
+            - name: node-state
+              mountPath: /var/lib/pillar-csi/node
+            {{- if .Values.mtls.enabled }}
+            - name: file-node-mtls-certs
+              mountPath: {{ include "pillar-csi.mtls.certDir" . }}
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.node.resources | nindent 12 }}
+
+        - name: file-node-driver-registrar
+          image: {{ include "pillar-csi.image" (dict "image" .Values.node.sidecars.nodeDriverRegistrar.image "defaultTag" .Values.node.sidecars.nodeDriverRegistrar.image.tag) }}
+          imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.node.sidecars.nodeDriverRegistrar.image "global" .Values.imagePullPolicy) }}
+          args:
+            - --csi-address={{ .Values.fileDriver.nodeSocketPath }}
+            - --kubelet-registration-path={{ .Values.fileDriver.nodeSocketPath }}
+            {{- range .Values.node.sidecars.nodeDriverRegistrar.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - rm -rf /registration/files.pillar-csi.bhyoo.com-reg.sock
+          volumeMounts:
+            - name: file-plugin-dir
+              mountPath: {{ .Values.fileDriver.nodeSocketPath | dir }}
+            - name: registration-dir
+              mountPath: /registration
+          resources:
+            {{- toYaml .Values.node.sidecars.nodeDriverRegistrar.resources | nindent 12 }}
+
+        - name: file-node-liveness-probe
+          image: {{ include "pillar-csi.image" (dict "image" .Values.node.sidecars.livenessProbe.image "defaultTag" .Values.node.sidecars.livenessProbe.image.tag) }}
+          imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.node.sidecars.livenessProbe.image "global" .Values.imagePullPolicy) }}
+          args:
+            - --csi-address={{ .Values.fileDriver.nodeSocketPath }}
+            - --health-port={{ .Values.fileDriver.node.livenessPort }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: file-plugin-dir
+              mountPath: {{ .Values.fileDriver.nodeSocketPath | dir }}
+          resources:
+            {{- toYaml .Values.node.sidecars.livenessProbe.resources | nindent 12 }}
+
+        {{- end }}
         # csi-node-driver-registrar: registers the CSI plugin socket with kubelet.
         - name: node-driver-registrar
           image: {{ include "pillar-csi.image" (dict "image" .Values.node.sidecars.nodeDriverRegistrar.image "defaultTag" .Values.node.sidecars.nodeDriverRegistrar.image.tag) }}
@@ -361,6 +500,30 @@ spec:
           hostPath:
             path: /var/lib/pillar-csi/node
             type: DirectoryOrCreate
+        {{- if .Values.fileDriver.enabled }}
+        - name: file-plugin-dir
+          hostPath:
+            path: {{ .Values.fileDriver.nodeSocketPath | dir }}
+            type: DirectoryOrCreate
+        - name: file-source-host-root
+          hostPath:
+            path: /
+            type: Directory
+        - name: file-proxy-root
+          hostPath:
+            path: {{ .Values.fileDriver.proxyRoot }}
+            type: DirectoryOrCreate
+        {{- if .Values.mtls.enabled }}
+        - name: file-node-mtls-certs
+          secret:
+            {{- if .Values.mtls.certManager.enabled }}
+            secretName: {{ printf "%s-file-node-mtls" (include "pillar-csi.fullname" .) }}
+            {{- else }}
+            secretName: {{ .Values.mtls.secretRefs.fileNode.secretName }}
+            {{- end }}
+            defaultMode: 0o400
+        {{- end }}
+        {{- end }}
       # ── Scheduling ───────────────────────────────────────────────────────────
       {{- with .Values.node.nodeSelector }}
       nodeSelector:

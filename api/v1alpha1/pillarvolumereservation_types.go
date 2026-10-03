@@ -41,6 +41,13 @@ type PillarVolumeReservationSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	AgentVolumeID string `json:"agentVolumeID"`
 
+	// filesystemResourceID is the canonical native backing-resource key for
+	// filesystem adoption, independent of logical pool and source path.
+	// Filesystem aliases reserve this key rather than agentVolumeID; the
+	// latter remains the routing identity. Omitted for legacy block volumes.
+	// +optional
+	FilesystemResourceID string `json:"filesystemResourceID,omitempty"`
+
 	// ownerVolume is the name of the PillarVolumeState lifecycle that holds
 	// the reservation.  A reservation survives the whole lifecycle, including
 	// retries of refused backend calls, and is released only when the owning
@@ -65,7 +72,8 @@ type PillarVolumeReservationSpec struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // PillarVolumeReservation atomically binds a backend volume
-// (agent + backend + agentVolumeID) to one volume lifecycle.  The CSI
+// (agent + backend + agentVolumeID, or the native filesystem resource key)
+// to one volume lifecycle. The CSI
 // controller creates it before the owning PillarVolumeState with a
 // deterministic name, so two concurrent CreateVolume claims on the same
 // backend volume — for example two PVCs importing the same zvol — cannot both

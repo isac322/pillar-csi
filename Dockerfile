@@ -126,6 +126,7 @@ RUN --mount=type=bind,source=hack/verify-mkfs-baseline.sh,target=/tmp/verify-mkf
          'xfsprogs~=7.0' \
          'xfsprogs-extra~=7.0' \
          'device-mapper~=2.03' \
+         'quota-tools~=4.11' \
          nfs-utils; \
     # A separate command: the "|| true" below would mask a failure in the chain.
     sh /tmp/verify-mkfs-baseline.sh; \

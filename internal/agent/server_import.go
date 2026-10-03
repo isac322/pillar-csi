@@ -47,6 +47,9 @@ func (s *Server) ImportVolume(
 	req *agentv1.ImportVolumeRequest,
 ) (*agentv1.ImportVolumeResponse, error) {
 	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
+	if req.GetFilesystemAdoption() != nil {
+		return s.importFilesystem(ctx, req)
+	}
 	b, err := s.backendForType(req.GetVolumeId(), req.GetBackendType())
 	if err != nil {
 		return nil, err

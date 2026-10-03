@@ -1654,6 +1654,226 @@ var _ = Describe("PillarStorageClass Controller", func() {
 
 })
 
+func TestPillarStorageClass_ProvisionerRouting(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	if err := pillarcsiv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add pillar-csi scheme: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		driver     string
+		wantDriver string
+	}{
+		{name: "omitted selector keeps legacy driver", wantDriver: pillarcsiv1alpha1.DefaultCSIDriver},
+		{name: "explicit file selector routes file driver", driver: pillarcsiv1alpha1.FileCSIDriver, wantDriver: pillarcsiv1alpha1.FileCSIDriver},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binding := &pillarcsiv1alpha1.PillarStorageClass{
+				ObjectMeta: metav1.ObjectMeta{Name: "routing-" + strings.ReplaceAll(tt.name, " ", "-"), UID: types.UID("routing-uid")},
+				Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+					CSIDriver: tt.driver, StoreRef: "store", ProtocolRef: "protocol",
+				},
+			}
+			reconciler := &PillarStorageClassReconciler{
+				Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(binding.DeepCopy()).Build(),
+				Scheme: scheme,
+			}
+			if err := reconciler.reconcileStorageClass(ctx, binding, nil, binding.Name); err != nil {
+				t.Fatalf("reconcileStorageClass: %v", err)
+			}
+			got := &storagev1.StorageClass{}
+			if err := reconciler.Get(ctx, types.NamespacedName{Name: binding.Name}, got); err != nil {
+				t.Fatalf("get generated StorageClass: %v", err)
+			}
+			if got.Provisioner != tt.wantDriver {
+				t.Fatalf("provisioner = %q, want %q", got.Provisioner, tt.wantDriver)
+			}
+			if tt.wantDriver == pillarcsiv1alpha1.FileCSIDriver {
+				if got.AllowVolumeExpansion == nil || *got.AllowVolumeExpansion {
+					t.Fatalf("file StorageClass allowVolumeExpansion = %v, want false", got.AllowVolumeExpansion)
+				}
+			}
+		})
+	}
+}
+
+func TestPillarStorageClass_ExistingProvisionerCannotSwitchDrivers(t *testing.T) {
+	ctx := context.Background()
+	r, _, binding := newDriftTestReconciler(t, interceptor.Funcs{})
+	before := &storagev1.StorageClass{}
+	if err := r.Get(ctx, types.NamespacedName{Name: binding.Name}, before); err != nil {
+		t.Fatal(err)
+	}
+	binding.Spec.CSIDriver = pillarcsiv1alpha1.FileCSIDriver
+	if err := r.reconcileStorageClass(ctx, binding, nil, binding.Name); err == nil {
+		t.Fatal("existing legacy StorageClass was silently switched to the file driver")
+	}
+	after := &storagev1.StorageClass{}
+	if err := r.Get(ctx, types.NamespacedName{Name: binding.Name}, after); err != nil {
+		t.Fatalf("existing StorageClass was removed: %v", err)
+	}
+	if !equality.Semantic.DeepEqual(before, after) {
+		t.Fatalf("existing StorageClass changed on driver migration refusal: before=%+v after=%+v", before, after)
+	}
+}
+
+var _ = DescribeTable("native CRD to StorageClass driver routing",
+	func(driver, name, want string) {
+		ctx := context.Background()
+		pool := &pillarcsiv1alpha1.PillarStore{
+			ObjectMeta: metav1.ObjectMeta{Name: name + "-store"},
+			Spec: pillarcsiv1alpha1.PillarStoreSpec{
+				AgentRef: name + "-agent",
+				Backend: pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
+					Pool: "tank", VolumeType: pillarcsiv1alpha1.ZFSVolumeTypeDataset,
+				}},
+			},
+		}
+		protocol := &pillarcsiv1alpha1.PillarProtocol{
+			ObjectMeta: metav1.ObjectMeta{Name: name + "-nfs"},
+			Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Protocol: pillarcsiv1alpha1.ProtocolSpec{NFS: &pillarcsiv1alpha1.NFSConfig{}}},
+		}
+		binding := &pillarcsiv1alpha1.PillarStorageClass{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       pillarcsiv1alpha1.PillarStorageClassSpec{CSIDriver: driver, StoreRef: pool.Name, ProtocolRef: protocol.Name},
+		}
+		Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+		Expect(k8sClient.Create(ctx, protocol)).To(Succeed())
+		Expect(k8sClient.Create(ctx, binding)).To(Succeed())
+		DeferCleanup(func() {
+			current := &pillarcsiv1alpha1.PillarStorageClass{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: binding.Name}, current); err == nil {
+				current.Finalizers = nil
+				Expect(k8sClient.Update(ctx, current)).To(Succeed())
+				Expect(k8sClient.Delete(ctx, current)).To(Succeed())
+			}
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: name}}))).To(Succeed())
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, protocol))).To(Succeed())
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pool))).To(Succeed())
+		})
+		pool.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
+		protocol.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
+		Expect(k8sClient.Status().Update(ctx, pool)).To(Succeed())
+		Expect(k8sClient.Status().Update(ctx, protocol)).To(Succeed())
+		r := &PillarStorageClassReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Name: name}}
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		sc := &storagev1.StorageClass{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, sc)).To(Succeed())
+		Expect(sc.Provisioner).To(Equal(want))
+		uid := sc.UID
+		_, err = r.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, sc)).To(Succeed())
+		Expect(sc.UID).To(Equal(uid), "reconciling existing dynamic NFS routing must not recreate its StorageClass")
+	},
+	Entry("keeps existing dynamic NFS on omitted legacy selector", "", "native-routing-old", pillarcsiv1alpha1.DefaultCSIDriver),
+	Entry("routes explicit adoption class to files provisioner", pillarcsiv1alpha1.FileCSIDriver, "native-routing-files", pillarcsiv1alpha1.FileCSIDriver),
+)
+
+func TestPillarStorageClass_NativeLocalFilesReadiness(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := pillarcsiv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name        string
+		driver      string
+		local       bool
+		hostRoot    string
+		nodeRef     bool
+		wantCreated bool
+	}{
+		{name: "file local needs no NFS runtime", driver: pillarcsiv1alpha1.FileCSIDriver, local: true, hostRoot: "/srv/files", nodeRef: true, wantCreated: true},
+		{name: "file remote needs NFS runtime", driver: pillarcsiv1alpha1.FileCSIDriver, hostRoot: "/srv/files", nodeRef: true},
+		{name: "legacy local still needs NFS runtime", local: true, hostRoot: "/srv/files", nodeRef: true},
+		{name: "file local rejects layout drift", driver: pillarcsiv1alpha1.FileCSIDriver, local: true, hostRoot: "/srv/other", nodeRef: true},
+		{name: "file local rejects missing node ref", driver: pillarcsiv1alpha1.FileCSIDriver, local: true, hostRoot: "/srv/files"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			binding := &pillarcsiv1alpha1.PillarStorageClass{
+				ObjectMeta: metav1.ObjectMeta{Name: "native-local", UID: "native-local-uid", Finalizers: []string{pillarStorageClassFinalizer}},
+				Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+					CSIDriver: tt.driver, StoreRef: "files-store", ProtocolRef: "nfs", LocalAttach: tt.local,
+				},
+			}
+			store := &pillarcsiv1alpha1.PillarStore{
+				ObjectMeta: metav1.ObjectMeta{Name: "files-store"},
+				Spec: pillarcsiv1alpha1.PillarStoreSpec{
+					AgentRef: "agent",
+					Backend: pillarcsiv1alpha1.BackendSpec{Directory: &pillarcsiv1alpha1.DirectoryBackendConfig{
+						LogicalPool: "files", HostRoot: "/srv/files",
+					}},
+				},
+				Status: pillarcsiv1alpha1.PillarStoreStatus{Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue}}},
+			}
+			agent := &pillarcsiv1alpha1.PillarAgent{
+				ObjectMeta: metav1.ObjectMeta{Name: "agent"},
+				Status: pillarcsiv1alpha1.PillarAgentStatus{
+					Conditions:      []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue}},
+					Capabilities:    &pillarcsiv1alpha1.AgentCapabilities{Backends: []string{"directory"}},
+					DiscoveredPools: []pillarcsiv1alpha1.DiscoveredPool{{Name: "files", Type: "directory", HostRoot: tt.hostRoot}},
+				},
+			}
+			if tt.nodeRef {
+				agent.Spec.NodeRef = &pillarcsiv1alpha1.NodeRefSpec{Name: "storage-node"}
+			}
+			protocol := &pillarcsiv1alpha1.PillarProtocol{
+				ObjectMeta: metav1.ObjectMeta{Name: "nfs"},
+				Spec:       pillarcsiv1alpha1.PillarProtocolSpec{Protocol: pillarcsiv1alpha1.ProtocolSpec{NFS: &pillarcsiv1alpha1.NFSConfig{}}},
+				Status:     pillarcsiv1alpha1.PillarProtocolStatus{Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionFalse, Reason: "NoNFSRuntime"}}},
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).
+				WithStatusSubresource(binding, store, agent, protocol).
+				WithObjects(binding, store, agent, protocol).Build()
+			r := &PillarStorageClassReconciler{Client: c, Scheme: scheme}
+			if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: binding.Name}}); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			gotBinding := &pillarcsiv1alpha1.PillarStorageClass{}
+			if err := c.Get(ctx, types.NamespacedName{Name: binding.Name}, gotBinding); err != nil {
+				t.Fatal(err)
+			}
+			ready := apimeta.IsStatusConditionTrue(gotBinding.Status.Conditions, "Ready")
+			sc := &storagev1.StorageClass{}
+			err := c.Get(ctx, types.NamespacedName{Name: binding.Name}, sc)
+			if tt.wantCreated {
+				if err != nil || !ready {
+					t.Fatalf("local class not operational: StorageClass error=%v conditions=%v", err, gotBinding.Status.Conditions)
+				}
+				wantTopology := []corev1.TopologySelectorTerm{{MatchLabelExpressions: []corev1.TopologySelectorLabelRequirement{{
+					Key: localFilesNodeTopologyKey, Values: []string{"storage-node"},
+				}}}}
+				if sc.Provisioner != pillarcsiv1alpha1.FileCSIDriver || !equality.Semantic.DeepEqual(sc.AllowedTopologies, wantTopology) {
+					t.Fatalf("native local StorageClass = %+v", sc)
+				}
+			} else if !errors.IsNotFound(err) || ready {
+				t.Fatalf("unavailable class became operational: StorageClass error=%v conditions=%v", err, gotBinding.Status.Conditions)
+			}
+			gotProtocol := &pillarcsiv1alpha1.PillarProtocol{}
+			if err := c.Get(ctx, types.NamespacedName{Name: protocol.Name}, gotProtocol); err != nil {
+				t.Fatal(err)
+			}
+			if apimeta.IsStatusConditionTrue(gotProtocol.Status.Conditions, "Ready") {
+				t.Fatal("native local class fabricated NFS protocol readiness")
+			}
+		})
+	}
+}
+
 // Unit tests for evaluateCompatibility — no envtest / API server required.
 // Every served backend/protocol union member is a block kind, so the served
 // combinations are compatible; an object whose union selects no member (one

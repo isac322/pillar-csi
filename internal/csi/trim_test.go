@@ -789,7 +789,10 @@ func TestParseMountInfo(t *testing.T) {
 		t.Errorf("stacked mount = %+v (found %v), want the tmpfs 0:55 on top", got, ok)
 	}
 	got, ok = findMount(mounts, "/mnt/with space")
-	want := mountInfoEntry{Major: 253, Minor: 4, MountPoint: "/mnt/with space", FsType: "ext4", Source: `/dev/mapper/a\b`}
+	want := mountInfoEntry{
+		Major: 253, Minor: 4, Root: "/", MountPoint: "/mnt/with space",
+		FsType: "ext4", Source: `/dev/mapper/a\b`,
+	}
 	if !ok || got != want {
 		t.Errorf("escaped mount = %+v (found %v), want %+v", got, ok, want)
 	}

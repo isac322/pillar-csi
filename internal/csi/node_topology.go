@@ -16,7 +16,11 @@ limitations under the License.
 
 package csi
 
-import "os"
+import (
+	"os"
+
+	"github.com/isac322/pillar-csi/api/v1alpha1"
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Topology key constants
@@ -96,6 +100,17 @@ func buildTopologySegments(p ProtocolProber) map[string]string {
 	segs := make(map[string]string)
 	if p.NVMeoFAvailable() {
 		segs[TopologyKeyNVMeoF] = topologyValueTrue
+	}
+	return segs
+}
+
+// buildNodeTopologySegments adds the file-driver node identity only when the
+// explicitly configured files profile is serving.  The legacy driver keeps
+// its protocol-only topology unchanged.
+func buildNodeTopologySegments(p ProtocolProber, driverName, nodeID string) map[string]string {
+	segs := buildTopologySegments(p)
+	if driverName == v1alpha1.FileCSIDriver && nodeID != "" {
+		segs[FileTopologyNodeKey] = nodeID
 	}
 	return segs
 }

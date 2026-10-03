@@ -51,7 +51,7 @@ func (s *Server) CreateVolume(
 		devicePath string
 		allocated  int64
 	)
-	err = s.fenced(ctx, req.GetVolumeId(), req.GetFence(), fenceGrant, func() error {
+	err = s.fencedBackend(ctx, req.GetVolumeId(), req.GetFence(), fenceGrant, b, func() error {
 		var createErr error
 		devicePath, allocated, createErr = b.Create(
 			ctx,
@@ -77,7 +77,8 @@ func checkBackendType(op string, requested, configured agentv1.BackendType, volu
 	switch requested {
 	case agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET,
-		agentv1.BackendType_BACKEND_TYPE_LVM:
+		agentv1.BackendType_BACKEND_TYPE_LVM,
+		agentv1.BackendType_BACKEND_TYPE_DIRECTORY:
 		if requested != configured {
 			return status.Errorf(codes.InvalidArgument,
 				"%s %q: backend_type %s does not match the pool's configured backend %s",
@@ -140,6 +141,16 @@ func (s *Server) DeleteVolume(
 	req *agentv1.DeleteVolumeRequest,
 ) (*agentv1.DeleteVolumeResponse, error) {
 	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
+	if req.GetFilesystemAdoption() != nil {
+		if req.GetBackendType() != filesystemBackendType(req.GetFilesystemAdoption()) {
+			return nil, status.Errorf(codes.InvalidArgument, "filesystem delete backend type mismatch")
+		}
+		err := s.releaseFilesystem(ctx, req.GetVolumeId(), req.GetFilesystemAdoption(), req.GetFence(), true)
+		if err != nil {
+			return nil, err
+		}
+		return &agentv1.DeleteVolumeResponse{}, nil
+	}
 	b, err := s.backendForType(req.GetVolumeId(), req.GetBackendType())
 	if err != nil {
 		return nil, err
@@ -165,7 +176,7 @@ func (s *Server) DeleteVolume(
 			return nil, protocolRPCError(unexportErr)
 		}
 	}
-	err = s.fenced(ctx, req.GetVolumeId(), req.GetFence(), fenceDestroy, func() error {
+	err = s.fencedBackend(ctx, req.GetVolumeId(), req.GetFence(), fenceDestroy, b, func() error {
 		deleteErr := b.Delete(ctx, req.GetVolumeId())
 		if deleteErr != nil {
 			return status.Errorf(codes.Internal, "DeleteVolume: %v", deleteErr)
@@ -195,7 +206,7 @@ func (s *Server) ExpandVolume(
 		return nil, checkErr
 	}
 	var allocated int64
-	err = s.fenced(ctx, req.GetVolumeId(), req.GetFence(), fenceGrant, func() error {
+	err = s.fencedBackend(ctx, req.GetVolumeId(), req.GetFence(), fenceGrant, b, func() error {
 		var expandErr error
 		allocated, expandErr = b.Expand(ctx, req.GetVolumeId(), req.GetRequestedBytes())
 		if expandErr != nil {

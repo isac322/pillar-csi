@@ -475,12 +475,13 @@ func TestCSIController_ControllerPublishVolume_TargetNoResolvedAddress(t *testin
 // TestCSIController_ExpandVolume_TargetNotFound verifies that a missing
 // PillarAgent on ControllerExpandVolume returns NotFound.
 //
-//	Setup:   VolumeID encoding non-existent target
+//	Setup:   PillarVolumeState exists; VolumeID encodes non-existent target
 //	Expect:  Returns gRPC NotFound
 func TestCSIController_ExpandVolume_TargetNotFound(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnvNoTarget(t)
 	ctx := context.Background()
+	seedComponentPillarVolumeStateOnAgent(t, env, "pvc-test", "nonexistent-node")
 
 	_, err := env.srv.ControllerExpandVolume(ctx, &csipb.ControllerExpandVolumeRequest{
 		VolumeId:      "nonexistent-node/nvmeof-tcp/zfs-zvol/tank/pvc-test",
@@ -493,12 +494,13 @@ func TestCSIController_ExpandVolume_TargetNotFound(t *testing.T) {
 // PillarAgent with empty ResolvedAddress on ControllerExpandVolume returns
 // Unavailable.
 //
-//	Setup:   PillarAgent with empty ResolvedAddress; valid VolumeID
+//	Setup:   PillarVolumeState exists; PillarAgent with empty ResolvedAddress
 //	Expect:  Returns gRPC Unavailable
 func TestCSIController_ExpandVolume_TargetNoResolvedAddress(t *testing.T) {
 	t.Parallel()
 	env := newCSIControllerTestEnvNoResolvedAddr(t)
 	ctx := context.Background()
+	seedComponentPillarVolumeState(t, env)
 
 	_, err := env.srv.ControllerExpandVolume(ctx, &csipb.ControllerExpandVolumeRequest{
 		VolumeId:      expectedCSIVolumeID,

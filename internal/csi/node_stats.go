@@ -23,10 +23,11 @@ import (
 	"syscall"
 	"unsafe"
 
+	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	csi "github.com/container-storage-interface/spec/lib/go/csi"
+	"github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
 // blkgetsize64 is the Linux ioctl request number to query the size of a block
@@ -76,13 +77,16 @@ func linuxBlockDeviceSize(path string) (int64, error) {
 //   - Filesystem mount point (regular directory / file): syscall.Statfs is
 //     called and both BYTES and INODES usage entries are returned.
 //
+// The file-driver profile instead reads its durable adoption record and uses
+// InspectImport to revalidate native identity and exact quota. It never reports
+// a shared filesystem or pool's capacity as the adopted volume's total.
 // The CO calls this RPC periodically to populate PersistentVolumeClaim status
 // capacity fields and to drive node-level storage pressure eviction decisions.
 //
 // Capability: NodeServiceCapability_RPC_GET_VOLUME_STATS must be advertised in
 // NodeGetCapabilities for the CO to invoke this RPC.
 func (n *NodeServer) NodeGetVolumeStats(
-	_ context.Context,
+	ctx context.Context,
 	req *csi.NodeGetVolumeStatsRequest,
 ) (*csi.NodeGetVolumeStatsResponse, error) {
 	// ── Input validation ────────────────────────────────────────────────────
@@ -92,6 +96,9 @@ func (n *NodeServer) NodeGetVolumeStats(
 	volumePath := req.GetVolumePath()
 	if volumePath == "" {
 		return nil, status.Error(codes.InvalidArgument, "NodeGetVolumeStats: volume_path is required") //nolint:wrapcheck
+	}
+	if n.effectiveDriverName() == v1alpha1.FileCSIDriver {
+		return n.nodeGetFilesystemVolumeStats(ctx, req.GetVolumeId(), volumePath)
 	}
 
 	// Select the stat function: use the injected override when present
@@ -193,4 +200,54 @@ func (n *NodeServer) NodeGetVolumeStats(
 			},
 		},
 	}, nil
+}
+
+func (n *NodeServer) nodeGetFilesystemVolumeStats(
+	ctx context.Context, volumeID, volumePath string,
+) (*csi.NodeGetVolumeStatsResponse, error) {
+	state, err := n.readStageState(volumeID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"NodeGetVolumeStats: read stage state for %q: %v", volumeID, err)
+	}
+	if state == nil || state.File == nil {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"NodeGetVolumeStats: volume %q has no persisted filesystem identity/quota metadata",
+			volumeID)
+	}
+	if n.fileStatsFn == nil {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"NodeGetVolumeStats: volume %q: adopted filesystem identity/quota gateway is not configured",
+			volumeID)
+	}
+	stats, err := n.fileStatsFn(ctx, volumePath, state.File)
+	if err != nil {
+		errorCode := status.Code(err)
+		if errorCode == codes.Unknown {
+			errorCode = codes.Internal
+		}
+		return nil, status.Errorf(errorCode,
+			"NodeGetVolumeStats: inspect adopted filesystem %q: %v", volumeID, err)
+	}
+	if stats == nil {
+		return nil, status.Errorf(codes.Internal,
+			"%s", "NodeGetVolumeStats: adopted filesystem stats gateway returned nil response")
+	}
+	hasBytes := false
+	for _, usage := range stats.GetUsage() {
+		if usage.GetUnit() != csi.VolumeUsage_BYTES {
+			continue
+		}
+		hasBytes = true
+		if usage.GetTotal() != state.File.CapacityBytes {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"NodeGetVolumeStats: adopted filesystem bound changed from %d to %d bytes",
+				state.File.CapacityBytes, usage.GetTotal())
+		}
+	}
+	if !hasBytes {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"%s", "NodeGetVolumeStats: adopted filesystem stats omitted exact byte bound")
+	}
+	return stats, nil
 }

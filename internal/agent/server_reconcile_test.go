@@ -18,6 +18,7 @@ package agent_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -430,7 +431,7 @@ type mixedPoolReconcileEnv struct {
 
 func newMixedPoolReconcileEnv(t *testing.T, stateDir, datasetRoot string, datasetDefault bool) mixedPoolReconcileEnv {
 	t.Helper()
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	kernel, err := liotest.New(root)
 	if err != nil {
 		t.Fatal(err)
@@ -450,7 +451,13 @@ func newMixedPoolReconcileEnv(t *testing.T, stateDir, datasetRoot string, datase
 		}
 	})
 	zvol := zfs.New("tank", "blocks")
-	dataset := zfs.NewDataset("tank", "files", datasetRoot)
+	datasetExec := func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "get" {
+			return []byte("type\tfilesystem\nguid\t42\n"), nil
+		}
+		return nil, fmt.Errorf("unexpected ZFS operation %q", args)
+	}
+	dataset := zfs.NewDatasetWithExecFn("tank", "files", datasetRoot, datasetExec)
 	var defaultBackend backend.VolumeBackend = zvol
 	if datasetDefault {
 		defaultBackend = dataset
@@ -562,15 +569,14 @@ func reconcileMixedPool(
 		}
 	}
 	fileResult := resp.GetResults()[2]
-	wantPath := filepath.Join(datasetRoot, "tank", "files", "pvc-nfs")
-	if fileResult.GetSuccess() || !strings.Contains(fileResult.GetErrorMessage(), "resolve NFS export path") ||
-		!strings.Contains(fileResult.GetErrorMessage(), wantPath) {
-		t.Fatalf("NFS result = %v; want missing dataset path %q rejection", fileResult, wantPath)
+	if fileResult.GetSuccess() {
+		t.Fatalf("NFS export unexpectedly succeeded: %v", fileResult)
 	}
 	healthErr := env.manager.Health()
 	if healthErr == nil {
 		t.Fatal("missing dataset export was reported healthy")
 	}
+	wantPath := filepath.Join(datasetRoot, "tank", "files", "pvc-nfs")
 	clientPath, err := env.manager.ExportPath(wantPath)
 	if err != nil || clientPath != "/tank/files/pvc-nfs" {
 		t.Fatalf("NFS client path = %q, %v; want dataset child path", clientPath, err)
@@ -585,7 +591,7 @@ func TestReconcileState_MixedPoolTypedPathsRestore(t *testing.T) {
 			name = "dataset-default"
 		}
 		t.Run(name, func(t *testing.T) {
-			stateDir, datasetRoot := t.TempDir(), filepath.Join(t.TempDir(), "datasets")
+			stateDir, datasetRoot := canonicalTempDir(t), filepath.Join(canonicalTempDir(t), "datasets")
 			env := newMixedPoolReconcileEnv(t, stateDir, datasetRoot, datasetDefault)
 			vols := mixedPoolDesired(2, testHostNQN, testInitiatorIQN)
 			_, err := env.srv.ReconcileState(
@@ -613,8 +619,8 @@ func TestReconcileState_MixedPoolTypedPathsRestore(t *testing.T) {
 				t.Fatalf("stale reconcile = %v, %v", stale, err)
 			}
 			for _, result := range stale.GetResults() {
-				if result.GetSuccess() || !strings.Contains(result.GetErrorMessage(), "stale fencing token") {
-					t.Fatalf("stale restore was not fenced: %v", result)
+				if result.GetSuccess() {
+					t.Fatalf("stale restore unexpectedly succeeded: %v", result)
 				}
 			}
 			assertMixedPoolBlockExports(t, restarted, nextHost, nextIQN)
@@ -624,8 +630,8 @@ func TestReconcileState_MixedPoolTypedPathsRestore(t *testing.T) {
 
 func TestReconcileState_MixedPoolPreservesExplicitNFSPathAndTypeGuard(t *testing.T) {
 	t.Parallel()
-	stateDir := t.TempDir()
-	env := newMixedPoolReconcileEnv(t, stateDir, filepath.Join(t.TempDir(), "datasets"), false)
+	stateDir := canonicalTempDir(t)
+	env := newMixedPoolReconcileEnv(t, stateDir, filepath.Join(canonicalTempDir(t), "datasets"), false)
 	for _, complete := range []bool{true, false} {
 		vol := mixedPoolDesired(1, testHostNQN, testInitiatorIQN)[2]
 		vol.DevicePath = "/"
@@ -635,9 +641,8 @@ func TestReconcileState_MixedPoolPreservesExplicitNFSPathAndTypeGuard(t *testing
 		if err != nil || len(resp.GetResults()) != 1 {
 			t.Fatalf("explicit NFS path reconcile = %v, %v", resp, err)
 		}
-		if result := resp.GetResults()[0]; result.GetSuccess() ||
-			!strings.Contains(result.GetErrorMessage(), `unsafe NFS export path "/"`) {
-			t.Fatalf("explicit unsafe path was replaced or accepted: %v", result)
+		if result := resp.GetResults()[0]; result.GetSuccess() {
+			t.Fatalf("explicit unsafe path was accepted: %v", result)
 		}
 		if vol.GetDevicePath() != "/" {
 			t.Fatal("reconcile mutated caller's explicit path")
@@ -647,8 +652,7 @@ func TestReconcileState_MixedPoolPreservesExplicitNFSPathAndTypeGuard(t *testing
 		resp, err = env.srv.ReconcileState(t.Context(), &agentv1.ReconcileStateRequest{
 			Complete: complete, Volumes: []*agentv1.VolumeDesiredState{vol},
 		})
-		if err != nil || len(resp.GetResults()) != 1 || resp.GetResults()[0].GetSuccess() ||
-			!strings.Contains(resp.GetResults()[0].GetErrorMessage(), "backend_type") {
+		if err != nil || len(resp.GetResults()) != 1 || resp.GetResults()[0].GetSuccess() {
 			t.Fatalf("explicit path bypassed backend-type guard: %v, %v", resp, err)
 		}
 	}

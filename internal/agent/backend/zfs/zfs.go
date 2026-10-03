@@ -345,7 +345,7 @@ func (z *Backend) validateLayout(volumeID string, p *agentv1.ZfsVolumeParams) er
 // It returns a *notExistError when the dataset does not exist at all, which
 // allows callers to distinguish "missing" from other errors.
 func (z *Backend) volsizeBytes(ctx context.Context, dataset string) (int64, error) {
-	out, err := z.exec.run(ctx, "zfs", "get", "-Hp", "-o", "value", "volsize", dataset)
+	out, err := z.exec.run(ctx, "zfs", zfsGetOperation, "-Hp", "-o", "value", "volsize", dataset)
 	if err != nil {
 		if isNotExistOutput(out) {
 			return 0, &notExistError{dataset: dataset}
@@ -542,7 +542,7 @@ func (z *Backend) Capacity(ctx context.Context) (totalBytes, availableBytes int6
 	// so the refquota path needs no extra commands.
 	ancestors := datasetAncestors(root)
 	args := append(
-		[]string{"get", "-Hp", "-o", "name,property,value",
+		[]string{zfsGetOperation, datasetMachineOutput, "-o", datasetNamePropertyValueOutput,
 			"available,used,usedbyrefreservation,refquota,quota,reservation"},
 		ancestors...,
 	)

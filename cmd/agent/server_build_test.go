@@ -19,10 +19,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -31,7 +34,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -66,7 +72,37 @@ type agentTestServer struct {
 	logs   *syncBuffer
 }
 
+type staticAuthCredentials struct {
+	authInfo credentials.AuthInfo
+}
+
+func (c staticAuthCredentials) ClientHandshake(
+	_ context.Context,
+	_ string,
+	conn net.Conn,
+) (net.Conn, credentials.AuthInfo, error) {
+	return conn, c.authInfo, nil
+}
+
+func (c staticAuthCredentials) ServerHandshake(conn net.Conn) (net.Conn, credentials.AuthInfo, error) {
+	return conn, c.authInfo, nil
+}
+
+func (staticAuthCredentials) Info() credentials.ProtocolInfo {
+	return credentials.ProtocolInfo{SecurityProtocol: "static-test-tls"}
+}
+
+func (c staticAuthCredentials) Clone() credentials.TransportCredentials { return c }
+func (staticAuthCredentials) OverrideServerName(string) error           { return nil }
+
 func startAgentTestServer(t *testing.T) agentTestServer {
+	return startAgentTestServerWithCredentials(t, nil, nil)
+}
+
+func startAgentTestServerWithCredentials(
+	t *testing.T,
+	serverCreds, clientCreds credentials.TransportCredentials,
+) agentTestServer {
 	t.Helper()
 	srv := agent.NewServer(nil, t.TempDir(), agent.WithDrainStateDir(t.TempDir()))
 	metrics := newAgentServerMetrics()
@@ -74,7 +110,11 @@ func startAgentTestServer(t *testing.T) agentTestServer {
 	reg.MustRegister(metrics)
 	logs := &syncBuffer{}
 	failureLog := telemetry.SlogFailureLogger(slog.New(slog.NewJSONHandler(logs, nil)))
-	g, _ := newAgentGRPCServer(srv, metrics, failureLog, nil)
+	var grpcOpts []grpc.ServerOption
+	if serverCreds != nil {
+		grpcOpts = []grpc.ServerOption{grpc.Creds(serverCreds)}
+	}
+	g, _ := newAgentGRPCServer(srv, metrics, failureLog, grpcOpts)
 
 	lis := bufconn.Listen(1 << 20)
 	serveErr := make(chan error, 1)
@@ -86,12 +126,16 @@ func startAgentTestServer(t *testing.T) agentTestServer {
 		}
 	})
 
+	transportCreds := insecure.NewCredentials()
+	if clientCreds != nil {
+		transportCreds = clientCreds
+	}
 	conn, err := grpc.NewClient(
 		"passthrough://bufnet",
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 			return lis.DialContext(ctx)
 		}),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(transportCreds),
 	)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -102,6 +146,156 @@ func startAgentTestServer(t *testing.T) agentTestServer {
 		}
 	})
 	return agentTestServer{client: agentv1.NewAgentServiceClient(conn), reg: reg, logs: logs}
+}
+
+func tlsPeerContext(t *testing.T, identities ...string) context.Context {
+	t.Helper()
+	uris := make([]*url.URL, 0, len(identities))
+	for _, identity := range identities {
+		uri, err := url.Parse(identity)
+		if err != nil {
+			t.Fatalf("parse peer identity %q: %v", identity, err)
+		}
+		uris = append(uris, uri)
+	}
+	return peer.NewContext(context.Background(), &peer.Peer{
+		AuthInfo: credentials.TLSInfo{
+			State: tls.ConnectionState{
+				PeerCertificates: []*x509.Certificate{{URIs: uris}},
+			},
+		},
+	})
+}
+
+type authorizationTestStream struct {
+	ctx context.Context
+}
+
+func (*authorizationTestStream) SetHeader(metadata.MD) error  { return nil }
+func (*authorizationTestStream) SendHeader(metadata.MD) error { return nil }
+func (*authorizationTestStream) SetTrailer(metadata.MD)       {}
+func (s *authorizationTestStream) Context() context.Context   { return s.ctx }
+func (*authorizationTestStream) SendMsg(any) error            { return nil }
+func (*authorizationTestStream) RecvMsg(any) error            { return nil }
+
+func TestFileNodeAuthorizationInterceptors(t *testing.T) {
+	t.Run("unary", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			ctx        context.Context
+			method     string
+			wantCode   codes.Code
+			wantCalled bool
+		}{
+			{
+				name:       "InspectImport allowed",
+				ctx:        tlsPeerContext(t, fileNodeIdentityURI),
+				method:     agentv1.AgentService_InspectImport_FullMethodName,
+				wantCode:   codes.OK,
+				wantCalled: true,
+			},
+			{
+				name:     "Drain denied",
+				ctx:      tlsPeerContext(t, fileNodeIdentityURI),
+				method:   agentv1.AgentService_Drain_FullMethodName,
+				wantCode: codes.PermissionDenied,
+			},
+			{
+				name:     "Import denied",
+				ctx:      tlsPeerContext(t, fileNodeIdentityURI),
+				method:   agentv1.AgentService_ImportVolume_FullMethodName,
+				wantCode: codes.PermissionDenied,
+			},
+			{
+				name:       "plaintext unchanged",
+				ctx:        context.Background(),
+				method:     agentv1.AgentService_Drain_FullMethodName,
+				wantCode:   codes.OK,
+				wantCalled: true,
+			},
+			{
+				name:       "other identity unchanged",
+				ctx:        tlsPeerContext(t, "spiffe://pillar-csi/controller"),
+				method:     agentv1.AgentService_Drain_FullMethodName,
+				wantCode:   codes.OK,
+				wantCalled: true,
+			},
+			{
+				name:     "malformed reserved identity denied",
+				ctx:      tlsPeerContext(t, "spiffe://pillar-csi/file-node?unexpected=true"),
+				method:   agentv1.AgentService_InspectImport_FullMethodName,
+				wantCode: codes.PermissionDenied,
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				called := false
+				_, err := fileNodeUnaryAuthorizationInterceptor(
+					tt.ctx,
+					nil,
+					&grpc.UnaryServerInfo{FullMethod: tt.method},
+					func(context.Context, any) (any, error) {
+						called = true
+						return struct{}{}, nil
+					},
+				)
+				if got := status.Code(err); got != tt.wantCode {
+					t.Fatalf("status.Code(err) = %v, want %v (err=%v)", got, tt.wantCode, err)
+				}
+				if called != tt.wantCalled {
+					t.Fatalf("handler called = %t, want %t", called, tt.wantCalled)
+				}
+			})
+		}
+	})
+
+	t.Run("stream denied", func(t *testing.T) {
+		stream := &authorizationTestStream{ctx: tlsPeerContext(t, fileNodeIdentityURI)}
+		called := false
+		err := fileNodeStreamAuthorizationInterceptor(
+			nil,
+			stream,
+			&grpc.StreamServerInfo{FullMethod: agentv1.AgentService_InspectImport_FullMethodName},
+			func(any, grpc.ServerStream) error {
+				called = true
+				return nil
+			},
+		)
+		if got := status.Code(err); got != codes.PermissionDenied {
+			t.Fatalf("status.Code(err) = %v, want %v (err=%v)", got, codes.PermissionDenied, err)
+		}
+		if called {
+			t.Fatal("stream handler was called for file-node identity")
+		}
+	})
+}
+
+func TestNewAgentGRPCServer_FileNodeAuthorization(t *testing.T) {
+	identity, err := url.Parse(fileNodeIdentityURI)
+	if err != nil {
+		t.Fatalf("parse file-node identity: %v", err)
+	}
+	creds := staticAuthCredentials{
+		authInfo: credentials.TLSInfo{
+			State: tls.ConnectionState{
+				PeerCertificates: []*x509.Certificate{{URIs: []*url.URL{identity}}},
+			},
+		},
+	}
+	client := startAgentTestServerWithCredentials(t, creds, creds).client
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	t.Cleanup(cancel)
+
+	_, inspectErr := client.InspectImport(ctx, &agentv1.InspectImportRequest{})
+	if got := status.Code(inspectErr); got != codes.InvalidArgument {
+		t.Fatalf("InspectImport status = %v, want %v (err=%v)", got, codes.InvalidArgument, inspectErr)
+	}
+	if _, err := client.Drain(ctx, &agentv1.DrainRequest{}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("Drain status = %v, want %v (err=%v)", status.Code(err), codes.PermissionDenied, err)
+	}
+	if _, err := client.ImportVolume(ctx, &agentv1.ImportVolumeRequest{}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("ImportVolume status = %v, want %v (err=%v)", status.Code(err), codes.PermissionDenied, err)
+	}
 }
 
 func TestNewAgentGRPCServer_DrainGuardWired(t *testing.T) {

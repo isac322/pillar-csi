@@ -20,6 +20,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// CSI driver identities. Filesystem adoption is an explicit opt-in; existing
+// classes, including dynamically provisioned NFS classes, retain the default.
+const (
+	DefaultCSIDriver = "pillar-csi.bhyoo.com"
+	FileCSIDriver    = "files.pillar-csi.bhyoo.com"
+)
+
 // ReclaimPolicy mirrors corev1.PersistentVolumeReclaimPolicy for inline use.
 // +kubebuilder:validation:Enum=Delete;Retain
 type ReclaimPolicy string
@@ -142,11 +149,15 @@ type LVMBackendOverrides struct {
 	ProvisioningMode LVMProvisioningMode `json:"provisioningMode,omitempty"`
 }
 
+// DirectoryBackendOverrides is empty: directory layout and existing quotas
+// are structural, read-only settings, not per-volume tunables.
+type DirectoryBackendOverrides struct{}
+
 // BackendOverrides is the per-binding or per-volume override document for the
 // storage backend.  Exactly one member must be set, and it must match the
 // backend member configured on the referenced PillarStore.
 //
-// +kubebuilder:validation:XValidation:rule="(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) == 1",message="exactly one of zfs or lvm must be set"
+// +kubebuilder:validation:XValidation:rule="(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) + (has(self.directory) ? 1 : 0) == 1",message="exactly one of zfs, lvm, or directory must be set"
 type BackendOverrides struct {
 	// zfs overrides ZFS-specific tunables; valid only when the store's
 	// backend is zfs.
@@ -157,9 +168,13 @@ type BackendOverrides struct {
 	// backend is lvm.
 	// +optional
 	LVM *LVMBackendOverrides `json:"lvm,omitempty"`
+
+	// directory has no tunables; valid only for a directory store.
+	// +optional
+	Directory *DirectoryBackendOverrides `json:"directory,omitempty"`
 }
 
-// Kind returns the selected override member name ("zfs" or "lvm"), or "" when
+// Kind returns the selected override member name ("zfs", "lvm", or "directory"), or "" when
 // the union is empty.
 func (b BackendOverrides) Kind() string {
 	switch {
@@ -167,6 +182,8 @@ func (b BackendOverrides) Kind() string {
 		return "zfs"
 	case b.LVM != nil:
 		return "lvm"
+	case b.Directory != nil:
+		return "directory"
 	default:
 		return ""
 	}
@@ -299,6 +316,14 @@ type StorageClassOverrides struct {
 
 // PillarStorageClassSpec defines the desired state of PillarStorageClass.
 type PillarStorageClassSpec struct {
+	// csiDriver selects the provisioner for newly generated StorageClasses.
+	// The default preserves existing block and dynamic NFS routing; files
+	// explicitly opts in to existing-filesystem adoption.
+	// +optional
+	// +kubebuilder:default="pillar-csi.bhyoo.com"
+	// +kubebuilder:validation:Enum="pillar-csi.bhyoo.com";"files.pillar-csi.bhyoo.com"
+	CSIDriver string `json:"csiDriver,omitempty"`
+
 	// storeRef is the name of the PillarStore to use for provisioning.
 	// +required
 	// +kubebuilder:validation:MinLength=1
@@ -325,14 +350,24 @@ type PillarStorageClassSpec struct {
 	// +optional
 	Overrides *StorageClassOverrides `json:"overrides,omitempty"`
 
-	// localAttach lets a volume of this binding bypass the protocol when a
-	// pod using it runs on the storage node itself: the node mounts the
-	// backend zvol or logical volume directly and the network export is
-	// fenced for as long as that direct attach may be in use.  Pods on any
-	// other node always use the protocol.  Recorded per volume at
-	// provisioning time.
+	// localAttach preserves the default driver's direct-attach behavior:
+	// a pod on the storage node mounts the backend directly while its network
+	// export is fenced; pods on other nodes use the protocol.
+	// For the file driver, true declares local-only native readiness, needs
+	// no NFS manager, and rejects multi-node access. Single-node file volumes
+	// always freeze localAttach=true per volume and skip network export.
+	// Multi-node file volumes require false and a working NFS manager.
 	// +optional
 	LocalAttach bool `json:"localAttach,omitempty"`
+}
+
+// EffectiveCSIDriver returns the explicitly selected CSI driver or the
+// unchanged default for objects that predate the selector.
+func (s PillarStorageClassSpec) EffectiveCSIDriver() string {
+	if s.CSIDriver != "" {
+		return s.CSIDriver
+	}
+	return DefaultCSIDriver
 }
 
 // PillarStorageClassStatus defines the observed state of PillarStorageClass.

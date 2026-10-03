@@ -137,6 +137,7 @@ type fsSizeFunc func(path string) (uint64, error)
 // mountInfoEntry is one line of /proc/<pid>/mountinfo.
 type mountInfoEntry struct {
 	Major, Minor uint32
+	Root         string
 	MountPoint   string
 	FsType       string
 	Source       string
@@ -216,7 +217,7 @@ func newTrimmer(n *NodeServer, opts TrimOptions, fitrim fitrimFunc, fsSize fsSiz
 		tryLock:          n.volumeLocks.tryLock,
 		fitrim:           fitrim,
 		fsSize:           fsSize,
-		mounts:           func() ([]mountInfoEntry, error) { return readMountInfoFile(procMountInfoPath) },
+		mounts:           readMountInfoFile,
 		deviceMatches:    sysfsDeviceMatcher(trimSysfsRoot),
 		noticed:          make(map[string]time.Time),
 	}
@@ -595,16 +596,16 @@ func findMount(mounts []mountInfoEntry, path string) (mountInfoEntry, bool) {
 	return mountInfoEntry{}, false
 }
 
-// readMountInfoFile parses the mountinfo file at path.
-func readMountInfoFile(path string) ([]mountInfoEntry, error) {
-	f, err := os.Open(path) //nolint:gosec // G304: fixed procfs path
+// readMountInfoFile parses the current process's mountinfo file.
+func readMountInfoFile() ([]mountInfoEntry, error) {
+	f, err := os.Open(procMountInfoPath)
 	if err != nil {
-		return nil, fmt.Errorf("open %q: %w", path, err)
+		return nil, fmt.Errorf("open %q: %w", procMountInfoPath, err)
 	}
 	defer func() { _ = f.Close() }() //nolint:errcheck // read-only file
 	mounts, err := parseMountInfo(f)
 	if err != nil {
-		return nil, fmt.Errorf("parse %q: %w", path, err)
+		return nil, fmt.Errorf("parse %q: %w", procMountInfoPath, err)
 	}
 	return mounts, nil
 }
@@ -641,6 +642,7 @@ func parseMountInfo(r io.Reader) ([]mountInfoEntry, error) {
 		mounts = append(mounts, mountInfoEntry{
 			Major:      uint32(major),
 			Minor:      uint32(minor),
+			Root:       unescapeMountInfo(fields[3]),
 			MountPoint: unescapeMountInfo(fields[4]),
 			FsType:     fields[sep+1],
 			Source:     unescapeMountInfo(fields[sep+2]),
