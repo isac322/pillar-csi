@@ -35,8 +35,38 @@ func e71WaitBound(ctx context.Context, f *FilesystemAdoptionFixture) {
 	Expect(f.PVName).NotTo(BeEmpty())
 }
 func e71WaitPod(ctx context.Context, f *FilesystemAdoptionFixture, name string) {
-	_, err := f.Kubectl(ctx, "", "-n", f.Namespace, "wait", "--for=condition=Ready", "pod/"+name, "--timeout=4m")
-	Expect(err).NotTo(HaveOccurred())
+	waitOutput, err := f.Kubectl(ctx, "", "-n", f.Namespace, "wait", "--for=condition=Ready", "pod/"+name, "--timeout=4m")
+	if err == nil {
+		return
+	}
+
+	diagnosticCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	const (
+		maxDiagnosticOutputBytes  = 32 * 1024
+		maxDiagnosticContextBytes = 96 * 1024
+	)
+	var diagnostics strings.Builder
+	for _, args := range [][]string{
+		{"get", "pod", name, "-o", "yaml"},
+		{"describe", "pod", name},
+		{"get", "events", "--field-selector=involvedObject.kind=Pod,involvedObject.name=" + name, "-o", "wide"},
+	} {
+		output, diagnosticErr := f.Kubectl(diagnosticCtx, "", append([]string{"-n", f.Namespace}, args...)...)
+		if len(output) > maxDiagnosticOutputBytes {
+			output = "[earlier output truncated]\n" + output[len(output)-maxDiagnosticOutputBytes:]
+		}
+		fmt.Fprintf(&diagnostics, "\n\nkubectl -n %s %s:\n%s", f.Namespace, strings.Join(args, " "), output)
+		if diagnosticErr != nil {
+			fmt.Fprintf(&diagnostics, "\nDiagnostic command failed: %v", diagnosticErr)
+		}
+	}
+	diagnosticText := diagnostics.String()
+	if len(diagnosticText) > maxDiagnosticContextBytes {
+		const truncationMarker = "[earlier diagnostics truncated]\n"
+		diagnosticText = truncationMarker + diagnosticText[len(diagnosticText)-(maxDiagnosticContextBytes-len(truncationMarker)):]
+	}
+	Fail(fmt.Sprintf("Pod %s/%s did not become Ready: %v\nWait output:\n%s%s", f.Namespace, name, err, waitOutput, diagnosticText))
 }
 func e71ApplyPod(ctx context.Context, f *FilesystemAdoptionFixture, name, claim, node string, ro bool, uid, gid int64) {
 	_, err := f.Kubectl(ctx, f.PodManifest(name, claim, node, ro, uid, gid), "apply", "-f", "-")
