@@ -30,16 +30,22 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 
+	"github.com/isac322/pillar-csi/api/v1alpha1"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/runtimepaths"
 	"github.com/isac322/pillar-csi/internal/telemetry"
 )
@@ -433,14 +439,25 @@ type NodeServer struct {
 	// When non-nil every node operation validates the volume's current
 	// lifecycle state before executing privileged work, rejecting out-of-order
 	// RPCs with FailedPrecondition.
-	// When nil no state-machine validation is performed (backward compatible).
 	sm *VolumeStateMachine
+
+	// driverName scopes this node instance to one CSI identity.  Empty keeps
+	// the historical block driver identity; file adoption requires the
+	// explicitly configured files driver and never silently downgrades.
+	driverName string
+
+	// filesystemHostRoot is the host mount prefix visible inside the node
+	// container.  It is used only for explicitly trusted source paths.
+	filesystemHostRoot string
 
 	// resizer performs online filesystem expand operations in NodeExpandVolume.
 	// When nil, NodeExpandVolume falls back to the default exec-based Resizer
 	// (resize2fs for ext4, xfs_growfs for xfs).  Override in tests via
 	// WithResizer to inject a mock without requiring real resize tools.
 	resizer Resizer
+	// fileStatsFn revalidates an adopted filesystem's native identity and
+	// exact recorded capacity through the controller/agent connection.
+	fileStatsFn func(context.Context, string, *FileStageState) (*csi.NodeGetVolumeStatsResponse, error)
 
 	// statFn is the function used by NodeGetVolumeStats to stat the volume
 	// path and determine whether it is a block device or a filesystem mount.
@@ -600,6 +617,38 @@ func NewNodeServer(nodeID string, handlers map[string]ProtocolHandler, mounter M
 	}
 }
 
+// WithStateDir scopes every stage-state reader and writer, including session
+// restore, trim and transfer-limit reconciliation, to one driver's directory.
+func (n *NodeServer) WithStateDir(dir string) *NodeServer {
+	n.stateDir = dir
+	return n
+}
+
+// WithDriverName scopes the node runtime to the identity selected by the
+// binary.  Existing constructors intentionally retain the old driver identity;
+// callers that serve files.pillar-csi.bhyoo.com must opt in explicitly.
+func (n *NodeServer) WithDriverName(name string) *NodeServer {
+	n.driverName = name
+	return n
+}
+
+// WithFilesystemHostRoot configures the host mount root visible to the node
+// container.  The root is never inferred from a CSI request.
+func (n *NodeServer) WithFilesystemHostRoot(root string) *NodeServer {
+	n.filesystemHostRoot = root
+	return n
+}
+
+// WithFilesystemStatsReader injects the read-only identity/quota gateway used
+// by NodeGetVolumeStats for adopted filesystems. A missing reader is surfaced
+// as an error rather than falling back to pool capacity or stale statfs data.
+func (n *NodeServer) WithFilesystemStatsReader(
+	reader func(context.Context, string, *FileStageState) (*csi.NodeGetVolumeStatsResponse, error),
+) *NodeServer {
+	n.fileStatsFn = reader
+	return n
+}
+
 // Register wires the NodeServer into the provided gRPC server.
 func (n *NodeServer) Register(g *grpc.Server) {
 	csi.RegisterNodeServer(g, n)
@@ -672,7 +721,7 @@ func (n *NodeServer) NodeGetInfo(
 	// Only include topology keys for protocols that are actually available;
 	// omit unavailable protocols so StorageClass allowedTopologies selectors
 	// (using In/NotIn operators) work correctly with sparse maps.
-	segs := buildTopologySegments(prober)
+	segs := buildNodeTopologySegments(prober, n.effectiveDriverName(), n.nodeID)
 
 	var topology *csi.Topology
 	if len(segs) > 0 {
@@ -684,6 +733,580 @@ func (n *NodeServer) NodeGetInfo(
 		// MaxVolumesPerNode: 0 means unlimited (CSI spec default).
 		AccessibleTopology: topology,
 	}, nil
+}
+
+// fileStageContext is the trusted, immutable portion of an adopted filesystem
+// handoff.  It is parsed from controller-produced context rather than from the
+// CSI volume ID or user-supplied target paths.
+type fileStageContext struct {
+	adoption filesystemContextAdoption
+	capacity int64
+	proxy    string
+	local    bool
+	state    *FileStageState
+}
+
+func (n *NodeServer) effectiveDriverName() string {
+	if n.driverName == "" {
+		return "pillar-csi.bhyoo.com"
+	}
+	return n.driverName
+}
+
+func (n *NodeServer) parseFileStageContext(req *csi.NodeStageVolumeRequest) (*fileStageContext, error) {
+	vc, pc := req.GetVolumeContext(), req.GetPublishContext()
+	raw := filesystemAdoptionContext(vc, pc)
+	if raw == "" {
+		return nil, fmt.Errorf("filesystem adoption context is missing")
+	}
+	driverErr := n.validateFilesystemAdoptionDriver(vc, pc)
+	if driverErr != nil {
+		return nil, driverErr
+	}
+	adoption, err := parseFilesystemContextAdoption(raw)
+	if err != nil {
+		return nil, err
+	}
+	capacity, err := parseFileStageCapacity(vc, pc)
+	if err != nil {
+		return nil, err
+	}
+	layout, err := parseFileStageLayout(vc, pc)
+	if err != nil {
+		return nil, err
+	}
+	fileState, err := newFileStageState(req, pc, adoption, capacity, layout)
+	if err != nil {
+		return nil, err
+	}
+	if fileState.AgentEndpoint != "" {
+		err = validateFilesystemAgentEndpoint(fileState.AgentEndpoint)
+		if err != nil {
+			return nil, fmt.Errorf("filesystem inspection endpoint: %w", err)
+		}
+	}
+	proxy, err := n.parseFilesystemProxy(pc)
+	if err != nil {
+		return nil, err
+	}
+	if proxy == "" {
+		return &fileStageContext{adoption: adoption, capacity: capacity, state: fileState}, nil
+	}
+	fileState.ProxyPath = proxy
+	fileState.Local = true
+	return &fileStageContext{
+		adoption: adoption, capacity: capacity, proxy: proxy, local: true, state: fileState,
+	}, nil
+}
+
+func filesystemAdoptionContext(vc, pc map[string]string) string {
+	raw := pc[PublishContextKeyFilesystemAdoption]
+	if raw == "" {
+		raw = vc[VolumeContextKeyFilesystemAdoption]
+	}
+	return raw
+}
+
+func (n *NodeServer) validateFilesystemAdoptionDriver(vc, pc map[string]string) error {
+	driver := vc[VolumeContextKeyCSIDriver]
+	if driver == "" {
+		driver = pc[VolumeContextKeyCSIDriver]
+	}
+	if driver != "" && driver != "files.pillar-csi.bhyoo.com" {
+		return status.Errorf(codes.FailedPrecondition,
+			"NodeStageVolume: filesystem adoption belongs to CSI driver %q", driver)
+	}
+	if n.effectiveDriverName() != "files.pillar-csi.bhyoo.com" {
+		return status.Errorf(codes.FailedPrecondition,
+			"NodeStageVolume: filesystem adoption requires CSI driver %q, node serves %q",
+			"files.pillar-csi.bhyoo.com", n.effectiveDriverName())
+	}
+	return nil
+}
+
+func newFileStageState(
+	req *csi.NodeStageVolumeRequest,
+	pc map[string]string,
+	adoption filesystemContextAdoption,
+	capacity int64,
+	layout *agentv1.BackendParams,
+) (*FileStageState, error) {
+	fileState := &FileStageState{
+		VolumeID: req.GetVolumeId(), Kind: adoption.Kind, HostPath: adoption.HostPath,
+		CanonicalSource: adoption.CanonicalSource, ResourceID: adoption.ResourceID,
+		FilesystemType: adoption.FilesystemType, FilesystemID: adoption.FilesystemID,
+		Inode: adoption.Inode, ProjectID: adoption.ProjectID, CapacityBytes: capacity,
+		AgentEndpoint: pc[fileContextAgentAddress], AgentName: pc[fileContextAgentName],
+		AgentVolumeID: pc[fileContextAgentVolumeID],
+	}
+	err := populateFileStageBackend(fileState, adoption.Kind, layout)
+	return fileState, err
+}
+
+func (n *NodeServer) parseFilesystemProxy(pc map[string]string) (string, error) {
+	proxy := pc[PublishContextKeyFilesystemProxyPath]
+	if proxy == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(proxy) || filepath.Clean(proxy) != proxy || strings.ContainsRune(proxy, '\x00') {
+		return "", fmt.Errorf("filesystem proxy path %q is not canonical", proxy)
+	}
+	node := pc[PublishContextKeyFilesystemLocalNode]
+	if node != "" && node != n.nodeID {
+		return "", status.Errorf(codes.FailedPrecondition,
+			"NodeStageVolume: filesystem publish targets node %q, this node is %q", node, n.nodeID)
+	}
+	return proxy, nil
+}
+
+func parseFilesystemContextAdoption(raw string) (filesystemContextAdoption, error) {
+	var adoption filesystemContextAdoption
+	err := json.Unmarshal([]byte(raw), &adoption)
+	if err != nil {
+		return adoption, fmt.Errorf("decode filesystem adoption context: %w", err)
+	}
+	if adoption.Kind == "" || adoption.CanonicalSource == "" || adoption.ResourceID == "" ||
+		adoption.FilesystemType == "" {
+		return adoption, fmt.Errorf("filesystem adoption context has incomplete native identity")
+	}
+	return adoption, nil
+}
+
+func parseFileStageCapacity(vc, pc map[string]string) (int64, error) {
+	rawCapacity := pc[PublishContextKeyFilesystemCapacity]
+	if rawCapacity == "" {
+		rawCapacity = vc[VolumeContextKeyFilesystemCapacity]
+	}
+	capacity, err := strconv.ParseInt(rawCapacity, 10, 64)
+	if err != nil || capacity <= 0 {
+		return 0, fmt.Errorf("filesystem adoption exact capacity %q is invalid", rawCapacity)
+	}
+	return capacity, nil
+}
+
+func parseFileStageLayout(vc, pc map[string]string) (*agentv1.BackendParams, error) {
+	layoutJSON := pc[PublishContextKeyFilesystemLayout]
+	if layoutJSON == "" {
+		layoutJSON = vc[VolumeContextKeyFilesystemLayout]
+	}
+	if layoutJSON == "" {
+		return nil, fmt.Errorf("filesystem adoption context is missing trusted backend layout")
+	}
+	var layout agentv1.BackendParams
+	err := protojson.Unmarshal([]byte(layoutJSON), &layout)
+	if err != nil {
+		return nil, fmt.Errorf("decode trusted filesystem backend layout: %w", err)
+	}
+	if layout.GetDirectory() == nil && layout.GetZfs() == nil {
+		return nil, fmt.Errorf("trusted filesystem backend layout is empty")
+	}
+	return &layout, nil
+}
+
+func populateFileStageBackend(
+	state *FileStageState, kind string, layout *agentv1.BackendParams,
+) error {
+	switch kind {
+	case "directory":
+		params := layout.GetDirectory()
+		if params == nil || params.GetLogicalPool() == "" || params.GetHostRoot() == "" {
+			return fmt.Errorf("directory adoption requires its trusted logical pool and host root")
+		}
+		state.BackendType = "directory"
+		state.PoolName = params.GetLogicalPool()
+		state.ExpectedHostRoot = params.GetHostRoot()
+	case "zfs-dataset":
+		params := layout.GetZfs()
+		if params == nil || params.GetPool() == "" {
+			return fmt.Errorf("ZFS adoption requires its trusted pool and parent dataset")
+		}
+		state.BackendType = "zfs-dataset"
+		state.PoolName = params.GetPool()
+		state.ExpectedParentDataset = params.GetParentDataset()
+	default:
+		return fmt.Errorf("unsupported filesystem adoption kind %q", kind)
+	}
+	return nil
+}
+
+// refreshFileStageMetadata backfills additive inspection routing on a verified
+// stage without allowing a restage to change its native identity or bound.
+func refreshFileStageMetadata(existing *nodeStageState, current *FileStageState) error {
+	previous := existing.File
+	if previous != nil && !sameFileStageMetadata(previous, current) {
+		return fmt.Errorf(
+			"recorded filesystem identity, exact capacity or backend layout differs from the current publish context",
+		)
+	}
+	existing.File = current
+	return nil
+}
+
+func sameFileStageMetadata(previous, current *FileStageState) bool {
+	if !sameFileStageIdentity(previous, current) {
+		return false
+	}
+	if previous.Kind != "" && !sameFileStageKindMetadata(previous, current) {
+		return false
+	}
+	if previous.PoolName != "" && !sameFileStageBackendMetadata(previous, current) {
+		return false
+	}
+	return previous.AgentVolumeID == "" || previous.AgentVolumeID == current.AgentVolumeID
+}
+
+func sameFileStageIdentity(previous, current *FileStageState) bool {
+	return previous.CanonicalSource == current.CanonicalSource &&
+		previous.ResourceID == current.ResourceID &&
+		previous.FilesystemType == current.FilesystemType &&
+		previous.FilesystemID == current.FilesystemID &&
+		previous.Inode == current.Inode &&
+		previous.ProjectID == current.ProjectID &&
+		previous.CapacityBytes == current.CapacityBytes
+}
+
+func sameFileStageKindMetadata(previous, current *FileStageState) bool {
+	return previous.Kind == current.Kind && previous.HostPath == current.HostPath
+}
+
+func sameFileStageBackendMetadata(previous, current *FileStageState) bool {
+	return previous.PoolName == current.PoolName &&
+		previous.BackendType == current.BackendType &&
+		previous.ExpectedParentDataset == current.ExpectedParentDataset &&
+		previous.ExpectedHostRoot == current.ExpectedHostRoot
+}
+
+func (n *NodeServer) stageLocalFilesystem(
+	req *csi.NodeStageVolumeRequest, fileCtx *fileStageContext,
+) (*csi.NodeStageVolumeResponse, error) {
+	err := validateLocalFilesystemStage(n, req, fileCtx)
+	if err != nil {
+		return nil, err
+	}
+	volumeID, target := req.GetVolumeId(), req.GetStagingTargetPath()
+	existing, err := n.readStageState(volumeID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "NodeStageVolume: read file stage state: %v", err)
+	}
+	reused, err := n.reuseLocalFilesystemStage(existing, fileCtx, target, volumeID)
+	if err != nil {
+		return nil, err
+	}
+	if reused {
+		return &csi.NodeStageVolumeResponse{}, nil
+	}
+	err = n.mountLocalFilesystemStage(fileCtx, target)
+	if err != nil {
+		return nil, err
+	}
+	state := &nodeStageState{
+		ProtocolType: ProtocolNFS,
+		AccessType:   AccessTypeFilesystem,
+		VolumeID:     volumeID, StagingPath: target,
+		File: fileCtx.state,
+	}
+	err = n.writeStageState(volumeID, state)
+	if err != nil {
+		cleanupErr := n.mounter.Unmount(target)
+		if cleanupErr != nil {
+			return nil, status.Errorf(codes.Internal,
+				"NodeStageVolume: persist file stage: %v; cleanup failed: %v", err, cleanupErr)
+		}
+		return nil, status.Errorf(codes.Internal, "NodeStageVolume: persist file stage: %v", err)
+	}
+	if n.sm != nil {
+		n.sm.ForceState(volumeID, StateNodeStaged)
+	}
+	return &csi.NodeStageVolumeResponse{}, nil
+}
+
+func validateLocalFilesystemStage(
+	n *NodeServer, req *csi.NodeStageVolumeRequest, fileCtx *fileStageContext,
+) error {
+	if !fileCtx.local {
+		return status.Errorf(codes.FailedPrecondition,
+			"%s", "NodeStageVolume: file adoption requires a controller-provided local proxy path")
+	}
+	if req.GetVolumeCapability().GetMount() == nil || req.GetVolumeCapability().GetBlock() != nil {
+		return status.Errorf(codes.InvalidArgument,
+			"%s", "NodeStageVolume: adopted filesystems require mount access")
+	}
+	if fsType := req.GetVolumeCapability().GetMount().GetFsType(); fsType != "" &&
+		fsType != fileCtx.adoption.FilesystemType {
+		return status.Errorf(codes.InvalidArgument,
+			"NodeStageVolume: filesystem type %q does not match adopted type %q",
+			fsType, fileCtx.adoption.FilesystemType)
+	}
+	if n.sm != nil {
+		state := n.sm.GetState(req.GetVolumeId())
+		switch state {
+		case StateControllerPublished, StateNodeStagePartial, StateNodeStaged:
+		default:
+			return status.Errorf(codes.FailedPrecondition,
+				"volume %q: NodeStageVolume is not valid in state %s", req.GetVolumeId(), state)
+		}
+	}
+	return nil
+}
+
+func (n *NodeServer) reuseLocalFilesystemStage(
+	existing *nodeStageState, fileCtx *fileStageContext,
+	target, volumeID string,
+) (bool, error) {
+	present, err := validateExistingLocalFilesystemStage(existing, target)
+	if err != nil {
+		return false, err
+	}
+	if !present {
+		return false, nil
+	}
+	mounted, err := n.existingLocalFilesystemMounted(target)
+	if err != nil {
+		return false, err
+	}
+	if !mounted {
+		return false, nil
+	}
+	err = validateExistingLocalFilesystemIdentity(existing, fileCtx)
+	if err != nil {
+		return false, err
+	}
+	verifyErr := n.verifyExistingLocalFilesystemStage(existing, fileCtx, target)
+	if verifyErr != nil {
+		return false, status.Errorf(codes.FailedPrecondition,
+			"NodeStageVolume: existing file stage mount changed: %v", verifyErr)
+	}
+	err = refreshFileStageMetadata(existing, fileCtx.state)
+	if err != nil {
+		return false, status.Errorf(codes.FailedPrecondition,
+			"NodeStageVolume: volume %q: %v", volumeID, err)
+	}
+	err = n.writeStageState(volumeID, existing)
+	if err != nil {
+		return false, status.Errorf(codes.Internal,
+			"NodeStageVolume: re-persist file stage %q: %v", volumeID, err)
+	}
+	return true, nil
+}
+
+func validateExistingLocalFilesystemStage(existing *nodeStageState, target string) (bool, error) {
+	if existing == nil || existing.File == nil {
+		return false, nil
+	}
+	if existing.StagingPath != "" && existing.StagingPath != target {
+		return false, status.Errorf(codes.FailedPrecondition,
+			"%s", "NodeStageVolume: existing filesystem stage uses a different staging path")
+	}
+	return true, nil
+}
+
+// existingLocalFilesystemMounted decides presence from the mount table and,
+// like the other configurations that skip the write probe, never reports a
+// dead stage as mounted: an unreadable bind is an Internal error.
+func (n *NodeServer) existingLocalFilesystemMounted(target string) (bool, error) {
+	mounted, err := n.mounter.MountEntryExists(target)
+	if err != nil {
+		return false, status.Errorf(codes.Internal,
+			"NodeStageVolume: check file stage mount: %v", err)
+	}
+	if !mounted {
+		return false, nil
+	}
+	readErr := n.mounter.CheckMountReadable(target)
+	if readErr != nil {
+		return false, status.Errorf(codes.Internal,
+			"NodeStageVolume: file stage mount %q is not usable: %v", target, readErr)
+	}
+	return true, nil
+}
+
+func validateExistingLocalFilesystemIdentity(
+	existing *nodeStageState, fileCtx *fileStageContext,
+) error {
+	if existing.File.ResourceID != fileCtx.adoption.ResourceID ||
+		existing.File.CapacityBytes != fileCtx.capacity {
+		return status.Errorf(codes.FailedPrecondition,
+			"%s", "NodeStageVolume: existing file stage identity or capacity differs")
+	}
+	return nil
+}
+
+func (n *NodeServer) verifyExistingLocalFilesystemStage(
+	existing *nodeStageState, fileCtx *fileStageContext, target string,
+) error {
+	source, verifyErr := verifyFilesystemProxyMount(fileCtx.proxy, &fileCtx.adoption)
+	if verifyErr == nil && existing.File.ProxyPath != fileCtx.proxy {
+		verifyErr = errors.New("controller-owned proxy path changed")
+	}
+	if verifyErr == nil {
+		verifyErr = n.verifyFilesystemHostSource(source, &fileCtx.adoption)
+	}
+	if verifyErr == nil {
+		verifyErr = verifyFilesystemBindMount(fileCtx.proxy, target, &fileCtx.adoption, source)
+	}
+	return verifyErr
+}
+
+func (n *NodeServer) mountLocalFilesystemStage(
+	fileCtx *fileStageContext, target string,
+) error {
+	source, err := verifyFilesystemProxyMount(fileCtx.proxy, &fileCtx.adoption)
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"NodeStageVolume: verify adopted filesystem source: %v", err)
+	}
+	err = n.verifyFilesystemHostSource(source, &fileCtx.adoption)
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"NodeStageVolume: verify host filesystem source: %v", err)
+	}
+	err = n.mounter.Mount(fileCtx.proxy, target, "", []string{"bind"})
+	if err != nil {
+		return status.Errorf(codes.Internal,
+			"NodeStageVolume: bind adopted filesystem %q → %q: %v", fileCtx.proxy, target, err)
+	}
+	verifyErr := verifyFilesystemBindMount(fileCtx.proxy, target, &fileCtx.adoption, source)
+	if verifyErr == nil {
+		return nil
+	}
+	cleanupErr := n.mounter.Unmount(target)
+	if cleanupErr != nil {
+		return status.Errorf(codes.Internal,
+			"NodeStageVolume: post-mount identity failed: %v; cleanup failed: %v",
+			verifyErr, cleanupErr)
+	}
+	return status.Errorf(codes.FailedPrecondition,
+		"NodeStageVolume: post-mount identity verification failed: %v", verifyErr)
+}
+
+func (n *NodeServer) verifyFilesystemHostSource(source os.FileInfo, adoption *filesystemContextAdoption) error {
+	if n.filesystemHostRoot == "" || adoption.Kind != "directory" {
+		return nil
+	}
+	path := filepath.Join(n.filesystemHostRoot, adoption.CanonicalSource)
+	err := verifyFilesystemSourceIdentity(path, adoption)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat adopted host filesystem source: %w", err)
+	}
+	if !os.SameFile(source, info) {
+		return errors.New("owned proxy mount differs from the adopted host filesystem root")
+	}
+	return nil
+}
+
+// verifyFilesystemProxyMount rejects an unmounted durable proxy directory,
+// including when it happens to live on the expected filesystem. For ZFS the
+// kernel mount source must also identify the adopted dataset.
+func verifyFilesystemProxyMount(path string, adoption *filesystemContextAdoption) (os.FileInfo, error) {
+	err := verifyFilesystemSourceIdentity(path, adoption)
+	if err != nil {
+		return nil, err
+	}
+	mounts, err := readMountInfoFile(procMountInfoPath)
+	if err != nil {
+		return nil, fmt.Errorf("read filesystem mount table: %w", err)
+	}
+	mount, mounted := findMount(mounts, path)
+	if !mounted {
+		return nil, fmt.Errorf("filesystem proxy %q is not a mount root", path)
+	}
+	if mount.FsType != adoption.FilesystemType {
+		return nil, fmt.Errorf("filesystem mount %q has type %q, expected %q",
+			path, mount.FsType, adoption.FilesystemType)
+	}
+	if adoption.Kind == "zfs-dataset" && mount.Source != adoption.CanonicalSource {
+		return nil, fmt.Errorf("filesystem mount %q belongs to dataset %q, expected %q",
+			path, mount.Source, adoption.CanonicalSource)
+	}
+	if adoption.Kind == "zfs-dataset" && mount.Root != "/" {
+		return nil, fmt.Errorf("filesystem mount %q exposes dataset subdirectory %q, not its root", path, mount.Root)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat filesystem mount %q: %w", path, err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Dev < 0 || uint64(stat.Dev) != unix.Mkdev(mount.Major, mount.Minor) {
+		return nil, fmt.Errorf("filesystem mount %q device no longer matches its mount root", path)
+	}
+	return info, nil
+}
+
+func verifyFilesystemBindMount(
+	proxy, target string, adoption *filesystemContextAdoption, source os.FileInfo,
+) error {
+	current, err := verifyFilesystemProxyMount(proxy, adoption)
+	if err != nil {
+		return fmt.Errorf("verify owned proxy after bind: %w", err)
+	}
+	if !os.SameFile(source, current) {
+		return errors.New("owned filesystem proxy was replaced during bind")
+	}
+	staged, err := verifyFilesystemProxyMount(target, adoption)
+	if err != nil {
+		return fmt.Errorf("verify filesystem bind target: %w", err)
+	}
+	if !os.SameFile(source, staged) {
+		return errors.New("filesystem bind target differs from the owned proxy mount root")
+	}
+	return nil
+}
+
+func verifyFilesystemSourceIdentity(path string, adoption *filesystemContextAdoption) error {
+	if path == "" {
+		return errors.New("empty source path")
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("resolve filesystem source %q: %w", path, err)
+	}
+	if resolved != path {
+		return fmt.Errorf("source resolves through symlink to %q", resolved)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat filesystem source %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("filesystem source %q is not a directory", path)
+	}
+	var filesystem syscall.Statfs_t
+	err = syscall.Statfs(path, &filesystem)
+	if err != nil {
+		return fmt.Errorf("statfs filesystem source %q: %w", path, err)
+	}
+	var expectedMagic int64
+	switch adoption.FilesystemType {
+	case "ext4":
+		expectedMagic = 0xef53
+	case "xfs":
+		expectedMagic = 0x58465342
+	case "zfs":
+		expectedMagic = 0x2fc12fc1
+	default:
+		return fmt.Errorf("unsupported adopted filesystem type %q", adoption.FilesystemType)
+	}
+	if int64(filesystem.Type) != expectedMagic {
+		return fmt.Errorf("filesystem source %q does not have expected type %q", path, adoption.FilesystemType)
+	}
+	if adoption.Inode != 0 {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Ino != adoption.Inode {
+			return fmt.Errorf("inode %d does not match recorded inode %d", statIno(info), adoption.Inode)
+		}
+	}
+	return nil
+}
+
+func statIno(info os.FileInfo) uint64 {
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		return stat.Ino
+	}
+	return 0
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -738,18 +1361,36 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	if req.GetVolumeCapability() == nil {
 		return nil, status.Error(codes.InvalidArgument, "NodeStageVolume: volume_capability is required") //nolint:wrapcheck
 	}
-
 	volumeID := req.GetVolumeId()
 	stagingPath := req.GetStagingTargetPath()
 	volCtx := req.GetVolumeContext()
 	volCap := req.GetVolumeCapability()
 
 	// Serialize with NodeUnstageVolume, NodeExpandVolume and the periodic
-	// trim of the same volume (see trim.go).
 	unlock := n.volumeLocks.lock(volumeID)
 	defer unlock()
 
 	setSpanAccessType(ctx, volCap)
+	var fileCtx *fileStageContext
+	var fileErr error
+	if n.effectiveDriverName() == v1alpha1.FileCSIDriver ||
+		req.GetPublishContext()[PublishContextKeyFilesystemAdoption] != "" ||
+		volCtx[VolumeContextKeyFilesystemAdoption] != "" {
+		fileCtx, fileErr = n.parseFileStageContext(req)
+	}
+	if fileErr != nil {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"NodeStageVolume: filesystem context: %v", fileErr)
+	}
+	if fileCtx != nil && !fileCtx.local &&
+		(req.GetPublishContext()[PublishContextKeyAttachMode] == AttachModeLocal ||
+			volCtx[VolumeContextKeyFilesystemLocalAttach] == "true") {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"%s", "NodeStageVolume: adopted filesystem local attach is missing its controller-owned proxy path")
+	}
+	if fileCtx != nil && fileCtx.local {
+		return n.stageLocalFilesystem(req, fileCtx)
+	}
 
 	// ── Step 1: Resolve attach mode ─────────────────────────────────────────
 	// A PublishContext carrying attach-mode=local means ControllerPublishVolume
@@ -990,6 +1631,13 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 			}
 		}
 		if mounted {
+			if fileCtx != nil {
+				err := refreshFileStageMetadata(existingState, fileCtx.state)
+				if err != nil {
+					return nil, status.Errorf(codes.FailedPrecondition,
+						"NodeStageVolume: volume %q: %v", volumeID, err)
+				}
+			}
 			// Records written before the periodic trim existed lack the
 			// staging path; backfill it so the trim loop need not derive it.
 			if existingState.StagingPath == "" {
@@ -1238,6 +1886,9 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	} else {
 		stageState = stageStateFromAttachResult(protocolType, accessType, targetID, address, port, attachResult)
 	}
+	if fileCtx != nil {
+		stageState.File = fileCtx.state
+	}
 	stageState.FsType = fsType
 	stageState.DevicePath = devicePath
 	stageState.VolumeID = volumeID
@@ -1424,33 +2075,32 @@ func (n *NodeServer) NodeUnstageVolume(
 	// Otherwise dispatch to the ProtocolHandler registered for the persisted
 	// protocol type.  Detach is idempotent: disconnecting an
 	// already-disconnected target is a no-op.
-	if state.isLocalAttach() {
-		releaseErr := n.releaseLocal(ctx, volumeID, state)
-		if releaseErr != nil {
-			return nil, releaseErr
-		}
-	} else if n.handlers != nil {
-		handler, ok := n.handlers[state.ProtocolType]
-		if !ok {
-			if state.ProtocolType != ProtocolNFS {
-				return nil, status.Errorf(codes.Internal,
-					"NodeUnstageVolume: no handler registered for protocol %q%s",
-					state.ProtocolType, missingHandlerHint(state.ProtocolType))
+	if state.File == nil {
+		if state.isLocalAttach() {
+			releaseErr := n.releaseLocal(ctx, volumeID, state)
+			if releaseErr != nil {
+				return nil, releaseErr
 			}
-			// NFS has no client session to disconnect; unmounting the
-			// persisted staging path is complete teardown even if the
-			// optional handler is unavailable after a process restart.
-		} else {
-			protoState, protoErr := state.ToProtocolState()
-			if protoErr != nil {
-				return nil, status.Errorf(codes.Internal,
-					"NodeUnstageVolume: convert stage state for %q: %v", volumeID, protoErr)
-			}
-			detachErr := handler.Detach(ctx, protoState)
-			if detachErr != nil {
-				return nil, status.Errorf(codes.Internal,
-					"NodeUnstageVolume: detach (protocol %q): %v",
-					state.ProtocolType, detachErr)
+		} else if n.handlers != nil {
+			handler, ok := n.handlers[state.ProtocolType]
+			if !ok {
+				if state.ProtocolType != ProtocolNFS {
+					return nil, status.Errorf(codes.Internal,
+						"NodeUnstageVolume: no handler registered for protocol %q%s",
+						state.ProtocolType, missingHandlerHint(state.ProtocolType))
+				}
+			} else {
+				protoState, protoErr := state.ToProtocolState()
+				if protoErr != nil {
+					return nil, status.Errorf(codes.Internal,
+						"NodeUnstageVolume: convert stage state for %q: %v", volumeID, protoErr)
+				}
+				detachErr := handler.Detach(ctx, protoState)
+				if detachErr != nil {
+					return nil, status.Errorf(codes.Internal,
+						"NodeUnstageVolume: detach (protocol %q): %v",
+						state.ProtocolType, detachErr)
+				}
 			}
 		}
 	}

@@ -134,8 +134,9 @@ func (m *KubeMounter) Mount(source, target, fsType string, options []string) err
 // unmount is attempted directly; a genuine umount(8) failure (permission
 // denied, target busy, transport gone) is still reported to the caller.
 func (m *KubeMounter) Unmount(target string) error {
-	// IsLikelyNotMountPoint returns true when the path is NOT a mount point.
-	notMnt, err := m.inner.IsLikelyNotMountPoint(target)
+	// The accurate probe includes same-device bind mounts, which the cheap
+	// device/inode heuristic cannot detect.
+	notMnt, err := mount.IsNotMountPoint(m.inner.Interface, target)
 	if err != nil {
 		if isNotExistError(err) {
 			// Path does not exist — nothing to unmount.
@@ -155,7 +156,7 @@ func (m *KubeMounter) Unmount(target string) error {
 			}
 			return nil
 		}
-		return fmt.Errorf("IsLikelyNotMountPoint %s: %w", target, err)
+		return fmt.Errorf("IsNotMountPoint %s: %w", target, err)
 	}
 	if notMnt {
 		// Already unmounted (or never mounted).

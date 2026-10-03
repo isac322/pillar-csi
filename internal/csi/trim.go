@@ -137,6 +137,7 @@ type fsSizeFunc func(path string) (uint64, error)
 // mountInfoEntry is one line of /proc/<pid>/mountinfo.
 type mountInfoEntry struct {
 	Major, Minor uint32
+	Root         string
 	MountPoint   string
 	FsType       string
 	Source       string
@@ -641,6 +642,7 @@ func parseMountInfo(r io.Reader) ([]mountInfoEntry, error) {
 		mounts = append(mounts, mountInfoEntry{
 			Major:      uint32(major),
 			Minor:      uint32(minor),
+			Root:       unescapeMountInfo(fields[3]),
 			MountPoint: unescapeMountInfo(fields[4]),
 			FsType:     fields[sep+1],
 			Source:     unescapeMountInfo(fields[sep+2]),

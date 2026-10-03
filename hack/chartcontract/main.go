@@ -46,6 +46,7 @@ import (
 	"strings"
 
 	rbacv1 "k8s.io/api/rbac/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
@@ -66,15 +67,30 @@ var builtinShortNames = map[string]bool{
 }
 
 type options struct {
-	basesDir       string
-	rolePath       string
-	controllerRole string
-	expectNoCRDs   bool
+	basesDir              string
+	rolePath              string
+	controllerRole        string
+	expectNoCRDs          bool
+	fileDriver            bool
+	fileDriverBlockPolicy string
+}
+
+type renderedContainer struct {
+	name string
+	args []string
+}
+
+type renderedWorkload struct {
+	kind       string
+	name       string
+	containers []renderedContainer
 }
 
 type rendered struct {
-	crds  []*apiextv1.CustomResourceDefinition
-	roles []*rbacv1.ClusterRole // Roles are decoded into ClusterRole: identical rules shape
+	crds       []*apiextv1.CustomResourceDefinition
+	roles      []*rbacv1.ClusterRole // Roles are decoded into ClusterRole: identical rules shape
+	csiDrivers []*storagev1.CSIDriver
+	workloads  []renderedWorkload
 }
 
 func main() {
@@ -83,6 +99,9 @@ func main() {
 	flag.StringVar(&o.rolePath, "role", "config/rbac/role.yaml", "controller-gen ClusterRole")
 	flag.StringVar(&o.controllerRole, "controller-role", "", "name of the rendered controller ClusterRole")
 	flag.BoolVar(&o.expectNoCRDs, "expect-no-crds", false, "the render used installCRDs=false")
+	flag.BoolVar(&o.fileDriver, "file-driver", false, "check the opt-in file CSI consumer contract")
+	flag.StringVar(&o.fileDriverBlockPolicy, "file-driver-block-policy", "File",
+		"expected fsGroupPolicy of the existing block CSIDriver")
 	flag.Parse()
 
 	violations, err := run(o, os.Stdin)
@@ -103,20 +122,23 @@ func run(o options, render io.Reader) ([]string, error) {
 	}
 	gen, err := loadGeneratedCRDs(o.basesDir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load generated CRDs: %w", err)
 	}
 	genRole := &rbacv1.ClusterRole{}
 	err = decodeFile(o.rolePath, genRole)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode generated RBAC: %w", err)
 	}
 	r, err := decodeRender(render)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode chart render: %w", err)
 	}
 
 	v := checkCRDs(gen, r.crds, o.expectNoCRDs)
 	v = append(v, checkRBAC(gen, genRole, r.roles, o.controllerRole)...)
+	if o.fileDriver {
+		v = append(v, checkFileDriver(r, o.fileDriverBlockPolicy)...)
+	}
 	sort.Strings(v)
 	return v, nil
 }
@@ -134,7 +156,7 @@ func loadGeneratedCRDs(dir string) (map[string]*apiextv1.CustomResourceDefinitio
 		crd := &apiextv1.CustomResourceDefinition{}
 		decodeErr := decodeFile(f, crd)
 		if decodeErr != nil {
-			return nil, decodeErr
+			return nil, fmt.Errorf("load generated CRD %s: %w", f, decodeErr)
 		}
 		gen[crd.Name] = crd
 	}
@@ -171,23 +193,310 @@ func decodeRender(in io.Reader) (rendered, error) {
 		if err != nil {
 			return r, fmt.Errorf("decode render document: %w", err)
 		}
-		switch meta.Kind {
-		case "CustomResourceDefinition":
-			crd := &apiextv1.CustomResourceDefinition{}
-			err = yaml.UnmarshalStrict(doc, crd)
-			if err != nil {
-				return r, fmt.Errorf("decode rendered CRD: %w", err)
-			}
-			r.crds = append(r.crds, crd)
-		case "ClusterRole", "Role":
-			role := &rbacv1.ClusterRole{}
-			err = yaml.Unmarshal(doc, role)
-			if err != nil {
-				return r, fmt.Errorf("decode rendered %s: %w", meta.Kind, err)
-			}
-			r.roles = append(r.roles, role)
+		err = appendRenderedDocument(&r, doc, meta.Kind)
+		if err != nil {
+			return r, fmt.Errorf("decode rendered %s: %w", meta.Kind, err)
 		}
 	}
+}
+
+func appendRenderedDocument(r *rendered, doc []byte, kind string) error {
+	switch kind {
+	case "CustomResourceDefinition":
+		crd := &apiextv1.CustomResourceDefinition{}
+		err := yaml.UnmarshalStrict(doc, crd)
+		if err != nil {
+			return fmt.Errorf("CRD: %w", err)
+		}
+		r.crds = append(r.crds, crd)
+	case "ClusterRole", "Role":
+		role := &rbacv1.ClusterRole{}
+		err := yaml.Unmarshal(doc, role)
+		if err != nil {
+			return fmt.Errorf("%s %s: %w", kind, role.Name, err)
+		}
+		r.roles = append(r.roles, role)
+	case "CSIDriver":
+		driver := &storagev1.CSIDriver{}
+		err := yaml.UnmarshalStrict(doc, driver)
+		if err != nil {
+			return fmt.Errorf("CSIDriver: %w", err)
+		}
+		r.csiDrivers = append(r.csiDrivers, driver)
+	case "Deployment", "DaemonSet":
+		workload, err := decodeWorkload(doc, kind)
+		if err != nil {
+			return err
+		}
+		r.workloads = append(r.workloads, workload)
+	}
+	return nil
+}
+
+func decodeWorkload(doc []byte, kind string) (renderedWorkload, error) {
+	var object map[string]any
+	err := yaml.Unmarshal(doc, &object)
+	if err != nil {
+		return renderedWorkload{}, fmt.Errorf("decode rendered %s: %w", kind, err)
+	}
+	metadata, err := requiredMapField(object, "metadata")
+	if err != nil {
+		return renderedWorkload{}, fmt.Errorf("rendered %s metadata: %w", kind, err)
+	}
+	spec, err := requiredMapField(object, "spec")
+	if err != nil {
+		return renderedWorkload{}, fmt.Errorf("rendered %s spec: %w", kind, err)
+	}
+	template, err := requiredMapField(spec, "template")
+	if err != nil {
+		return renderedWorkload{}, fmt.Errorf("rendered %s template: %w", kind, err)
+	}
+	podSpec, err := requiredMapField(template, "spec")
+	if err != nil {
+		return renderedWorkload{}, fmt.Errorf("rendered %s pod spec: %w", kind, err)
+	}
+	rawContainers, err := requiredSliceField(podSpec, "containers")
+	if err != nil {
+		return renderedWorkload{}, fmt.Errorf("rendered %s containers: %w", kind, err)
+	}
+	name, err := requiredStringField(metadata, "name")
+	if err != nil {
+		return renderedWorkload{}, fmt.Errorf("rendered %s metadata: %w", kind, err)
+	}
+	workload := renderedWorkload{kind: kind, name: name}
+	for i, raw := range rawContainers {
+		container, ok := raw.(map[string]any)
+		if !ok {
+			return renderedWorkload{}, fmt.Errorf("rendered %s container %d must be an object", kind, i)
+		}
+		containerName, err := requiredStringField(container, "name")
+		if err != nil {
+			return renderedWorkload{}, fmt.Errorf("rendered %s container %d: %w", kind, i, err)
+		}
+		rawArgs, err := optionalSliceField(container, "args")
+		if err != nil {
+			return renderedWorkload{}, fmt.Errorf("rendered %s container %s args: %w", kind, containerName, err)
+		}
+		current := renderedContainer{name: containerName}
+		for _, rawArg := range rawArgs {
+			arg, ok := rawArg.(string)
+			if !ok {
+				return renderedWorkload{}, fmt.Errorf(
+					"rendered %s container %s args must contain only strings", kind, containerName)
+			}
+			current.args = append(current.args, arg)
+		}
+		workload.containers = append(workload.containers, current)
+	}
+	return workload, nil
+}
+
+func requiredMapField(parent map[string]any, field string) (map[string]any, error) {
+	raw, ok := parent[field]
+	if !ok {
+		return nil, fmt.Errorf("missing %q", field)
+	}
+	value, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%q must be an object", field)
+	}
+	return value, nil
+}
+
+func requiredStringField(parent map[string]any, field string) (string, error) {
+	raw, ok := parent[field]
+	if !ok {
+		return "", fmt.Errorf("missing %q", field)
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("%q must be a string", field)
+	}
+	return value, nil
+}
+
+func requiredSliceField(parent map[string]any, field string) ([]any, error) {
+	raw, ok := parent[field]
+	if !ok {
+		return nil, fmt.Errorf("missing %q", field)
+	}
+	value, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%q must be an array", field)
+	}
+	return value, nil
+}
+
+func optionalSliceField(parent map[string]any, field string) ([]any, error) {
+	raw, ok := parent[field]
+	if !ok {
+		return nil, nil
+	}
+	value, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%q must be an array", field)
+	}
+	return value, nil
+}
+
+func checkFileDriver(r rendered, blockPolicy string) []string {
+	const (
+		blockName           = "pillar-csi.bhyoo.com"
+		fileName            = "files.pillar-csi.bhyoo.com"
+		blockNodeSocket     = "/var/lib/kubelet/plugins/pillar-csi.bhyoo.com/csi.sock"
+		fileNodeSocket      = "/var/lib/kubelet/plugins/files.pillar-csi.bhyoo.com/csi.sock"
+		blockControllerSock = "/csi/csi.sock"
+	)
+	violations := checkFileDriverResources(r.csiDrivers, blockPolicy, blockName, fileName)
+	routes := inspectFileDriverRoutes(r.workloads, fileName,
+		blockNodeSocket, fileNodeSocket, blockControllerSock)
+	return append(violations, fileDriverRouteViolations(routes)...)
+}
+
+func checkFileDriverResources(drivers []*storagev1.CSIDriver, blockPolicy, blockName, fileName string) []string {
+	byName := make(map[string]*storagev1.CSIDriver, len(drivers))
+	for _, driver := range drivers {
+		byName[driver.Name] = driver
+	}
+	var violations []string
+	if len(drivers) != 2 {
+		violations = append(violations, fmt.Sprintf(
+			"fileDriver.enabled must render exactly two CSIDriver resources, got %d", len(drivers)))
+	}
+	for name, wantPolicy := range map[string]string{blockName: blockPolicy, fileName: "None"} {
+		driver, ok := byName[name]
+		if !ok {
+			violations = append(violations, fmt.Sprintf("fileDriver.enabled must render CSIDriver %s", name))
+			continue
+		}
+		if driver.Spec.FSGroupPolicy == nil || string(*driver.Spec.FSGroupPolicy) != wantPolicy {
+			got := "<unset>"
+			if driver.Spec.FSGroupPolicy != nil {
+				got = string(*driver.Spec.FSGroupPolicy)
+			}
+			violations = append(violations, fmt.Sprintf(
+				"CSIDriver %s fsGroupPolicy=%s, want %s", name, got, wantPolicy))
+		}
+	}
+	return violations
+}
+
+type fileDriverRoutes struct {
+	blockController bool
+	fileController  bool
+	fileProvisioner bool
+	blockNode       bool
+	blockRegistrar  bool
+	fileNode        bool
+	fileRegistrar   bool
+}
+
+func inspectFileDriverRoutes(workloads []renderedWorkload, fileName,
+	blockNodeSocket, fileNodeSocket, blockControllerSock string) fileDriverRoutes {
+	var routes fileDriverRoutes
+	for _, workload := range workloads {
+		var workloadRoutes fileDriverRoutes
+		for _, container := range workload.containers {
+			updateFileDriverRoutes(&workloadRoutes, workload.kind, container, fileName,
+				blockNodeSocket, fileNodeSocket, blockControllerSock)
+		}
+		routes.blockController = routes.blockController || workloadRoutes.blockController
+		routes.fileController = routes.fileController || workloadRoutes.fileController
+		routes.fileProvisioner = routes.fileProvisioner ||
+			workloadRoutes.fileController && workloadRoutes.fileProvisioner
+		routes.blockNode = routes.blockNode || workloadRoutes.blockNode
+		routes.blockRegistrar = routes.blockRegistrar || workloadRoutes.blockRegistrar
+		routes.fileNode = routes.fileNode || workloadRoutes.fileNode
+		routes.fileRegistrar = routes.fileRegistrar || workloadRoutes.fileRegistrar
+	}
+	return routes
+}
+
+func updateFileDriverRoutes(routes *fileDriverRoutes, workloadKind string, container renderedContainer,
+	fileName, blockNodeSocket, fileNodeSocket, blockControllerSock string) {
+	if workloadKind == "Deployment" {
+		if hasArgValue(container.args, "--csi-endpoint", "unix://"+blockControllerSock) ||
+			hasArgValue(container.args, "--csi-address", blockControllerSock) {
+			routes.blockController = true
+		}
+		if hasArgValue(container.args, "--driver-name", fileName) {
+			routes.fileController = true
+		}
+		if strings.Contains(container.name, "provisioner") &&
+			hasNonBlockCSIAddress(container.args, blockControllerSock) {
+			routes.fileProvisioner = true
+		}
+	}
+	if workloadKind != "DaemonSet" {
+		return
+	}
+	if hasArgValue(container.args, "--csi-socket", blockNodeSocket) {
+		routes.blockNode = true
+	}
+	if hasArgValue(container.args, "--kubelet-registration-path", blockNodeSocket) {
+		routes.blockRegistrar = true
+	}
+	if hasArgValue(container.args, "--driver-name", fileName) &&
+		hasArgValue(container.args, "--csi-socket", fileNodeSocket) {
+		routes.fileNode = true
+	}
+	if strings.Contains(container.name, "registrar") &&
+		hasArgValue(container.args, "--kubelet-registration-path", fileNodeSocket) {
+		routes.fileRegistrar = true
+	}
+}
+
+func fileDriverRouteViolations(routes fileDriverRoutes) []string {
+	var violations []string
+	if !routes.blockController {
+		violations = append(violations, "fileDriver.enabled must preserve the block controller socket route")
+	}
+	if !routes.fileController {
+		violations = append(violations,
+			"fileDriver.enabled must render a controller with --driver-name=files.pillar-csi.bhyoo.com")
+	}
+	if !routes.fileProvisioner {
+		violations = append(violations,
+			"file-driver provisioner must use a non-block --csi-address in the file controller workload")
+	}
+	if !routes.blockNode || !routes.blockRegistrar {
+		violations = append(violations, "fileDriver.enabled must preserve the block node socket and registrar routes")
+	}
+	if !routes.fileNode {
+		violations = append(violations, "fileDriver.enabled must pair the file node --driver-name with its file socket")
+	}
+	if !routes.fileRegistrar {
+		violations = append(violations, "fileDriver.enabled must render a file registrar --kubelet-registration-path")
+	}
+	return violations
+}
+
+func hasArgValue(args []string, flagName, want string) bool {
+	for i, arg := range args {
+		if arg == flagName && i+1 < len(args) && args[i+1] == want {
+			return true
+		}
+		if strings.HasPrefix(arg, flagName+"=") && strings.TrimPrefix(arg, flagName+"=") == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNonBlockCSIAddress(args []string, blockSocket string) bool {
+	for i, arg := range args {
+		value := ""
+		switch {
+		case arg == "--csi-address" && i+1 < len(args):
+			value = args[i+1]
+		case strings.HasPrefix(arg, "--csi-address="):
+			value = strings.TrimPrefix(arg, "--csi-address=")
+		}
+		if value != "" && value != blockSocket {
+			return true
+		}
+	}
+	return false
 }
 
 type crdSet = map[string]*apiextv1.CustomResourceDefinition

@@ -17,6 +17,9 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+	"strconv"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -267,19 +270,121 @@ type VolumeClaimRef struct {
 	Name string `json:"name,omitempty"`
 }
 
+// FilesystemAdoptionKind identifies a preserved, existing filesystem source.
+// +kubebuilder:validation:Enum=directory;zfs-dataset
+type FilesystemAdoptionKind string
+
+const (
+	// FilesystemAdoptionKindDirectory identifies an adopted existing directory.
+	FilesystemAdoptionKindDirectory FilesystemAdoptionKind = "directory"
+	// FilesystemAdoptionKindZFSDataset identifies an adopted existing ZFS dataset.
+	FilesystemAdoptionKindZFSDataset FilesystemAdoptionKind = "zfs-dataset"
+)
+
+// FilesystemAdoption pins an existing filesystem's canonical source and native
+// identity. Its presence selects non-destructive filesystem lifecycle handling;
+// it is distinct from importedFrom, whose zvol deletion semantics are unchanged.
+// +kubebuilder:validation:XValidation:rule="self.kind != 'directory' || (self.filesystemType in ['ext4', 'xfs'] && has(self.filesystemID) && has(self.inode) && has(self.projectID) && !has(self.hostPath))",message="directory adoption requires ext4 or xfs, a filesystem UUID, inode and project ID, and no hostPath"
+// +kubebuilder:validation:XValidation:rule="self.kind != 'zfs-dataset' || (self.filesystemType == 'zfs' && !has(self.filesystemID) && !has(self.inode) && !has(self.projectID))",message="ZFS dataset adoption requires zfs and no directory identity fields"
+type FilesystemAdoption struct {
+	// kind selects the existing source type.
+	// +required
+	Kind FilesystemAdoptionKind `json:"kind"`
+
+	// canonicalSource is the resolved host directory or native dataset fullname.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	CanonicalSource string `json:"canonicalSource"`
+
+	// resourceID is the stable native identity, independent of path and pool
+	// alias: filesystem UUID plus root inode, or ZFS dataset GUID.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	ResourceID string `json:"resourceID"`
+
+	// hostPath is a dataset's existing mounted host path, if mounted. It may
+	// be empty for an unmounted legacy dataset. For directories, canonicalSource
+	// already is the host path, so this field is omitted.
+	// +optional
+	HostPath string `json:"hostPath,omitempty"`
+
+	// filesystemType identifies the native quota and identity implementation.
+	// +required
+	// +kubebuilder:validation:Enum=ext4;xfs;zfs
+	FilesystemType string `json:"filesystemType"`
+
+	// filesystemID is the directory's stable native filesystem UUID, never
+	// a volatile device number or statfs filesystem ID. Omitted for ZFS.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	FilesystemID string `json:"filesystemID,omitempty"`
+
+	// inode is the existing directory root's native inode as a canonical
+	// nonzero decimal string. It is omitted for ZFS.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=20
+	// +kubebuilder:validation:Pattern="^[1-9][0-9]{0,19}$"
+	Inode string `json:"inode,omitempty"`
+
+	// projectID identifies the directory's existing bounded project-quota
+	// scope. Adoption verifies it read-only; it never stamps project IDs.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	ProjectID uint32 `json:"projectID,omitempty"`
+}
+
+// ParseFilesystemAdoptionInode parses the canonical decimal representation used
+// by the Kubernetes API into the native uint64 inode value.
+func ParseFilesystemAdoptionInode(value string) (uint64, error) {
+	if value == "" || len(value) > 20 || (len(value) > 1 && value[0] == '0') {
+		return 0, fmt.Errorf("inode must be a nonzero canonical decimal string")
+	}
+	for i := range value {
+		if value[i] < '0' || value[i] > '9' {
+			return 0, fmt.Errorf("inode must be a nonzero canonical decimal string")
+		}
+	}
+	inode, err := strconv.ParseUint(value, 10, 64)
+	if err != nil || inode == 0 {
+		return 0, fmt.Errorf("inode must be a nonzero uint64 value")
+	}
+	return inode, nil
+}
+
+// FormatFilesystemAdoptionInode returns the canonical decimal representation
+// of a native inode. Zero returns the omitted-value representation.
+func FormatFilesystemAdoptionInode(value uint64) string {
+	if value == 0 {
+		return ""
+	}
+	return strconv.FormatUint(value, 10)
+}
+
 // PillarVolumeStateSpec defines the immutable identity and routing information for
 // a CSI volume.  Fields are populated by the controller at CreateVolume time
 // and never changed thereafter.
+// The spec-level transition rule preserves descriptor presence; a rule on the
+// optional descriptor alone cannot prevent adding or removing it.
+// +kubebuilder:validation:XValidation:rule="!has(self.filesystemAdoption) || !has(self.importedFrom) || size(self.importedFrom) == 0",message="filesystemAdoption and importedFrom are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="has(self.filesystemAdoption) == has(oldSelf.filesystemAdoption)",message="filesystem adoption presence is immutable"
 type PillarVolumeStateSpec struct {
-	// volumeID is the CSI volume ID assigned by the controller.
-	// Format: <target-name>/<protocol-type>/<backend-type>/<agent-vol-id>
+	// volumeID is the public CSI handle assigned by the controller.
+	// Existing volumes keep the format:
+	// <target-name>/<protocol-type>/<backend-type>/<agent-vol-id>.
+	// New file volumes append "." and an opaque 32-lowercase-hex lifecycle
+	// nonce. Retries and manual Retain rebinding preserve the stored handle;
+	// adopting the same source into a later lifecycle produces a new handle.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	VolumeID string `json:"volumeID"`
 
-	// agentVolumeID is the volume identifier used in agent RPCs.  The format
-	// is "<pool>/<volume-name>" where pool is the storage pool name (e.g. ZFS
-	// pool name), or just "<volume-name>" for backends with no pool prefix.
+	// agentVolumeID is the backing-resource routing identifier used in agent
+	// RPCs. The format is "<pool>/<volume-name>" where pool is the storage
+	// pool name, or just "<volume-name>" for backends with no pool prefix.
+	// Filesystem adoption derives its stable leaf from native resource identity,
+	// independent of the public handle's lifecycle nonce. Source re-adoption
+	// retains this routing identity but does not reuse the old public handle.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	AgentVolumeID string `json:"agentVolumeID"`
@@ -326,6 +431,13 @@ type PillarVolumeStateSpec struct {
 	// +optional
 	ImportedFrom string `json:"importedFrom,omitempty"`
 
+	// filesystemAdoption records the immutable identity of an existing
+	// directory or ZFS filesystem dataset. Delete retires only owned state
+	// and preserves the original source; recovery must never recreate it.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="filesystem adoption identity is immutable"
+	FilesystemAdoption *FilesystemAdoption `json:"filesystemAdoption,omitempty"`
+
 	// resolved is the effective per-volume configuration resolved at the
 	// first CreateVolume attempt from the PillarStore, PillarProtocol,
 	// PillarStorageClass overrides, StorageClass parameter documents and PVC
@@ -357,10 +469,12 @@ type ResolvedVolumeConfig struct {
 	// +optional
 	Filesystem *FilesystemConfig `json:"filesystem,omitempty"`
 
-	// localAttach is true when the volume may be attached directly on the
-	// storage node, bypassing the network protocol, whenever it is published
-	// to the node that hosts its PillarAgent.  Publishes to any other node
-	// always use the protocol.
+	// localAttach records the volume's resolved attachment mode. Default-driver
+	// volumes may bypass the protocol on their PillarAgent's node; publishes
+	// on other nodes use the protocol. For filesystem adoption, true means
+	// local-only attachment with no network export or NFS manager dependency.
+	// Single-node file volumes always record true; multi-node file volumes
+	// record false and require a working NFS manager.
 	// +optional
 	LocalAttach bool `json:"localAttach,omitempty"`
 }
@@ -389,15 +503,15 @@ type PillarVolumeStateStatus struct {
 	// +optional
 	BackendDevicePath string `json:"backendDevicePath,omitempty"`
 
-	// importAcquired records that agent.ImportVolume succeeded for a
-	// spec.importedFrom volume: the agent durably adopted the pre-existing
-	// zvol into this lifecycle.  While it is unset the lifecycle cannot prove
-	// the agent ever took ownership, so ReapAbandonedVolume and DeleteVolume
+	// importAcquired records that agent.ImportVolume succeeded for an
+	// importedFrom or filesystemAdoption volume: the agent durably adopted
+	// the existing resource into this lifecycle. While it is unset, the lifecycle
+	// cannot prove the agent ever took ownership, so ReapAbandonedVolume and DeleteVolume
 	// end the lifecycle with agent.ReleaseVolume — which retires it at the
-	// agent without touching the zvol — instead of UnexportVolume and
+	// agent without touching the source — instead of UnexportVolume and
 	// DeleteVolume, and ControllerExpandVolume and ControllerPublishVolume
 	// refuse it: a refused or lost-response import that was torn down,
-	// resized or exposed anyway would harm a zvol this driver never owned.
+	// resized or exposed anyway would harm a resource this driver never owned.
 	// +optional
 	ImportAcquired bool `json:"importAcquired,omitempty"`
 

@@ -144,10 +144,17 @@ func volumeRefFromVolumeState(pvs *pillarcsiv1alpha1.PillarVolumeState) volumeRe
 	}
 }
 
+// isPillarCSIDriver recognizes both the legacy driver and the explicit
+// filesystem-adoption driver.  Deletion guards must retain either identity.
+func isPillarCSIDriver(driver string) bool {
+	return driver == pillarcsiv1alpha1.DefaultCSIDriver ||
+		driver == pillarcsiv1alpha1.FileCSIDriver
+}
+
 // volumeRefFromPV returns the location encoded in the volume handle of a PV
-// provisioned by pillar-csi, and false for any other PV.
+// provisioned by either pillar-csi driver, and false for any other PV.
 func volumeRefFromPV(pv *corev1.PersistentVolume) (volumeRef, bool) {
-	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != pillarCSIProvisioner {
+	if pv.Spec.CSI == nil || !isPillarCSIDriver(pv.Spec.CSI.Driver) {
 		return volumeRef{}, false
 	}
 	parts := strings.SplitN(pv.Spec.CSI.VolumeHandle, "/", volumeHandleParts)

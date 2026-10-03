@@ -329,7 +329,223 @@ Upgrading from 0.5.2 to 0.5.3 is a `helm upgrade` with no CRD or values changes;
 
 ### Local attach on the storage node
 
-By default a pod scheduled on the storage node reaches a block volume over an NVMe-oF/TCP or iSCSI loopback like any other consumer. Set `localAttach: true` on a `PillarStorageClass` (or `pillar-csi.bhyoo.com/local-attach: "true"` on a hand-written StorageClass) to let such pods use a block backend zvol or LV directly; NFS volumes reject `localAttach` and always use their NFS network mount, including on the storage node. Pods on other nodes keep using the network protocol. While a block volume is attached locally, the network export is disabled for remote initiators, and a publish to another node fails with `FailedPrecondition` until the storage node has released the device. The storage node needs the `dm_mod` kernel module. See [Attach volumes locally on the storage node](https://pillar-csi.bhyoo.com/docs/how-to/local-attach/) and [Fencing and consistency](https://pillar-csi.bhyoo.com/docs/explanation/fencing-and-consistency/).
+By default a pod scheduled on the storage node reaches a block volume over an NVMe-oF/TCP or iSCSI loopback like any other consumer. Set `localAttach: true` on a `PillarStorageClass` (or `pillar-csi.bhyoo.com/local-attach: "true"` on a hand-written StorageClass) to let such pods use a block backend zvol or LV directly; legacy NFS volumes on the default CSI identity reject `localAttach` and always use their NFS network mount, including on the storage node. Pods on other nodes keep using the network protocol. While a block volume is attached locally, the network export is disabled for remote initiators, and a publish to another node fails with `FailedPrecondition` until the storage node has released the device. The storage node needs the `dm_mod` kernel module. See [Attach volumes locally on the storage node](https://pillar-csi.bhyoo.com/docs/how-to/local-attach/) and [Fencing and consistency](https://pillar-csi.bhyoo.com/docs/explanation/fencing-and-consistency/).
+
+## Existing filesystem adoption (branch-only, opt-in)
+
+> **Unreleased branch feature.** Existing directory and ZFS filesystem adoption is available only from this branch. It is not part of the 0.5.0 release, and it is disabled unless you enable the file CSI identity. The existing `pillar-csi.bhyoo.com` identity and its block and dynamic NFS behavior remain unchanged.
+
+The file identity is `files.pillar-csi.bhyoo.com`. It adopts an existing directory or ZFS filesystem in place. The file driver never creates a source filesystem, formats it, changes its properties or ownership, or expands its quota.
+
+Enable the file identity in the chart values. Keep any other `agent.backends` entries that your installation already uses; the example below adds a directory backend:
+
+```yaml
+fileDriver:
+  enabled: true
+  fsGroupPolicy: None
+  nfs:
+    enabled: true # required for ReadWriteMany; set false for local-only volumes
+
+agent:
+  backends:
+    - directory:
+        logicalPool: existing-files
+        hostRoot: /srv/pillar
+```
+
+Install a chart built from this branch:
+
+```sh
+helm upgrade --install pillar-csi <branch-built-chart> \
+  --namespace pillar-csi --create-namespace \
+  -f values-files.yaml
+```
+
+The `PillarAgent` must run on the storage node, and its `PillarStore` must repeat the directory backend's `logicalPool` and `hostRoot`. The protocol remains NFSv4.2 because the same binding can serve a local direct mount or an owned-host NFS mount:
+
+```yaml
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarAgent
+metadata:
+  name: storage-1
+spec:
+  nodeRef:
+    name: storage-1
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStore
+metadata:
+  name: existing-files
+spec:
+  agentRef: storage-1
+  backend:
+    directory:
+      logicalPool: existing-files
+      hostRoot: /srv/pillar
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarProtocol
+metadata:
+  name: file-nfs
+spec:
+  protocol:
+    nfs:
+      version: "4.2"
+      port: 2049
+      acl: true
+      squash: root
+```
+
+### Local directory mount
+
+Use `localAttach: true` for a single-node claim. The node on which the `PillarAgent` runs is the CSI topology for this volume, and the pod receives a direct host filesystem mount. No NFS server is needed when all claims use this mode.
+
+```yaml
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: existing-files-local
+spec:
+  csiDriver: files.pillar-csi.bhyoo.com
+  storeRef: existing-files
+  protocolRef: file-nfs
+  localAttach: true
+  storageClass:
+    name: existing-files-local
+    reclaimPolicy: Retain
+    volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data
+  annotations:
+    pillar-csi.bhyoo.com/import-directory: /srv/pillar/app-data
+spec:
+  storageClassName: existing-files-local
+  accessModes: [ReadWriteOnce]
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: 20Gi
+```
+
+Before creating the claim, `/srv/pillar/app-data` must already exist on `storage-1`. It must be a canonical path strictly below `/srv/pillar`, on ext4 or XFS, with a nonzero preconfigured project ID and a finite enforceable project quota of exactly `20Gi` (21474836480 bytes). The controller reads the native filesystem UUID, root inode and project identity. It does not assign a project ID, set a quota, or change directory permissions. A request that differs from the existing effective quota is refused.
+
+### RWX directory mount
+
+Use `localAttach: false` and `ReadWriteMany` when more than one node must access the source. Set `fileDriver.nfs.enabled: true`. The chart's owned-host NFS server exports an owned proxy of the pinned source, and the file node mounts that export through real NFSv4.2. This is a remote NFS data path, not a topology label that makes a local mount reachable from another node.
+
+```yaml
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: existing-files-rwx
+spec:
+  csiDriver: files.pillar-csi.bhyoo.com
+  storeRef: existing-files
+  protocolRef: file-nfs
+  localAttach: false
+  storageClass:
+    name: existing-files-rwx
+    reclaimPolicy: Retain
+    volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-app-data
+  annotations:
+    pillar-csi.bhyoo.com/import-directory: /srv/pillar/app-data
+spec:
+  storageClassName: existing-files-rwx
+  accessModes: [ReadWriteMany]
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: 20Gi
+```
+
+The storage node and workers need the host filesystem and NFS kernel support described in [Why pillar-csi](#why-pillar-csi). Keep the chart's host-backed `fileDriver.proxyRoot` and persistent agent state on a filesystem suitable for NFS export filehandles. The source directory itself remains outside that proxy and is never replaced.
+
+### ZFS filesystem adoption
+
+Add a ZFS dataset placement to the agent values and create a matching store. The `PillarStore` `pool` and `parentDataset` must match the agent entry exactly:
+
+```yaml
+agent:
+  backends:
+    - zfs:
+        volumeType: dataset
+        pool: tank
+        parentDataset: k8s
+```
+
+```yaml
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStore
+metadata:
+  name: existing-datasets
+spec:
+  agentRef: storage-1
+  backend:
+    zfs:
+      volumeType: dataset
+      pool: tank
+      parentDataset: k8s
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: existing-datasets-local
+spec:
+  csiDriver: files.pillar-csi.bhyoo.com
+  storeRef: existing-datasets
+  protocolRef: file-nfs
+  localAttach: true
+  storageClass:
+    name: existing-datasets-local
+    reclaimPolicy: Retain
+    volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: existing-dataset
+  annotations:
+    pillar-csi.bhyoo.com/import-zfs-dataset: tank/k8s/existing-dataset
+spec:
+  storageClassName: existing-datasets-local
+  accessModes: [ReadWriteOnce]
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: 20Gi
+```
+
+The dataset must already exist as a ZFS filesystem directly below the configured pool and parent dataset. It must have a finite effective `refquota` or `quota` of exactly the requested size. Adoption preserves ZFS properties, mount state and data. It does not set a quota, change a mountpoint, or expand the dataset.
+
+### Adoption restrictions and reuse
+
+- `pillar-csi.bhyoo.com/import-directory` and `pillar-csi.bhyoo.com/import-zfs-dataset` are PVC annotations, not StorageClass parameters. They are mutually exclusive with each other and with `pillar-csi.bhyoo.com/import-zvol`. The file driver does not dynamically create filesystems or import zvols.
+- The file driver sets `fsGroupPolicy: None`. It does not recursively chown the source, initialize an fsGroup, or change existing DAC, ACLs or properties.
+- The controller and agent revalidate the recorded native identity, exact quota and backend layout on retries and later lifecycle operations. A replaced directory, changed UUID, inode, project ID, dataset GUID, quota or configured root is refused. Expansion is always refused.
+- Use `reclaimPolicy: Retain` when you need manual PV reuse. After the old PVC is gone, clear the retained PV's old claim reference and bind a new PVC to the same PV. Keep the PV's `files.pillar-csi.bhyoo.com` CSI driver and volume handle; do not reprovision the source:
+
+  ```sh
+  kubectl patch pv <pv-name> --type=json \
+    -p='[{"op":"remove","path":"/spec/claimRef"}]'
+  ```
+
+  A manually rebound claim includes the PV name:
+
+  ```yaml
+  spec:
+    storageClassName: existing-files-local
+    volumeName: <pv-name>
+  ```
+
+  The new PVC sets `spec.volumeName: <pv-name>` and uses the same file CSI StorageClass. Retain keeps the lifecycle record and source available for this rebinding. Deleting a filesystem-adoption volume retires its CSI lifecycle and exports but does not delete the original directory or dataset. This differs from zvol adoption: deleting an imported zvol with `reclaimPolicy: Delete` remains destructive. See [Import a zvol](https://pillar-csi.bhyoo.com/docs/how-to/import-zvol/) for that separate workflow.
 
 ## Troubleshooting
 

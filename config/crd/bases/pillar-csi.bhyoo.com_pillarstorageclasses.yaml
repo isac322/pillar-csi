@@ -62,6 +62,16 @@ spec:
           spec:
             description: PillarStorageClassSpec defines the desired state of PillarStorageClass.
             properties:
+              csiDriver:
+                default: pillar-csi.bhyoo.com
+                description: |-
+                  csiDriver selects the provisioner for newly generated StorageClasses.
+                  The default preserves existing block and dynamic NFS routing; files
+                  explicitly opts in to existing-filesystem adoption.
+                enum:
+                - pillar-csi.bhyoo.com
+                - files.pillar-csi.bhyoo.com
+                type: string
               filesystem:
                 description: |-
                   filesystem configures the filesystem axis for volumes of this binding:
@@ -110,12 +120,13 @@ spec:
                 type: object
               localAttach:
                 description: |-
-                  localAttach lets a volume of this binding bypass the protocol when a
-                  pod using it runs on the storage node itself: the node mounts the
-                  backend zvol or logical volume directly and the network export is
-                  fenced for as long as that direct attach may be in use.  Pods on any
-                  other node always use the protocol.  Recorded per volume at
-                  provisioning time.
+                  localAttach preserves the default driver's direct-attach behavior:
+                  a pod on the storage node mounts the backend directly while its network
+                  export is fenced; pods on other nodes use the protocol.
+                  For the file driver, true declares local-only native readiness, needs
+                  no NFS manager, and rejects multi-node access. Single-node file volumes
+                  always freeze localAttach=true per volume and skip network export.
+                  Multi-node file volumes require false and a working NFS manager.
                 type: boolean
               overrides:
                 description: |-
@@ -127,6 +138,10 @@ spec:
                       backend contains backend tunable overrides (same shape as the
                       pillar-csi.bhyoo.com/backend PVC annotation document).
                     properties:
+                      directory:
+                        description: directory has no tunables; valid only for a directory
+                          store.
+                        type: object
                       lvm:
                         description: |-
                           lvm overrides LVM-specific tunables; valid only when the store's
@@ -159,9 +174,9 @@ spec:
                         type: object
                     type: object
                     x-kubernetes-validations:
-                    - message: exactly one of zfs or lvm must be set
-                      rule: '(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) ==
-                        1'
+                    - message: exactly one of zfs, lvm, or directory must be set
+                      rule: '(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) + (has(self.directory)
+                        ? 1 : 0) == 1'
                   protocol:
                     description: |-
                       protocol contains protocol tunable overrides (same shape as the

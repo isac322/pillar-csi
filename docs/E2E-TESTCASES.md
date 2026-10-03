@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
--**총 테스트 케이스: 435** (실제 실행 spec 435개; strict TC 라벨 426개: 기존 default-profile 413개 + E37 dedicated NFS lane 13개; 라벨 없는 teardown 보장 9개 포함. 전체 문서 inventory는 **721개**이며 비기본 E33·E36·F27–F31 및 reference 항목을 포함하며 strict gate에서 별도로 보고한다.)
+-**총 테스트 케이스: 464** (등록 spec 464개; strict TC 라벨 455개: 기존 default-profile 413개 + dedicated NFS lane의 E37 13개와 E71 29개; 라벨 없는 teardown 보장 9개 포함. 전체 문서 inventory는 **750개**이며 비기본 E33·E36·F27–F31 및 reference 항목을 포함하며 strict gate에서 별도로 보고한다. 등록 수는 통과 결과를 의미하지 않는다.)
 
 ---
 
@@ -140,6 +140,7 @@
   - [E36.1: import-zvol 어노테이션으로 기존 zvol 채택](#e361-import-zvol-어노테이션으로-기존-zvol-채택)
 - [E37: ZFS dataset + NFS 멀티노드 RWX E2E](#e37-zfs-dataset--nfs-멀티노드-rwx-e2e)
   - [E37.1: 실제 dataset/NFS 프로비저닝](#e371-실제-datasetnfs-프로비저닝)
+- [E71: 기존 filesystem 채택 — native quota와 파일 CSI 소비자](#e71-기존-filesystem-채택--native-quota와-파일-csi-소비자)
 
 ### 카테고리 3 — 완전 E2E / 수동 스테이징 테스트 (유형 F) ❌
 > 빌드 태그: `//go:build e2e_full` | 실제 ZFS/NVMe-oF 커널 모듈 필요 | 베어메탈/KVM 서버 필요
@@ -5391,6 +5392,74 @@ ZFS child dataset, exportfs 항목, node mount 및 publication 상태가 모두 
 
 ---
 
+
+## E71: 기존 filesystem 채택 — native quota와 파일 CSI 소비자
+
+**테스트 유형:** D (소유한 Kind 클러스터 + 실제 ZFS/XFS/ext4 + 커널 NFS)
+
+새 파일 CSI identity `files.pillar-csi.bhyoo.com`은 Helm의 `fileDriver.enabled=true`로
+명시적으로 활성화한다. 기존 block identity와 StorageClass/PV는 그대로 유지한다.
+테스트는 기존 64MiB quota를 읽어 채택하며, 제품이 quota나 소유권을 설정하는
+경로를 사용하지 않는다. 커널·fixture 준비 실패는 테스트 실패이며 Skip하지 않는다.
+
+**실행 명령:**
+
+```bash
+E2E_NFS_E2E=true E2E_HELM_BOOTSTRAP=true E2E_LABEL_FILTER=nfs \
+E2E_PROCS=1 PILLAR_E2E_SEQUENTIAL=true \
+make E2E_GO_FLAGS='-tags=e2e,e2e_helm ./test/e2e/ -v -timeout=20m' test-e2e-internal
+```
+
+실제 node 이미지의 filesystem 도구로 소유한 loop-backed XFS/ext4 fixture를
+준비한다. 원본 source allow-root는 Kind storage node의
+`/var/lib/pillar-csi/e71-sources`이며, `/host`는 agent/node의 read-only 경로 prefix이다.
+owned proxy root `/var/lib/pillar-csi/agent/datasets`는 agent와 file node에서 같은
+절대 경로로 보인다. source 보존을 확인한 뒤에만 테스트가 자신의 fixture를 제거한다.
+
+### E71.1 Native 채택·quota·소유권·수명주기
+
+**위치:** `test/e2e/tc_filesystem_adoption_e2e_test.go`
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E71.1 | `It("[TC-E71.1] adopts an existing ZFS filesystem without formatting and preserves data, GUID, mountpoint, properties, and tree")` | 기존 ZFS filesystem 채택 | 기존 64MiB source/GUID/파일 | PVC 채택; PV/PVS/native source 비교 | format 없음; GUID·mountpoint·properties·tree 유지 | `CSI-C`, `ZFS`, `Preservation` |
+| E71.2 | `It("[TC-E71.2] records the exact requested effective quota and refuses smaller, larger, missing, and read-only mismatches")` | 정확한 existing bound | 실제 quota source | 용량 mismatch·missing·readonly 요청 | exact capacity 기록; unsafe source 거부 | `Quota`, `Validation` |
+| E71.3 | `It("[TC-E71.3] reads and writes the pre-existing tree from host and an ordinary pod without changing source ownership")` | host/Pod 양방향 파일 | 기존 owner/DAC | 양쪽 쓰기·읽기·snapshot | 원본 owner 유지; 외부 접근 유지 | `CSI-N`, `DAC`, `I/O` |
+| E71.4 | `It("[TC-E71.4] proves true local bind sharing between same-node pods and rejects block or format paths")` | 같은 node direct bind | local file class | 두 Pod 파일 공유; mount 확인; invalid mode | native filesystem bind; block/mkfs 경로 없음 | `Local`, `CSI-N`, `Mnt` |
+| E71.5 | `It("[TC-E71.5] observes an independent kernel EDQUOT or ENOSPC on fsynced writes beyond the bound")` | 물리 quota enforcement | 기존 64MiB hard bound | Pod/외부 host에서 overflow·fsync | kernel EDQUOT 또는 ENOSPC | `Quota`, `Kernel` |
+| E71.6 | `It("[TC-E71.6] refuses wrong-node, traversal, symlink, path replacement, and submount source substitutions")` | source substitution 거부 | native source/layout | 실제 wrong-node/path/symlink/swap/submount 시도 | source redirect 없음; 원본 불변 | `Identity`, `Layout`, `Security` |
+| E71.7 | `It("[TC-E71.7] shares one native reservation for aliases and refuses a second owner across logical pools")` | native alias fence | 같은 source를 참조하는 두 logical pool | 중복 소유 요청; reservation/fence 조회 | native resource당 한 reservation·owner | `Fence`, `Reservation`, `Alias` |
+| E71.8 | `It("[TC-E71.8] preserves UID, GID, modes, and source properties with fsGroup 5555 and reports mismatched access by kernel")` | None/no-chown | owner UID/GID와 다른 fsGroup | matching owner·mismatched owner 접근 | DAC 유지; kernel 접근 거부 | `fsGroup`, `DAC`, `Preservation` |
+| E71.9 | `It("[TC-E71.9] retains the source, PVS, reservation, and live fence across PV Retain and same-PV claimRef replacement")` | Retain/same-PV 재바인드 | adopted PV reclaim=Retain | PVC 제거; manual claimRef 교체; 새 consumer | 같은 PVS/reservation/live fence/source 유지 | `Retain`, `Lifecycle`, `Fence` |
+| E71.10 | `It("[TC-E71.10] deletes only CSI-owned proxy and state while preserving the original source")` | File Delete 보존 | unpublished Delete PV | PVC/PV teardown; kernel mount·state·source 확인 | owned proxy/state만 제거; original source 유지 | `Delete`, `Cleanup`, `Preservation` |
+| E71.11 | `It("[TC-E71.11] refuses source identity and quota drift during recovery without recreating or mutating the source")` | recovery fail-closed | persisted descriptor | identity/quota drift; agent restart | source 재생성·mutation 없음 | `Recovery`, `Identity`, `Quota` |
+| E71.12 | `It("[TC-E71.12] recovers data and the durable native fence after agent and node restarts")` | 두 service restart | source 파일·durable fence | agent/node restart; 새 I/O·fence 확인 | 실제 데이터와 native lifecycle 유지 | `Recovery`, `Fence`, `I/O` |
+| E71.13 | `It("[TC-E71.13] rejects a replaced ZFS identity and restores the original GUID without creating a new owner")` | replaced GUID 거부 | 원본 GUID descriptor | source replacement; 원본 복원 | 새 owner 없음; 원본 GUID로만 복구 | `ZFS`, `Identity`, `Fence` |
+| E71.14 | `It("[TC-E71.14] adopts real XFS and ext4 project-quota directories with inherited project IDs and exact hard bounds")` | native project-quota directory | owned loop XFS/ext4 fixture | 기존 project inheritance/hard bound 채택; native 조회·I/O | 실제 native quota/identity admission; source quota mutation 없음 | `XFS`, `ext4`, `Quota`, `Directory` |
+| E71.15 | `It("[TC-E71.15] refuses read-only and incompatible multi-node access while preserving source")` | readonly/access mode 거부 | existing source | readonly와 incompatible multi-node 요청 | 거부 후 source 보존 | `Validation`, `AccessMode` |
+| E71.16 | `It("[TC-E71.16] refuses a nonmatching workload identity without chown or DAC bypass")` | workload DAC 유지 | matching quota/source | 다른 UID/GID consumer 접근 | chown·DAC 우회 없이 kernel 거부 | `DAC`, `Security`, `NoChown` |
+| E71.29 | `It("[TC-E71.29] refuses expansion of adopted directory and ZFS filesystems without changing native quota, identity, properties, or file access")` | 채택한 filesystem 확장 거부 | 기존 64MiB directory/ZFS source | 실제 PVC 확장 요청; StorageClass/API admission refusal과 PVC request unchanged 관찰; native snapshot·PVC 소비 비교 | quota·GUID·properties·파일 접근 불변; 확장 거부 | `CSI-C`, `CSI-N`, `Quota`, `ZFS`, `Directory`, `Preservation` |
+
+### E71.2 NFS 멀티노드 소비자·복구·정리
+
+**위치:** `test/e2e/tc_filesystem_network_e2e_test.go`
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E71.17 | `It("[TC-E71.17] shares an existing bounded directory across two remote nodes through an owned NFS bind proxy")` | bounded directory RWX | 기존 project quota directory | 두 worker 파일 교환; mount/proxy 조회 | 양방향 실제 I/O; 두 publication; owned proxy만 export | `CSI-C`, `CSI-N`, `NFS`, `Quota` |
+| E71.18 | `It("[TC-E71.18] shares an existing dataset without changing its GUID, mountpoint, DAC or properties")` | 기존 ZFS dataset 보존 | 기존 dataset GUID/refquota/파일 | RWX I/O; native properties 비교 | GUID·mountpoint·DAC·properties 불변 | `ZFS`, `NFS`, `Preservation` |
+| E71.19 | `It("[TC-E71.19] root-squashes remote root and denies a never-published client without changing source permissions")` | squash/미게시 client 거부 | 원본 DAC와 NFS ACL | remote root/미게시 client 쓰기 시도 | kernel EACCES; source permissions 불변 | `NFS`, `ACL`, `DAC` |
+| E71.20 | `It("[TC-E71.20] enforces real two-node POSIX byte-range locking and releases locks for the next consumer")` | POSIX range lock | 두 remote publisher | 겹치는/비겹치는 lock; 해제 후 새 lock·fsync | 겹치는 lock 거부; 해제 후 다음 consumer 성공 | `NFS`, `Locking` |
+| E71.21 | `It("[TC-E71.21] serves a true storage-node local bind concurrently with both remote publishers")` | local bind와 remote RWX 공존 | localAttach-enabled file class | storage node·두 worker I/O; `/proc/mounts` | local은 native zfs bind; remote는 NFS; 세 publication | `CSI-N`, `Local`, `NFS` |
+| E71.22 | `It("[TC-E71.22] recovers staged remote source and data after the installed node plugin restarts")` | node restart 복구 | remote mount와 원본 snapshot | node Pod restart; I/O·unpublish | 데이터·source snapshot 유지; 정리 성공 | `CSI-N`, `Recovery` |
+| E71.23 | `It("[TC-E71.23] recovers proxy and export after agent restart while preserving complete native and old-block bootstrap profiles")` | 전체 backend profile 복구 | mounted adoption | agent restart; export·기존파일·새 directory·old block I/O | proxy/export 복구; directory/ZFS/old block 모두 작동 | `Agent`, `NFS`, `Recovery`, `Block` |
+| E71.24 | `It("[TC-E71.24] refuses unsafe native quota or GUID recovery while an independent healthy export continues")` | quota/identity drift fail-closed | independent healthy export | source drift; agent restart | unsafe export 없음; healthy export I/O 유지 | `Agent`, `Fence`, `Quota`, `Recovery` |
+| E71.25 | `It("[TC-E71.25] protects publications from deletion and cleans every client stage and owned export without deleting the source")` | published Delete 보호와 정리 | 두 publisher | PVC delete; unpublish; proxy/export/source 확인 | 게시 중 보호; owned state만 제거; source 불변 | `CSI-C`, `NFS`, `Cleanup` |
+| E71.26 | `It("[TC-E71.26] retains the actual source and ownership, and rejects an old lifecycle UID after Delete")` | Retain/manual rebind/retired fence | 실제 adopted dataset lifecycle | stale RPC; Retain·같은 PV 재바인드; Delete | 같은 PVS UID 유지; retired UID 거부; source 보존 | `Fence`, `Retain`, `Lifecycle` |
+| E71.27 | `It("[TC-E71.27] uses packaged NFS helpers with isolated host userland and leaves no mounts or source damage")` | 이미지 helper만 사용 | owned ephemeral Kind | host helper 격리; packaged helper·I/O; unmount/cleanup | host helper 없이 I/O; mount leak/source damage 없음 | `Packaging`, `NFS`, `Cleanup` |
+| E71.28 | `It("[TC-E71.28] keeps installed legacy block driver fsGroup, nested files, RWO and RWOP behavior healthy beside file adoption")` | old block File/None consumer control | file adoption과 기존 block class | ext4/XFS nested-file I/O; RO/RWOP; Helm None override/rollback | old provisioner·정책·DAC·I/O 유지; 원래 release 복원 | `Block`, `fsGroup`, `RWO`, `RWOP` |
+
+---
 
 # 카테고리 3 — 완전 E2E / 수동 스테이징 테스트 (유형 F) ❌
 

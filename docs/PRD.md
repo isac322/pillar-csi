@@ -182,7 +182,7 @@ status:
 
 `backend` 멤버 이름은 agent 설정 파일(`--config`)의 `backends` 항목과 같은 키·같은 구조를 쓴다. `zfs.pool`, `zfs.parentDataset`, `lvm.volumeGroup`, `lvm.thinPool`은 구조적 필드이며 PillarStorageClass 오버라이드·PVC annotation에서 설정할 수 없다.
 
-> **구현된 backend와 미구현 backend:** `zfs-dataset`은 NFS 파일시스템용으로 구현되었다. `dir`(디렉토리 backend)은 설계만 존재하며 구현되지 않았고 served CRD schema에서 거부한다.
+> **현재 branch의 파일시스템 채택 기능:** `directory` backend는 기존 디렉토리 채택 전용으로 구현되었다. `files.pillar-csi.bhyoo.com` CSI identity와 `PillarStorageClass.spec.csiDriver`를 명시해야 하며, chart의 `fileDriver.enabled`도 켜야 한다. `zfs-dataset`은 기존 ZFS filesystem dataset을 같은 파일 identity로 채택할 수 있다. 두 backend 모두 동적 생성, 포맷, 속성·소유권 변경, quota 확장 및 원본 삭제를 수행하지 않는다. Directory는 ext4/XFS의 사전 구성된 project quota를, ZFS dataset은 유한한 유효 quota를 PVC 요청량과 정확히 일치시켜야 한다. 이 기능은 아직 release되지 않았고 기본값은 opt-in이다.
 
 **PillarStore conditions:**
 | Condition | 의미 |
@@ -297,7 +297,7 @@ spec:
 
 PillarStore과 PillarProtocol을 조합하여 Kubernetes StorageClass를 자동 생성한다. **filesystem 축**(`spec.filesystem`)과 바인딩별 backend·protocol 오버라이드(`spec.overrides`)를 담는다. **사용자가 생성한다.**
 
-호환되지 않는 조합(Block backend + File protocol, 또는 Filesystem backend + Block protocol)은 validation webhook이 거부한다. 현재 구현된 조합은 `zfs` zvol/`lvm` × `nvmeofTcp`/`iscsi`, 그리고 `zfs` dataset × `nfs`다.
+호환되지 않는 조합(Block backend + File protocol, 또는 Filesystem backend + Block protocol)은 validation webhook이 거부한다. 기본 CSI identity에서 구현된 조합은 `zfs` zvol/`lvm` × `nvmeofTcp`/`iscsi`, 그리고 `zfs` dataset × `nfs`다. 이 branch의 opt-in file CSI identity는 기존 `directory` × `nfs`와 기존 `zfs` filesystem dataset 채택도 지원한다.
 
 ```yaml
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
@@ -385,10 +385,10 @@ NFS는 구현된 파일 프로토콜이며 SMB는 설계 노트로만 남아 있
 
 | 프로토콜 | 클라이언트 마운트 | AccessMode | volumeMode |
 |----------|---------------|------------|------------|
-| NFS | NFSv4.2 mounted dataset | RWX, RWO, RWOP, ROX | Filesystem만 |
+| NFS | NFSv4.2 mounted dataset or adopted filesystem proxy | RWX, RWO, RWOP, ROX | Filesystem만 |
 | SMB | 마운트된 디렉토리 (미구현) | 설계상 RWX, RWO, ROX | Filesystem만 |
 
-NFS는 `filesystem.mountOptions`만 허용한다. `fsType`, `mkfsOptions`, periodicTrim, localAttach, Block volume mode와 support defaults를 뒤집는 `nfsvers`/`proto`/`soft` 옵션은 거부한다. `squash` 기본값은 `root`; root/fsGroup 초기화가 필요한 workload는 `squash: none`을 명시해야 한다. RPC TLS는 제공하지 않는다.
+NFS는 `filesystem.mountOptions`만 허용한다. `fsType`, `mkfsOptions`, periodicTrim, Block volume mode와 support defaults를 뒤집는 `nfsvers`/`proto`/`soft` 옵션은 거부한다. 기본 CSI identity에서는 `localAttach`도 거부하고 NFS network mount를 사용한다. file CSI identity의 existing-filesystem adoption은 `localAttach: true` direct single-node mount와 `localAttach: false` owned-host NFS/RWX를 지원한다. `squash` 기본값은 `root`; root/fsGroup 초기화가 필요한 workload는 `squash: none`을 명시해야 한다. RPC TLS는 제공하지 않는다.
 
 #### Backend-Protocol 호환성 매트릭스
 
@@ -398,9 +398,9 @@ NFS는 `filesystem.mountOptions`만 허용한다. `fsType`, `mkfsOptions`, perio
 | **zfs-dataset** (FS) | - | - | O | - |
 | **lvm** (Block) | O | O | - | - |
 | **block-device** (Block, 미구현) | - | - | - | - |
-| **directory** (FS, 미구현) | - | - | - | - |
+| **directory** (FS, file CSI existing adoption) | - | - | O* | - |
 
-현재 구현되어 served schema에 있는 조합은 **zfs-zvol·lvm × NVMe-oF TCP·iSCSI**와 **zfs-dataset × NFS**다. SMB, block-device, directory는 미구현이며 API에서 제공하지 않는다.
+기본 CSI identity에서 served schema의 구현 조합은 **zfs-zvol·lvm × NVMe-oF TCP·iSCSI**와 **zfs-dataset × NFS**다. 이 branch의 opt-in file CSI identity는 기존 `directory`와 기존 `zfs-dataset`을 채택하며 NFS를 사용한다. SMB와 block-device는 미구현이다. `O*`는 기존 filesystem 채택 전용이며 동적 생성은 하지 않는다.
 
 ### 2.3 파라미터 오버라이드 계층
 
@@ -434,7 +434,7 @@ PVC annotation 문서 pillar-csi.bhyoo.com/{backend,protocol,filesystem}   (볼�
 | filesystem | `periodicTrim` (bool, 생략 = 활성) | 마지막 계층의 값 |
 | filesystem | `mkfsOptions`, `mountOptions` | 생략 = 상속, 명시적 `[]` = 비움, 값 = 교체 (모든 계층 동일) |
 
-backend·protocol 문서는 exactly-one union이다: 정확히 하나의 멤버만 쓸 수 있고, 그 멤버는 store의 backend(`zfs`/`lvm`)·protocol(`nvmeofTcp`/`iscsi`/`nfs`)과 같아야 한다. NFS는 `zfs.volumeType: dataset` backend에서만 허용되며 version/port/ACL/squash는 structural fields다. 같은 수치 범위와 기본값(ACL 기본값 false, NFS version 4.2/port 2049/squash root, LVM provisioningMode 기본값 linear)이 모든 계층에 적용된다.
+backend·protocol 문서는 exactly-one union이다: 정확히 하나의 멤버만 쓸 수 있고, 그 멤버는 store의 backend(`zfs`/`lvm`, file CSI에서는 `directory` 포함)·protocol(`nvmeofTcp`/`iscsi`/`nfs`)과 같아야 한다. 기본 CSI identity의 NFS는 `zfs.volumeType: dataset` backend에서만 허용되며, file CSI identity에서는 기존 directory adoption에도 사용할 수 있다. version/port/ACL/squash는 structural fields다. 같은 수치 범위와 기본값(ACL 기본값 false, NFS version 4.2/port 2049/squash root, LVM provisioningMode 기본값 linear)이 모든 계층에 적용된다.
 
 **구조적 필드·알 수 없는 키 거부:** PVC annotation·수동 SC 문서에서는 튜닝 부분집합만 허용한다. 구조적 필드(`zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port`, `nvmeofTcp.acl`, `iscsi.port`, `iscsi.acl`, `iscsi.auth`, `nfs.version`, `nfs.port`, `nfs.acl`, `nfs.squash`)와 알 수 없는 키는 하나의 공유 decoder가 전체 경로와 함께 거부한다.
 
@@ -443,7 +443,7 @@ fsType/mkfsOptions 전달 규칙:
 - NodeStageVolume은 디바이스에 파일시스템이 없을 때만(blkid 기준) mkfs를 실행하며, 이미 포맷된 볼륨은 절대 재포맷하지 않는다. mkfs 인자는 셸 없이 argv 요소 그대로 전달된다. 기본 인자(ext4: `-F -m0`) 뒤에 붙으므로 같은 옵션을 지정하면 사용자 값이 우선한다. mkfs 종료 후 blkid로 요청한 파일시스템이 생성되었는지 확인하고, 아니면 (옵션 없이 다시 포맷하지 않고) 실패한다.
 - 포맷 타입 우선순위: PVC `filesystem` 문서 fsType > 수동 SC `filesystem` 문서 fsType > PillarStorageClass `spec.filesystem.fsType` > ext4. 생성된 StorageClass는 바인딩의 fsType(기본값 ext4)을 `csi.storage.k8s.io/fstype`으로 싣는다. 수동 SC가 `csi.storage.k8s.io/fstype`과 fsType이 있는 `filesystem` 문서를 함께 쓰면 두 값이 같아야 한다 (다르면 `InvalidArgument`). external-provisioner는 PV fsType을 StorageClass에서만 채우므로 PVC fsType을 쓰면 PV의 `spec.csi.fsType`은 클래스 값으로 남는다. 노드는 포맷한 타입을 스테이지 상태 파일에 기록하고, VolumeContext를 받지 않는 NodeExpandVolume은 이 값으로 resize 도구를 고른다.
 - mkfsOptions는 파일시스템별 허용 목록(allowlist)만 받는다. ext4: `-b -C -D -e -E(허용 서브옵션) -F -g -G -i -I -j -J(size,fast_commit_size,location) -L -m -M -N -o -O(journal_dev 제외) -q -r -T -U -v`, xfs: `-b -d -i -l -m -n -s`(각각 허용 서브옵션) `-f -K -L -q`. 다른 파일/디바이스를 여는 옵션(`-J device=`(LABEL=/UUID= 포함), `-l logdev=`, `-r rtdev=`, `-d name=/file=`, ext4 `-d`/`-l`/`-z`, xfs `-p`/`-c`), 파일시스템을 만들지 않거나 다른 결과를 내는 옵션(ext4 `-n`/`-S`/`-V`/`-t`/`-E offset=`, xfs `-N`), 위치 인자·긴 옵션·묶인 플래그(`-Fq`)는 거부된다.
-적용될 수 없는 설정은 CreateVolume이 `InvalidArgument`로 거부한다: 잘못된 YAML 문서, 알 수 없는 키·구조적 필드, 허용 목록 밖 mkfs 옵션, ext4/xfs 이외의 fsType, NFS의 fsType/mkfsOptions/periodicTrim/localAttach, NFS와 Block mode, 또는 support defaults를 뒤집는 NFS mountOptions. 클래스 수준 mkfsOptions는 Block 볼륨에서 `csi.storage.k8s.io/fstype`처럼 무시된다.
+적용될 수 없는 설정은 CreateVolume이 `InvalidArgument`로 거부한다: 잘못된 YAML 문서, 알 수 없는 키·구조적 필드, 허용 목록 밖 mkfs 옵션, ext4/xfs 이외의 fsType, 기본 CSI identity NFS의 fsType/mkfsOptions/periodicTrim/localAttach, NFS와 Block mode, 또는 support defaults를 뒤집는 NFS mountOptions. file CSI의 existing-filesystem adoption은 source를 포맷하지 않으며 별도 localAttach/NFS 경로를 사용한다. 클래스 수준 mkfsOptions는 Block 볼륨에서 `csi.storage.k8s.io/fstype`처럼 무시된다.
 `periodicTrim`은 block filesystem에서만 의미가 있다. NFS volume은 periodic trim을 명시하면 거부한다.
 
 **해석 방식 (단일 resolve 지점):** 유효 설정은 CreateVolume에서 한 번만, live CR로부터 resolve한다.
@@ -521,15 +521,15 @@ spec:
 
 #### 로컬 attach (`localAttach`)
 
-`localAttach`는 CreateVolume에서 resolve되어 `PillarVolumeState.spec.resolved.localAttach`에 고정된다. NFS에서는 항상 거부된다. 생성된 StorageClass에는 들어가지 않고 컨트롤러가 바인딩의 `spec.localAttach`를 읽는다. Block volume의 ControllerPublishVolume은 다음을 모두 만족할 때만 로컬 attach를 고른다.
+`localAttach`는 CreateVolume에서 resolve되어 `PillarVolumeState.spec.resolved.localAttach`에 고정된다. 기본 CSI identity의 NFS에서는 항상 거부된다. 생성된 StorageClass에는 들어가지 않고 컨트롤러가 바인딩의 `spec.localAttach`를 읽는다. 기본 CSI identity의 Block volume `ControllerPublishVolume`은 다음을 모두 만족할 때만 로컬 attach를 고른다. file CSI의 existing-filesystem adoption은 `localAttach: true`에서 direct single-node mount를 별도로 사용한다.
 
 - 대상 노드가 볼륨 PillarAgent의 `spec.nodeRef.name`이다 (`spec.external` 에이전트는 해당 없음).
 - access mode가 `SINGLE_NODE_*`이다 (multi-node 모드는 항상 프로토콜).
 
-NFS는 storage node에서도 network NFS mount를 사용한다.
-로컬 publish는 PublishContext에 `pillar-csi.bhyoo.com/attach-mode: local`, `pillar-csi.bhyoo.com/local-node`, `pillar-csi.bhyoo.com/local-device-path`를 싣는다. NodeStageVolume은 프로토콜 connector를 호출하지 않고 백엔드 디바이스 위에 device-mapper linear 디바이스 `pillar-local-<sha256(volumeID) 앞 16 hex>`를 만들어 그 위에 마운트한다 (block 볼륨은 dm 디바이스를 bind). 파드는 스토리지 노드와 다른 노드 사이를 자유롭게 옮겨 다닐 수 있고, publish마다 경로가 다시 정해진다.
+기본 CSI identity의 NFS는 storage node에서도 network NFS mount를 사용한다. file CSI의 `localAttach: true` adoption은 direct host mount를 사용하고, `localAttach: false`와 multi-node access는 owned-host NFS mount를 사용한다.
+기본 CSI identity의 Block 로컬 publish는 PublishContext에 `pillar-csi.bhyoo.com/attach-mode: local`, `pillar-csi.bhyoo.com/local-node`, `pillar-csi.bhyoo.com/local-device-path`를 싣는다. NodeStageVolume은 프로토콜 connector를 호출하지 않고 백엔드 디바이스 위에 device-mapper linear 디바이스 `pillar-local-<sha256(volumeID) 앞 16 hex>`를 만들어 그 위에 마운트한다 (block 볼륨은 dm 디바이스를 bind). 파일 adoption의 direct mount는 이 block device-mapper 경로를 사용하지 않는다.
 
-안전 불변식: 데이터는 Kubernetes force-detach(한 노드의 kubelet이 죽었는데 컨테이너는 계속 쓰는 경우)를 포함해 어떤 경우에도 두 노드에서 동시에 쓰이지 않는다.
+기본 CSI identity의 Block volume은 Kubernetes force-detach ... 포함해 어떤 경우에도 두 노드에서 동시에 쓰이지 않는다. file CSI의 `ReadWriteMany` adoption은 owned-host NFS를 통해 여러 노드의 동시 접근을 지원하며, source identity와 export fencing은 별도로 유지한다.
 
 1. 로컬 publish는 먼저 에이전트의 `SetLocalAttach(local=true)`로 모든 원격 initiator에 대해 export를 끈다 (NVMe-oF namespace `enable=0`, read-back 확인). 남아 있던 원격 세션은 I/O를 할 수 없다.
 2. 컨트롤러는 로컬 publication을 예약하는 같은 CAS에서 `status.localAttachNode`를 기록한다. export resync는 `ExportDesiredState.local_attach`로 이 값을 보내 에이전트 재시작·재부팅 후에도 namespace를 꺼진 상태로 복원한다.
@@ -579,7 +579,7 @@ namespace가 꺼진 동안에도 ControllerExpandVolume은 백엔드를 키운�
 │  │  • nodeSelector: pillar-csi.bhyoo.com/agent-node    │ │
 │  │  • gRPC server (Phase 1: 평문, TLS 옵션 준비)          │ │
 │  │  • controller-pushed desired state plus durable fencing/NFS recovery records │ │
-│  │  • Backend 플러그인: ZFS zvol/dataset, LVM; directory는 미구현 │ │
+│  │  • Backend 플러그인: ZFS zvol/dataset, LVM; directory 기존 filesystem 채택(file CSI opt-in) │ │
 │  │  • Protocol target 플러그인:                           │ │
 │  │    - NVMe-oF: nvmet configfs 직접 조작                 │ │
 │  │    - iSCSI: LIO configfs 직접 조작                     │ │
@@ -592,7 +592,7 @@ namespace가 꺼진 동안에도 ControllerExpandVolume은 백엔드를 키운�
 └───────────────────────────────────────────────────────────┘
 ```
 
-위 그림의 SMB 경로와 directory backend는 미구현 설계 노트다. 현재 구현은 ZFS zvol·ZFS dataset·LVM backend와 NVMe-oF TCP·iSCSI·NFS다.
+위 그림의 SMB 경로는 미구현 설계 노트다. `directory` backend는 이 branch에서 file CSI identity를 통한 기존 filesystem 채택 전용으로 구현되었고, 동적 생성은 하지 않는다. 현재 기본 CSI 구현은 ZFS zvol·ZFS dataset·LVM backend와 NVMe-oF TCP·iSCSI·NFS다.
 
 **democratic-csi와의 배포 차이:**
 - democratic-csi: backend마다 controller StatefulSet + node DaemonSet = N개 배포
@@ -616,7 +616,7 @@ CLI 도구 없이 **configfs 직접 조작**으로 target을 설정한다:
 
 #### Agent 설정 파일
 
-Agent가 볼륨을 만들 위치(backend 배치)는 `--config <path>` YAML 파일에서 읽는다. 차트는 `agent.backends` 값을 ConfigMap으로 렌더링해 마운트한다. 각 항목은 `PillarStore.spec.backend`와 같은 키·같은 구조의 union 멤버 하나다 (항목마다 공유 decoder로 검증, 알 수 없는 키·미구현 backend 거부). NFS는 `zfs.volumeType: dataset`인 backend에서만 사용한다.
+Agent가 볼륨을 만들 위치(backend 배치)는 `--config <path>` YAML 파일에서 읽는다. 차트는 `agent.backends` 값을 ConfigMap으로 렌더링해 마운트한다. 각 항목은 `PillarStore.spec.backend`와 같은 키·같은 구조의 union 멤버 하나다 (항목마다 공유 decoder로 검증, 알 수 없는 키·미구현 backend 거부). 기본 CSI identity의 NFS는 `zfs.volumeType: dataset`인 backend에서 사용하고, file CSI identity의 directory adoption도 NFS를 사용할 수 있다.
 
 ```yaml
 # pillar-agent --config 파일 (차트: agent.backends)
@@ -632,10 +632,13 @@ backends:
   - lvm:
       volumeGroup: data-vg
       thinPool: thin0                  # 선택
+  - directory:
+      logicalPool: existing-files
+      hostRoot: /srv/pillar
 ```
 
-- 라우팅 키는 zfs → `pool`과 `volumeType`, lvm → `volumeGroup`이다. 같은 `(pool, volumeType)` 또는 pool/VG 이름 충돌은 agent가 시작을 거부하지만 같은 ZFS pool에 zvol·dataset 항목을 함께 둘 수 있다.
-- 같은 pool/VG를 쓰는 PillarStore는 `zfs.parentDataset`/`lvm.thinPool`을 agent 항목과 같게 선언해야 한다 (불일치 시 `PoolDiscovered=False`/`BackendLayoutMismatch`).
+- 라우팅 키는 zfs → `pool`과 `volumeType`, lvm → `volumeGroup`, directory → `logicalPool`이다. 같은 `(pool, volumeType)` 또는 pool/VG 이름 충돌은 agent가 시작을 거부하지만 같은 ZFS pool에 zvol·dataset 항목을 함께 둘 수 있다.
+- 같은 pool/VG/directory를 쓰는 PillarStore는 `zfs.parentDataset`/`lvm.thinPool`/`directory.hostRoot`를 agent 항목과 같게 선언해야 한다 (불일치 시 `PoolDiscovered=False`/`BackendLayoutMismatch`).
 - gRPC listen 주소 기본값은 `:9500`이며 PillarAgent `nodeRef.port`/`external.port`와 차트 `agent.grpcPort` 기본값과 같다.
 
 #### Agent 디스커버리
@@ -761,7 +764,7 @@ type Backend interface {
 | **zfs-dataset** | Filesystem | `zfs create` + quota | ZFS dataset mountpoint | X (snapshot/clone not yet) | O (quota) | X (snapshot/clone not yet) |
 | **lvm** | Block | `lvcreate` | `/dev/vg/lv` | O (thin) | O | O (thin) |
 | **block-device** (미구현) | Block | 기존 디바이스 사용 | `/dev/sdX` | X | X | X |
-| **directory** (미구현) | Filesystem | `mkdir` | `/path/to/dir` | X | X | X |
+| **directory** (file CSI opt-in) | Filesystem | 기존 디렉토리 채택 | `/path/to/dir` | X | X | X |
 
 ## 4. Protocol 플러그인
 
@@ -938,9 +941,9 @@ Longhorn filesystem-trim, Portworx auto-fstrim과 같은 역할).
 - 노드 사전 설치는 커널 모듈뿐이라는 zero-install 요구 때문에 호스트 iscsiadm, 이미지 번들 open-iscsi+iscsid, cgo libiscsi, u-root iscsinl을 검토 후 기각했다. 근거는 [`PRD-iscsi.md`](./PRD-iscsi.md) 참조
 
 ### Phase 3: ZFS Dataset + NFS — 구현됨
-- ZFS dataset backend + NFSv4.2 export + RWX 지원
+- 기본 CSI identity의 ZFS dataset backend + NFSv4.2 export + RWX 지원
 - fixed port 2049, root squash default, explicit squash none/all, node-IP ACL, server-side quota expansion
-- Filesystem only; `filesystem.mountOptions` is the only mount flag axis; localAttach, mkfs, Block and RPC TLS are not offered
+- 기본 CSI identity는 Filesystem only이며 `filesystem.mountOptions` is the only mount flag axis; localAttach, mkfs, Block and RPC TLS are not offered. 이 branch의 file CSI identity는 별도 filesystem adoption 경로로 local direct mount와 owned-host NFS/RWX를 추가한다.
 
 ### Phase 4: 스냅샷/클론
 - CSI Snapshot + ZFS snapshot/clone 통합
@@ -953,7 +956,7 @@ Longhorn filesystem-trim, Portworx auto-fstrim과 같은 역할).
 - PillarAgent `spec.external` + agent standalone 바이너리
 
 ### Phase 8: 추가 Backend
-- block-device, directory, Btrfs subvolume
+- block-device, directory 동적 생성, Btrfs subvolume (기존 directory filesystem 채택은 branch의 file CSI opt-in 기능)
 
 ## 7. 운영 정책
 

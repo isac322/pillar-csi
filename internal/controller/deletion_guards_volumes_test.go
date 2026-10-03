@@ -43,6 +43,9 @@ import (
 	pillarcsiv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
+// pillarCSIProvisioner identifies the default block CSI driver in controller tests.
+const pillarCSIProvisioner = "pillar-csi.bhyoo.com"
+
 var _ = Describe("Deletion guards account for PersistentVolumes and PillarVolumeStates", func() {
 	var bctx context.Context
 	var cleanup []client.Object

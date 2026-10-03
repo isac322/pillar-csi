@@ -106,6 +106,11 @@ type DiscoveredPool struct {
 	// to become Ready.
 	// +optional
 	ThinPool string `json:"thinPool,omitempty"`
+
+	// hostRoot is the directory backend's configured trusted allow-root.
+	// A PillarStore must declare the same directory.hostRoot to become Ready.
+	// +optional
+	HostRoot string `json:"hostRoot,omitempty"`
 }
 
 // AgentCapabilities describes what backends and protocols the remote agent supports.

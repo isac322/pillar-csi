@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-You set pillar-csi configuration with three keys: `pillar-csi.bhyoo.com/backend`, `pillar-csi.bhyoo.com/protocol` and `pillar-csi.bhyoo.com/filesystem`. Each value is a YAML document with the same shape as the matching subtree of `PillarStore.spec.backend`, `PillarProtocol.spec.protocol` or `PillarStorageClass.spec.filesystem`. The same three keys and shapes work as PVC annotations and as parameters of a hand-written StorageClass. The `protocol` document accepts `nvmeofTcp`, `iscsi`, or `nfs`, and its member must match the `PillarProtocol`. NFS requires a ZFS dataset backend; its version, port, ACL and squash are structural and not per-volume tunables. SMB and directory backends are unavailable.
+You set pillar-csi configuration with three keys: `pillar-csi.bhyoo.com/backend`, `pillar-csi.bhyoo.com/protocol` and `pillar-csi.bhyoo.com/filesystem`. Each value is a YAML document with the same shape as the matching subtree of `PillarStore.spec.backend`, `PillarProtocol.spec.protocol` or `PillarStorageClass.spec.filesystem`. The same three keys and shapes work as PVC annotations and as parameters of a hand-written StorageClass. The `protocol` document accepts `nvmeofTcp`, `iscsi`, or `nfs`, and its member must match the `PillarProtocol`. On the default CSI identity, NFS requires a ZFS dataset backend; the opt-in file CSI identity also supports NFS for adopted directories. NFS version, port, ACL and squash are structural and not per-volume tunables. SMB is unavailable. The directory backend is available only for opt-in existing-filesystem adoption through the separate `files.pillar-csi.bhyoo.com` CSI identity.
 
 All pillar-csi keys live under the `pillar-csi.bhyoo.com/` prefix. The CSI driver name and StorageClass provisioner is `pillar-csi.bhyoo.com`.
 
@@ -34,6 +34,21 @@ One more PVC annotation is not a configuration document:
 |---|---|
 | `pillar-csi.bhyoo.com/import-zvol` | full name of an existing ZFS zvol, for example `hot-data/k8s/pvc-0d52...`. `CreateVolume` adopts that zvol instead of creating a volume. The zvol must sit directly under the store's `pool` and `parentDataset` (exactly `<pool>/<parentDataset>/<name>`, or `<pool>/<name>` without a `parentDataset`), be unused on the storage node and be at least the requested size. Valid only on a PVC, not as a StorageClass parameter. See [Import a zvol from another CSI driver](/docs/how-to/import-zvol/). |
 
+### Existing filesystem adoption annotations
+
+The file CSI identity is branch-only and unreleased. Set `fileDriver.enabled: true` in the chart and set `PillarStorageClass.spec.csiDriver: files.pillar-csi.bhyoo.com`; the default `pillar-csi.bhyoo.com` identity does not route filesystem-adoption claims. The file driver is disabled by default and does not dynamically create a directory or ZFS filesystem.
+
+| Key | Value | Requirements |
+|---|---|---|
+| `pillar-csi.bhyoo.com/import-directory` | Canonical absolute directory path, such as `/srv/pillar/app-data` | PVC annotation only. The path must be strictly below the configured directory backend `hostRoot`, use ext4 or XFS, and already have a nonzero project ID with a finite enforceable project quota exactly equal to the PVC request. |
+| `pillar-csi.bhyoo.com/import-zfs-dataset` | Full existing ZFS filesystem dataset name, such as `tank/k8s/existing-dataset` | PVC annotation only. The dataset must be directly below the store's configured `pool` and `parentDataset`, with a finite effective `refquota` or `quota` exactly equal to the PVC request. |
+
+The two filesystem selectors are mutually exclusive with each other and with `pillar-csi.bhyoo.com/import-zvol`. Adoption reads and records the native filesystem UUID, root inode and project identity for directories, or the native dataset GUID for ZFS. It revalidates that identity, the exact quota and the configured backend layout on later operations. A changed source, quota, project ID, dataset GUID or layout is refused. Filesystem expansion is refused.
+
+Filesystem adoption preserves the source's data, properties, ownership, ACLs and mount state. The file CSI identity uses `fsGroupPolicy: None`, so kubelet does not recursively change source ownership. With `localAttach: true`, a single-node claim uses a direct mount on the agent's Kubernetes node and receives that node as its topology. With `localAttach: false`, `ReadWriteMany` requires `fileDriver.nfs.enabled: true`; the owned-host NFS server and file node use an actual NFSv4.2 mount. The topology constraint is not a substitute for the remote NFS data path.
+
+Use `reclaimPolicy: Retain` when you need to rebind a retained PV manually. After the old PVC is gone, remove the PV's stale `spec.claimRef`, then create a new PVC with `spec.volumeName` set to that PV. Keep the file CSI driver and existing volume handle. Deleting a filesystem-adoption volume retires CSI ownership and exports but preserves the original directory or dataset. This deletion rule does not change the separate zvol-import behavior: an imported zvol with `reclaimPolicy: Delete` is still destroyed.
+
 ### StorageClass parameters
 
 A StorageClass generated from a `PillarStorageClass` carries one pillar-csi parameter:
@@ -52,7 +67,7 @@ A StorageClass you write yourself (`provisioner: pillar-csi.bhyoo.com`) accepts:
 | `pillar-csi.bhyoo.com/backend` | no | backend document, as on a PVC |
 | `pillar-csi.bhyoo.com/protocol` | no | protocol document, as on a PVC |
 | `pillar-csi.bhyoo.com/filesystem` | no | filesystem document, as on a PVC |
-| `pillar-csi.bhyoo.com/local-attach` | no | `"true"` or `"false"`, default `false`; rejected for NFS volumes because NFS always uses its network mount. For block volumes, see [Attach volumes locally on the storage node](/docs/how-to/local-attach/) |
+| `pillar-csi.bhyoo.com/local-attach` | no | `"true"` or `"false"`, default `false`; rejected for legacy NFS volumes on the default CSI identity because those volumes always use their network mount. For adopted files, `localAttach: true` is the direct single-node mode. For block volumes, see [Attach volumes locally on the storage node](/docs/how-to/local-attach/) |
 | `csi.storage.k8s.io/fstype` | no | `ext4`, `xfs`, or `nfs`; must equal the filesystem document's `fsType` if both are set |
 
 Any other `pillar-csi.bhyoo.com/` parameter, including the 0.2 flat keys such as `zfs-prop.*`, `lvm-*`, `nvmeof-*`, `acl-enabled` and `backend-type`, is rejected.

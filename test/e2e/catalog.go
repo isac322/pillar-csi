@@ -420,6 +420,11 @@ var dedicatedDefaultProfileTCIDs = []string{
 var nfsTCIDs = []string{
 	"E37.1", "E37.2", "E37.3", "E37.4", "E37.5", "E37.6", "E37.7",
 	"E37.8", "E37.9", "E37.10", "E37.11", "E37.12", "E37.13",
+	"E71.1", "E71.2", "E71.3", "E71.4", "E71.5", "E71.6", "E71.7",
+	"E71.8", "E71.9", "E71.10", "E71.11", "E71.12", "E71.13", "E71.14",
+	"E71.15", "E71.16", "E71.17", "E71.18", "E71.19", "E71.20", "E71.21",
+	"E71.22", "E71.23", "E71.24", "E71.25", "E71.26", "E71.27", "E71.28",
+	"E71.29",
 }
 
 // CurrentTCExecutionProfiles returns the registered TC-ID profiles without

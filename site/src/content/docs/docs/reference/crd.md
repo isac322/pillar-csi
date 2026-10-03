@@ -67,6 +67,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `zfs` _[ZFSBackendOverrides](#zfsbackendoverrides)_ | zfs overrides ZFS-specific tunables; valid only when the store's<br />backend is zfs. |  | Optional <br /> |
 | `lvm` _[LVMBackendOverrides](#lvmbackendoverrides)_ | lvm overrides LVM-specific tunables; valid only when the store's<br />backend is lvm. |  | Optional <br /> |
+| `directory` _[DirectoryBackendOverrides](#directorybackendoverrides)_ | directory has no tunables; valid only for a directory store. |  | Optional <br /> |
 
 
 #### BackendSpec
@@ -74,7 +75,7 @@ _Appears in:_
 
 
 BackendSpec describes the storage backend of a PillarStore.  Exactly one
-member must be set: the member name selects the backend (zfs or lvm) and
+member must be set: the member name selects zfs, lvm, or directory and
 its value carries that backend's configuration.
 
 The same union shape is reused for the agent's backend placement config
@@ -91,6 +92,39 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `zfs` _[ZFSBackendConfig](#zfsbackendconfig)_ | zfs holds ZFS-specific configuration. |  | Optional <br /> |
 | `lvm` _[LVMBackendConfig](#lvmbackendconfig)_ | lvm holds LVM-specific configuration. |  | Optional <br /> |
+| `directory` _[DirectoryBackendConfig](#directorybackendconfig)_ | directory holds existing host-directory adoption configuration. |  | Optional <br /> |
+
+
+#### DirectoryBackendConfig
+
+
+
+DirectoryBackendConfig declares a logical pool of existing host directories.
+It does not authorize creating directories or changing their quotas.
+
+
+
+_Appears in:_
+- [BackendSpec](#backendspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `logicalPool` _string_ | logicalPool is the routing name of this directory backend. |  | MinLength: 1 <br />Pattern: `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$` <br />Required <br /> |
+| `hostRoot` _string_ | hostRoot is the absolute, trusted allow-root on the storage node.<br />It must equal the directory backend's configured root on the agent. |  | MinLength: 1 <br />Pattern: `^/` <br />Required <br /> |
+
+
+#### DirectoryBackendOverrides
+
+
+
+DirectoryBackendOverrides is empty: directory layout and existing quotas
+are structural, read-only settings, not per-volume tunables.
+
+
+
+_Appears in:_
+- [BackendOverrides](#backendoverrides)
+
 
 
 #### DiscoveredPool
@@ -112,6 +146,7 @@ _Appears in:_
 | `available` _[Quantity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.37/#quantity-resource-api)_ | available is the free capacity of the pool. |  | Optional <br /> |
 | `parentDataset` _string_ | parentDataset is, for ZFS pools, the dataset relative to the pool under<br />which the agent creates volumes (its config zfs.parentDataset); empty means<br />the pool root dataset.  A PillarStore on this pool must declare the<br />same spec.backend.zfs.parentDataset to become Ready. |  | Optional <br /> |
 | `thinPool` _string_ | thinPool is, for LVM volume groups, the thin pool LV the agent creates<br />thin volumes in (its config lvm.thinPool); empty means none.  A<br />PillarStore on this VG must declare the same spec.backend.lvm.thinPool<br />to become Ready. |  | Optional <br /> |
+| `hostRoot` _string_ | hostRoot is the directory backend's configured trusted allow-root.<br />A PillarStore must declare the same directory.hostRoot to become Ready. |  | Optional <br /> |
 
 
 #### ExternalSpec
@@ -129,6 +164,49 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `address` _string_ | address is the IP or hostname of the external agent. |  | MinLength: 1 <br />Required <br /> |
 | `port` _integer_ | port is the agent gRPC port. |  | Maximum: 65535 <br />Minimum: 1 <br />Required <br /> |
+
+
+#### FilesystemAdoption
+
+
+
+FilesystemAdoption pins an existing filesystem's canonical source and native
+identity. Its presence selects non-destructive filesystem lifecycle handling;
+it is distinct from importedFrom, whose zvol deletion semantics are unchanged.
+
+
+
+_Appears in:_
+- [PillarVolumeStateSpec](#pillarvolumestatespec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `kind` _[FilesystemAdoptionKind](#filesystemadoptionkind)_ | kind selects the existing source type. |  | Enum: [directory zfs-dataset] <br />Required <br /> |
+| `canonicalSource` _string_ | canonicalSource is the resolved host directory or native dataset fullname. |  | MinLength: 1 <br />Required <br /> |
+| `resourceID` _string_ | resourceID is the stable native identity, independent of path and pool<br />alias: filesystem UUID plus root inode, or ZFS dataset GUID. |  | MinLength: 1 <br />Required <br /> |
+| `hostPath` _string_ | hostPath is a dataset's existing mounted host path, if mounted. It may<br />be empty for an unmounted legacy dataset. For directories, canonicalSource<br />already is the host path, so this field is omitted. |  | Optional <br /> |
+| `filesystemType` _string_ | filesystemType identifies the native quota and identity implementation. |  | Enum: [ext4 xfs zfs] <br />Required <br /> |
+| `filesystemID` _string_ | filesystemID is the directory's stable native filesystem UUID, never<br />a volatile device number or statfs filesystem ID. Omitted for ZFS. |  | MinLength: 1 <br />Optional <br /> |
+| `inode` _string_ | inode is the existing directory root's native inode as a canonical<br />nonzero decimal string. It is omitted for ZFS. |  | MaxLength: 20 <br />MinLength: 1 <br />Pattern: `^[1-9][0-9]\{0,19\}$` <br />Optional <br /> |
+| `projectID` _integer_ | projectID identifies the directory's existing bounded project-quota<br />scope. Adoption verifies it read-only; it never stamps project IDs. |  | Minimum: 1 <br />Optional <br /> |
+
+
+#### FilesystemAdoptionKind
+
+_Underlying type:_ _string_
+
+FilesystemAdoptionKind identifies a preserved, existing filesystem source.
+
+_Validation:_
+- Enum: [directory zfs-dataset]
+
+_Appears in:_
+- [FilesystemAdoption](#filesystemadoption)
+
+| Field | Description |
+| --- | --- |
+| `directory` | FilesystemAdoptionKindDirectory identifies an adopted existing directory.<br /> |
+| `zfs-dataset` | FilesystemAdoptionKindZFSDataset identifies an adopted existing ZFS dataset.<br /> |
 
 
 #### FilesystemConfig
@@ -649,12 +727,13 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `csiDriver` _string_ | csiDriver selects the provisioner for newly generated StorageClasses.<br />The default preserves existing block and dynamic NFS routing; files<br />explicitly opts in to existing-filesystem adoption. | pillar-csi.bhyoo.com | Enum: [pillar-csi.bhyoo.com files.pillar-csi.bhyoo.com] <br />Optional <br /> |
 | `storeRef` _string_ | storeRef is the name of the PillarStore to use for provisioning. |  | MinLength: 1 <br />Required <br /> |
 | `protocolRef` _string_ | protocolRef is the name of the PillarProtocol used to expose volumes. |  | MinLength: 1 <br />Required <br /> |
 | `storageClass` _[StorageClassTemplate](#storageclasstemplate)_ | storageClass configures the Kubernetes StorageClass that this binding<br />generates.  The controller creates and owns the StorageClass; deleting<br />the PillarStorageClass also deletes the StorageClass. |  | Optional <br /> |
 | `filesystem` _[FilesystemConfig](#filesystemconfig)_ | filesystem configures the filesystem axis for volumes of this binding:<br />which filesystem the node formats and which mount options it applies. |  | Optional <br /> |
 | `overrides` _[StorageClassOverrides](#storageclassoverrides)_ | overrides provides a fine-grained parameter layer on top of the<br />referenced store and protocol defaults. |  | Optional <br /> |
-| `localAttach` _boolean_ | localAttach lets a volume of this binding bypass the protocol when a<br />pod using it runs on the storage node itself: the node mounts the<br />backend zvol or logical volume directly and the network export is<br />fenced for as long as that direct attach may be in use.  Pods on any<br />other node always use the protocol.  Recorded per volume at<br />provisioning time. |  | Optional <br /> |
+| `localAttach` _boolean_ | localAttach preserves the default driver's direct-attach behavior:<br />a pod on the storage node mounts the backend directly while its network<br />export is fenced; pods on other nodes use the protocol.<br />For the file driver, true declares local-only native readiness, needs<br />no NFS manager, and rejects multi-node access. Single-node file volumes<br />always freeze localAttach=true per volume and skip network export.<br />Multi-node file volumes require false and a working NFS manager. |  | Optional <br /> |
 
 
 #### PillarStorageClassStatus
@@ -709,7 +788,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `agentRef` _string_ | agentRef is the name of the PillarAgent this pool lives on. |  | MinLength: 1 <br />Required <br /> |
-| `backend` _[BackendSpec](#backendspec)_ | backend describes the storage backend and pool to use.  Exactly one<br />member (zfs or lvm) must be set. |  | Required <br /> |
+| `backend` _[BackendSpec](#backendspec)_ | backend describes the storage backend and pool to use.  Exactly one<br />member (zfs, lvm, or directory) must be set. |  | Required <br /> |
 
 
 #### PillarStoreStatus
@@ -734,7 +813,8 @@ _Appears in:_
 
 
 PillarVolumeReservation atomically binds a backend volume
-(agent + backend + agentVolumeID) to one volume lifecycle.  The CSI
+(agent + backend + agentVolumeID, or the native filesystem resource key)
+to one volume lifecycle. The CSI
 controller creates it before the owning PillarVolumeState with a
 deterministic name, so two concurrent CreateVolume claims on the same
 backend volume — for example two PVCs importing the same zvol — cannot both
@@ -773,6 +853,7 @@ _Appears in:_
 | `agentRef` _string_ | agentRef is the PillarAgent whose storage node holds the reserved<br />backend volume. |  | MinLength: 1 <br />Required <br /> |
 | `backendType` _string_ | backendType is the storage backend routing token of the reserved<br />backend volume (e.g. "zfs-zvol"). |  | MinLength: 1 <br />Required <br /> |
 | `agentVolumeID` _string_ | agentVolumeID is the reserved backend volume identifier<br />("&lt;pool>/&lt;volume-name>"), the same value the agent RPCs carry. |  | MinLength: 1 <br />Required <br /> |
+| `filesystemResourceID` _string_ | filesystemResourceID is the canonical native backing-resource key for<br />filesystem adoption, independent of logical pool and source path.<br />Filesystem aliases reserve this key rather than agentVolumeID; the<br />latter remains the routing identity. Omitted for legacy block volumes. |  | Optional <br /> |
 | `ownerVolume` _string_ | ownerVolume is the name of the PillarVolumeState lifecycle that holds<br />the reservation.  A reservation survives the whole lifecycle, including<br />retries of refused backend calls, and is released only when the owning<br />lifecycle is retired. |  | MinLength: 1 <br />Required <br /> |
 | `claimRef` _[VolumeClaimRef](#volumeclaimref)_ | claimRef identifies the PersistentVolumeClaim the owning lifecycle<br />provisions for.  A CreateVolume for any other claim (or claim UID) is<br />refused while the reservation exists; the refusal names this claim so<br />an operator can verify it is gone before deleting the reservation. |  | Optional <br /> |
 
@@ -846,6 +927,8 @@ _Appears in:_
 PillarVolumeStateSpec defines the immutable identity and routing information for
 a CSI volume.  Fields are populated by the controller at CreateVolume time
 and never changed thereafter.
+The spec-level transition rule preserves descriptor presence; a rule on the
+optional descriptor alone cannot prevent adding or removing it.
 
 
 
@@ -854,14 +937,15 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `volumeID` _string_ | volumeID is the CSI volume ID assigned by the controller.<br />Format: &lt;target-name>/&lt;protocol-type>/&lt;backend-type>/&lt;agent-vol-id> |  | MinLength: 1 <br />Required <br /> |
-| `agentVolumeID` _string_ | agentVolumeID is the volume identifier used in agent RPCs.  The format<br />is "&lt;pool>/&lt;volume-name>" where pool is the storage pool name (e.g. ZFS<br />pool name), or just "&lt;volume-name>" for backends with no pool prefix. |  | MinLength: 1 <br />Required <br /> |
+| `volumeID` _string_ | volumeID is the public CSI handle assigned by the controller.<br />Existing volumes keep the format:<br />&lt;target-name>/&lt;protocol-type>/&lt;backend-type>/&lt;agent-vol-id>.<br />New file volumes append "." and an opaque 32-lowercase-hex lifecycle<br />nonce. Retries and manual Retain rebinding preserve the stored handle;<br />adopting the same source into a later lifecycle produces a new handle. |  | MinLength: 1 <br />Required <br /> |
+| `agentVolumeID` _string_ | agentVolumeID is the backing-resource routing identifier used in agent<br />RPCs. The format is "&lt;pool>/&lt;volume-name>" where pool is the storage<br />pool name, or just "&lt;volume-name>" for backends with no pool prefix.<br />Filesystem adoption derives its stable leaf from native resource identity,<br />independent of the public handle's lifecycle nonce. Source re-adoption<br />retains this routing identity but does not reuse the old public handle. |  | MinLength: 1 <br />Required <br /> |
 | `agentRef` _string_ | agentRef is the name of the PillarAgent that hosts this volume. |  | MinLength: 1 <br />Required <br /> |
 | `backendType` _string_ | backendType is the storage backend routing token (e.g. "zfs-zvol",<br />"lvm-lv").  It is the backend member selected by the store's<br />spec.backend union at CreateVolume time. |  | Required <br /> |
 | `protocolType` _string_ | protocolType is the network storage protocol routing token<br />(e.g. "nvmeof-tcp").  It is the protocol member selected by the<br />protocol's spec.protocol union at CreateVolume time. |  | Required <br /> |
 | `capacityBytes` _integer_ | capacityBytes is the requested volume size in bytes. |  | Minimum: 0 <br />Optional <br /> |
 | `claimRef` _[VolumeClaimRef](#volumeclaimref)_ | claimRef identifies the PersistentVolumeClaim this volume was<br />provisioned for, when the provisioner named it (external-provisioner<br />`--extra-create-metadata`); its UID is read from the claim at the first<br />CreateVolume.  The controller uses it to recognize a provisioning<br />attempt that was abandoned because its claim was removed before any<br />PersistentVolume was created.  Without it the claim UID is derived from<br />the default "pvc-&lt;claim UID>" volume name. |  | Optional <br /> |
 | `importedFrom` _string_ | importedFrom records the full source dataset name when the volume was<br />adopted from an existing ZFS zvol via the<br />"pillar-csi.bhyoo.com/import-zvol" PVC annotation (e.g.<br />"hot-data/k8s/pvc-abc123"), instead of being created empty.  The field<br />is informational — the imported zvol keeps its data but becomes a<br />normal volume: DeleteVolume destroys it, and the annotation has no<br />effect once the volume exists. |  | Optional <br /> |
+| `filesystemAdoption` _[FilesystemAdoption](#filesystemadoption)_ | filesystemAdoption records the immutable identity of an existing<br />directory or ZFS filesystem dataset. Delete retires only owned state<br />and preserves the original source; recovery must never recreate it. |  | Optional <br /> |
 | `resolved` _[ResolvedVolumeConfig](#resolvedvolumeconfig)_ | resolved is the effective per-volume configuration resolved at the<br />first CreateVolume attempt from the PillarStore, PillarProtocol,<br />PillarStorageClass overrides, StorageClass parameter documents and PVC<br />annotations (in that precedence order).  It is replayed on every retry<br />so the volume keeps the settings it was provisioned with even when the<br />claim or the CRDs behind the overrides no longer exist. |  | Optional <br /> |
 
 
@@ -881,7 +965,7 @@ _Appears in:_
 | `phase` _[PillarVolumeStatePhase](#pillarvolumestatephase)_ | phase is the current lifecycle phase of the volume.<br />See PillarVolumeStatePhase for the full state diagram. |  | Enum: [Provisioning CreatePartial Ready ControllerPublished NodeStagePartial NodeStaged NodePublished] <br />Optional <br /> |
 | `partialFailure` _[PartialFailureInfo](#partialfailureinfo)_ | partialFailure is populated whenever the volume is in a partial-failure<br />phase (CreatePartial, NodeStagePartial).  It records what succeeded and<br />what failed so that the recovery controller can take the minimum<br />necessary corrective action.  Cleared when the partial failure is<br />resolved. |  | Optional <br /> |
 | `backendDevicePath` _string_ | backendDevicePath is the device path returned by agent.CreateVolume<br />(e.g. "/dev/zvol/pool/pvc-abc123").  Persisted when the volume enters<br />the CreatePartial phase so that a retry of CreateVolume can skip the<br />backend-creation step and call agent.ExportVolume directly, using this<br />stored path rather than re-querying the agent.<br />Cleared when the volume reaches the Ready phase. |  | Optional <br /> |
-| `importAcquired` _boolean_ | importAcquired records that agent.ImportVolume succeeded for a<br />spec.importedFrom volume: the agent durably adopted the pre-existing<br />zvol into this lifecycle.  While it is unset the lifecycle cannot prove<br />the agent ever took ownership, so ReapAbandonedVolume and DeleteVolume<br />end the lifecycle with agent.ReleaseVolume — which retires it at the<br />agent without touching the zvol — instead of UnexportVolume and<br />DeleteVolume, and ControllerExpandVolume and ControllerPublishVolume<br />refuse it: a refused or lost-response import that was torn down,<br />resized or exposed anyway would harm a zvol this driver never owned. |  | Optional <br /> |
+| `importAcquired` _boolean_ | importAcquired records that agent.ImportVolume succeeded for an<br />importedFrom or filesystemAdoption volume: the agent durably adopted<br />the existing resource into this lifecycle. While it is unset, the lifecycle<br />cannot prove the agent ever took ownership, so ReapAbandonedVolume and DeleteVolume<br />end the lifecycle with agent.ReleaseVolume — which retires it at the<br />agent without touching the source — instead of UnexportVolume and<br />DeleteVolume, and ControllerExpandVolume and ControllerPublishVolume<br />refuse it: a refused or lost-response import that was torn down,<br />resized or exposed anyway would harm a resource this driver never owned. |  | Optional <br /> |
 | `exportInfo` _[VolumeExportInfo](#volumeexportinfo)_ | exportInfo holds the network export parameters returned by ExportVolume.<br />Populated when phase is Ready or later.  Used by DeleteVolume to<br />unmount the export after a controller restart without re-querying the<br />agent. |  | Optional <br /> |
 | `publishedNodes` _[VolumePublication](#volumepublication) array_ | publishedNodes lists every node the volume is currently published to<br />by ControllerPublishVolume.  ControllerPublishVolume rejects a publish<br />that is incompatible with an existing entry (for example a second node<br />for a SINGLE_NODE_* access mode); ControllerUnpublishVolume removes the<br />entry after the agent revoked the node's access; DeleteVolume refuses<br />to delete a volume while this list is non-empty.  Entries are also the<br />exact initiator set the storage target's ACL must contain. |  | Optional <br /> |
 | `exportSpec` _[VolumeExportSpec](#volumeexportspec)_ | exportSpec is the export configuration the controller requested at<br />CreateVolume time.  It is the durable desired state the resync<br />controller uses to re-create the export after the storage node loses<br />its target state.  Volumes created before this field existed have no<br />exportSpec and are reported via the ExportReconciled condition instead<br />of being recovered. |  | Optional <br /> |
@@ -973,7 +1057,7 @@ _Appears in:_
 | `backend` _[BackendSpec](#backendspec)_ | backend is the effective storage backend configuration: the store's<br />spec.backend with binding, StorageClass-document and PVC tunable<br />overrides applied. |  | Required <br /> |
 | `protocol` _[ProtocolSpec](#protocolspec)_ | protocol is the effective transport configuration: the protocol's<br />spec.protocol with binding, StorageClass-document and PVC tunable<br />overrides applied. |  | Required <br /> |
 | `filesystem` _[FilesystemConfig](#filesystemconfig)_ | filesystem is the effective filesystem configuration the node applies<br />when the volume is a Filesystem-mode mount. |  | Optional <br /> |
-| `localAttach` _boolean_ | localAttach is true when the volume may be attached directly on the<br />storage node, bypassing the network protocol, whenever it is published<br />to the node that hosts its PillarAgent.  Publishes to any other node<br />always use the protocol. |  | Optional <br /> |
+| `localAttach` _boolean_ | localAttach records the volume's resolved attachment mode. Default-driver<br />volumes may bypass the protocol on their PillarAgent's node; publishes<br />on other nodes use the protocol. For filesystem adoption, true means<br />local-only attachment with no network export or NFS manager dependency.<br />Single-node file volumes always record true; multi-node file volumes<br />record false and require a working NFS manager. |  | Optional <br /> |
 
 
 #### StorageClassOverrides

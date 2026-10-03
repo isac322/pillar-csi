@@ -116,47 +116,26 @@ func (n *NodeServer) NodeExpandVolume(
 	// the staging-target semantics; the resizer below handles the mount
 	// lookup and surfaces a real Internal error when the path exists but
 	// isn't a mount point.
-	fi, statErr := os.Stat(volumePath)
-	if statErr != nil {
-		if os.IsNotExist(statErr) {
+	fi, err := os.Stat(volumePath)
+	if err != nil {
+		if os.IsNotExist(err) {
 			return nil, status.Errorf(codes.NotFound,
 				"NodeExpandVolume: volume_path %q does not exist", volumePath)
 		}
 		return nil, status.Errorf(codes.Internal,
-			"NodeExpandVolume: stat %q: %v", volumePath, statErr)
+			"NodeExpandVolume: stat %q: %v", volumePath, err)
 	}
 
-	stageState, growErr := n.growStagedDevice(ctx, req.GetVolumeId())
-	if growErr != nil {
-		return nil, growErr
+	stageState, done, err := n.prepareNodeExpansion(ctx, req, fi)
+	if err != nil {
+		return nil, err
 	}
-	if stageState != nil && stageState.ProtocolType == ProtocolNFS {
-		return &csi.NodeExpandVolumeResponse{CapacityBytes: blockExpandCapacity(req)}, nil
-	}
-
-	// ── Block-mode short-circuit ─────────────────────────────────────────────
-	// Block-mode volumes have no filesystem to grow.  ControllerExpandVolume
-	// already enlarged the backing LV and the kernel's NVMe-oF initiator
-	// picks up the new namespace capacity via the controller's
-	// asynchronous-event "namespace attribute changed" notification (a
-	// local attach was reloaded and an iSCSI LUN rescanned above), so the
-	// only work remaining on the node is to acknowledge the call.  Detect
-	// Block-mode via the explicit VolumeCapability (CSI 1.0+ always carries
-	// one for online expansion) and, when the CO omits it (CSI 1.4+ optional),
-	// fall back to the stat of volume_path: NodeStageVolume Block-mode binds
-	// /dev/nvmeXnY onto a regular file (see blockStagingDeviceFile and
-	// NodePublishVolume), so a non-directory volume_path identifies a
-	// Block-mode publish target.
-	volCap := req.GetVolumeCapability()
-	if volCap != nil && volCap.GetBlock() != nil {
-		return &csi.NodeExpandVolumeResponse{CapacityBytes: blockExpandCapacity(req)}, nil
-	}
-	if volCap == nil && !fi.IsDir() {
+	if done {
 		return &csi.NodeExpandVolumeResponse{CapacityBytes: blockExpandCapacity(req)}, nil
 	}
 
 	// ── Determine filesystem type ────────────────────────────────────────────
-	fsType := expandFsType(stageState, volCap)
+	fsType := expandFsType(stageState, req.GetVolumeCapability())
 	trace.SpanFromContext(ctx).SetAttributes(telemetry.KeyFSType.String(fsType))
 
 	// ── Run filesystem resize ────────────────────────────────────────────────
@@ -176,6 +155,31 @@ func (n *NodeServer) NodeExpandVolume(
 	// the CO can update the PersistentVolume capacity field.  A zero value
 	// means "fill the available block device capacity" — the CO accepts this.
 	return &csi.NodeExpandVolumeResponse{CapacityBytes: blockExpandCapacity(req)}, nil
+}
+
+func (n *NodeServer) prepareNodeExpansion(
+	ctx context.Context, req *csi.NodeExpandVolumeRequest, fi os.FileInfo,
+) (*nodeStageState, bool, error) {
+	stageState, err := n.growStagedDevice(ctx, req.GetVolumeId())
+	if err != nil {
+		return nil, false, err
+	}
+	if stageState != nil && stageState.File != nil {
+		return nil, false, status.Errorf(
+			codes.FailedPrecondition,
+			"%s",
+			"NodeExpandVolume: adopted filesystem expansion is unsupported",
+		)
+	}
+	if stageState != nil && stageState.ProtocolType == ProtocolNFS {
+		return stageState, true, nil
+	}
+	volCap := req.GetVolumeCapability()
+	if (volCap != nil && volCap.GetBlock() != nil) ||
+		(volCap == nil && !fi.IsDir()) {
+		return stageState, true, nil
+	}
+	return stageState, false, nil
 }
 
 // growStagedDevice makes an online resize of the staged volume visible to the

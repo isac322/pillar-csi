@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/agent/backend"
 	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
@@ -54,6 +55,19 @@ type fencingMark struct {
 	// order, so a delayed request from a retired lifecycle is recognized only
 	// by membership here.  It grows only when a volume ID is reused.
 	EndedUIDs []string `json:"endedUIDs,omitempty"`
+	// Filesystem binds a canonical native resource to the recorded lifecycle.
+	Filesystem         *agentv1.FilesystemAdoption `json:"filesystem,omitempty"`
+	FilesystemVolumeID string                      `json:"filesystemVolumeID,omitempty"`
+	FilesystemCapacity int64                       `json:"filesystemCapacity,omitempty"`
+	FilesystemLayout   *backend.Layout             `json:"filesystemLayout,omitempty"`
+	LocalAttached      bool                        `json:"localAttached,omitempty"`
+	FilesystemClients  []string                    `json:"filesystemClients,omitempty"`
+	FilesystemOpen     bool                        `json:"filesystemOpen,omitempty"`
+	FilesystemExported bool                        `json:"filesystemExported,omitempty"`
+	// Claimed before creating the proxy; independent of client publication.
+	FilesystemProxyClaimed bool `json:"filesystemProxyClaimed,omitempty"`
+	// A revoke fences its protocol namespace but cannot claim a native source.
+	LegacyRevokeOnly bool `json:"legacyRevokeOnly,omitempty"`
 }
 
 // fencingFilename converts a volume ID into a filesystem-safe mark name.
@@ -138,6 +152,17 @@ func (s *Server) fenced(
 	op fenceOp,
 	mutate func() error,
 ) error {
+	return s.fencedBackend(ctx, volumeID, token, op, nil, mutate)
+}
+
+func (s *Server) fencedBackend(
+	ctx context.Context,
+	volumeID string,
+	token *agentv1.FencingToken,
+	op fenceOp,
+	b backend.VolumeBackend,
+	mutate func() error,
+) error {
 	unlock := s.lockFencing(volumeID)
 	defer unlock()
 
@@ -151,8 +176,11 @@ func (s *Server) fenced(
 		recordFenceDecision(ctx, op, adm.decision)
 		return err
 	}
-	next := adm.next
-	err = s.persistFencingMark(volumeID, next, adm.changed)
+	next, err := s.prepareFencingMark(ctx, b, volumeID, token, op, stored, exists, adm)
+	if err != nil {
+		return err
+	}
+	err = s.persistFencingMark(volumeID, next, adm.changed || next.LegacyRevokeOnly != stored.LegacyRevokeOnly)
 	if err != nil {
 		recordFenceDecision(ctx, op, telemetry.FenceMarkIOError)
 		return err
@@ -169,6 +197,33 @@ func (s *Server) fenced(
 		return s.writeFencingMark(volumeID, next)
 	}
 	return nil
+}
+
+func (s *Server) prepareFencingMark(
+	ctx context.Context,
+	b backend.VolumeBackend,
+	volumeID string,
+	token *agentv1.FencingToken,
+	op fenceOp,
+	stored fencingMark,
+	exists bool,
+	adm fenceAdmission,
+) (fencingMark, error) {
+	if op != fenceRevoke {
+		err := s.guardLegacyFilesystem(ctx, b, volumeID)
+		if err != nil {
+			return fencingMark{}, err
+		}
+	}
+	next := adm.next
+	if b != nil && b.Type() == agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET {
+		if op != fenceRevoke {
+			next.LegacyRevokeOnly = false
+		} else if !exists || stored.Ended || stored.VolumeUID != token.GetVolumeUid() {
+			next.LegacyRevokeOnly = true
+		}
+	}
+	return next, nil
 }
 
 // fencedImport is the fenced variant for ImportVolume: it validates the

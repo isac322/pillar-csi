@@ -57,16 +57,18 @@ const (
 	// periodic requeue acts as a safety net for cases where the watch event is missed.
 	requeueAfterBindingNotReady = 15 * time.Second
 
-	// CSI driver name used as the StorageClass provisioner.
-	pillarCSIProvisioner = "pillar-csi.bhyoo.com"
+	// Local file topology constrains native local-only file classes to
+	// the PillarAgent's referenced Kubernetes node without requiring NFS
+	// capability on that node.
+	localFilesNodeTopologyKey = "files.pillar-csi.bhyoo.com/node"
 
 	// Condition type constants for PillarStorageClass status.conditions.
 
 	// PoolReady: set to True when the referenced PillarStore is in Ready state.
 	conditionPoolReady = "StoreReady"
 
-	// ProtocolValid: set to True when the referenced PillarProtocol exists
-	// and its Ready condition is True.
+	// ProtocolValid: set to True when the referenced PillarProtocol is Ready,
+	// or is a valid declaration for an explicitly local-only files class.
 	conditionProtocolValid = "ProtocolValid"
 
 	// Compatible: set to True when the pool backend and protocol are
@@ -99,17 +101,21 @@ type PillarStorageClassReconciler struct {
 }
 
 type desiredStorageClass struct {
-	params               map[string]string
-	mountOptions         []string
-	reclaimPolicy        corev1.PersistentVolumeReclaimPolicy
-	volumeBindingMode    storagev1.VolumeBindingMode
-	allowVolumeExpansion *bool
+	provisioner             string
+	params                  map[string]string
+	mountOptions            []string
+	reclaimPolicy           corev1.PersistentVolumeReclaimPolicy
+	volumeBindingMode       storagev1.VolumeBindingMode
+	allowVolumeExpansion    *bool
+	allowedTopologies       []corev1.TopologySelectorTerm
+	manageAllowedTopologies bool
 }
 
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarstorageclasses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarstorageclasses/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarstorageclasses/finalizers,verbs=update
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarstores,verbs=get;list;watch
+// +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillaragents,verbs=get;list;watch
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarprotocols,verbs=get;list;watch
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
@@ -122,10 +128,10 @@ type desiredStorageClass struct {
 //
 // For PillarStorageClass the reconciler:
 //  1. Adds a finalizer on first creation (deletion protection).
-//  2. On normal operation: validates that the referenced PillarStore and
-//     PillarProtocol exist and are ready, checks backend/protocol compatibility,
-//     creates/updates the owned Kubernetes StorageClass, and updates status
-//     conditions (PoolReady, ProtocolValid, Compatible, StorageClassCreated, Ready).
+//  2. On normal operation: validates store readiness and protocol readiness
+//     (a local-only files class needs only a valid protocol declaration),
+//     checks compatibility, creates/updates the owned StorageClass, and
+//     updates status conditions.
 //  3. On deletion: blocks until no PVCs reference the generated StorageClass,
 //     then deletes the StorageClass and removes the finalizer to allow the
 //     object to be garbage-collected.
@@ -314,18 +320,50 @@ func (r *PillarStorageClassReconciler) reconcileNormal(
 		)
 	}
 
-	// Protocol exists — check its Ready condition.
+	// Native local-only files classes use a direct bind on the agent's node.
+	// They still require a Ready PillarStore and a real NodeRef, but an NFS
+	// protocol declaration is sufficient; the protocol controller may honestly
+	// remain NotReady because no NFS helper is needed for this route.
+	localTopologies, localErr := r.nativeLocalFilesTopologies(ctx, binding, pool, protocol)
+	if localErr != nil {
+		msg := localErr.Error()
+		meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
+			Type:               conditionProtocolValid,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: binding.Generation,
+			Reason:             "NativeLocalNodeUnavailable",
+			Message:            msg,
+		})
+		setBindingNotReady(binding, "NativeLocalNodeUnavailable", msg)
+		statusErr := r.Status().Update(ctx, binding)
+		if statusErr != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update PillarStorageClass status: %w", statusErr)
+		}
+		return ctrl.Result{RequeueAfter: requeueAfterBindingNotReady}, nil
+	}
+
+	// Protocol exists — check its Ready condition unless this is the explicitly
+	// selected native local-only files route.
 	protocolReadyCond := meta.FindStatusCondition(protocol.Status.Conditions, conditionReady)
 	protocolReady := protocolReadyCond != nil && protocolReadyCond.Status == metav1.ConditionTrue
-	if protocolReady {
+	if protocolReady || localTopologies != nil {
+		reason := "ProtocolValid"
+		message := fmt.Sprintf(
+			"PillarProtocol %q is valid (protocol: %s)", binding.Spec.ProtocolRef, protocol.Spec.Protocol.Kind(),
+		)
+		if localTopologies != nil {
+			reason = "NativeLocalOnly"
+			message = fmt.Sprintf(
+				"PillarProtocol %q declares NFS for native local-only files storage; runtime NFS readiness is not required",
+				binding.Spec.ProtocolRef,
+			)
+		}
 		meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
 			Type:               conditionProtocolValid,
 			Status:             metav1.ConditionTrue,
 			ObservedGeneration: binding.Generation,
-			Reason:             "ProtocolValid",
-			Message: fmt.Sprintf(
-				"PillarProtocol %q is valid (protocol: %s)", binding.Spec.ProtocolRef, protocol.Spec.Protocol.Kind(),
-			),
+			Reason:             reason,
+			Message:            message,
 		})
 	} else {
 		msg := fmt.Sprintf("PillarProtocol %q exists but is not yet Ready", binding.Spec.ProtocolRef)
@@ -355,6 +393,16 @@ func (r *PillarStorageClassReconciler) reconcileNormal(
 
 	// --- 3. Check backend/protocol compatibility (Compatible condition) ---
 	compat := evaluateCompatibility(pool, protocol)
+	if pool.Spec.Backend.Kind() == pillarcsiv1alpha1.BackendIDDirectory &&
+		binding.Spec.EffectiveCSIDriver() != pillarcsiv1alpha1.FileCSIDriver {
+		compat.OK = false
+		compat.Message = "directory backends require explicit csiDriver files.pillar-csi.bhyoo.com"
+	}
+	if binding.Spec.EffectiveCSIDriver() == pillarcsiv1alpha1.FileCSIDriver &&
+		compat.BackendCategory != pillarcsiv1alpha1.BackendCategoryFilesystem {
+		compat.OK = false
+		compat.Message = "files.pillar-csi.bhyoo.com requires a filesystem backend"
+	}
 	if compat.OK {
 		meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
 			Type:               conditionCompatible,
@@ -384,7 +432,7 @@ func (r *PillarStorageClassReconciler) reconcileNormal(
 
 	// --- 4. Create / update owned StorageClass (StorageClassCreated condition) ---
 	scName := storageClassNameFor(binding)
-	scErr := r.reconcileStorageClass(ctx, binding, protocol, scName)
+	scErr := r.reconcileStorageClass(ctx, binding, protocol, scName, localTopologies)
 	if scErr != nil {
 		log.Error(scErr, "Failed to reconcile StorageClass", "binding", binding.Name, "storageClass", scName)
 		meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
@@ -447,6 +495,75 @@ func evaluateCompatibility(
 	protocol *pillarcsiv1alpha1.PillarProtocol,
 ) pillarcsiv1alpha1.Compatibility {
 	return pillarcsiv1alpha1.Compatible(pool.Spec.Backend, protocol.Spec.Protocol)
+}
+
+// nativeLocalFilesTopologies returns the node-only topology for the explicit
+// local filesystem route.  A nil slice means the binding must use the normal
+// protocol-ready path.
+func (r *PillarStorageClassReconciler) nativeLocalFilesTopologies(
+	ctx context.Context,
+	binding *pillarcsiv1alpha1.PillarStorageClass,
+	pool *pillarcsiv1alpha1.PillarStore,
+	protocol *pillarcsiv1alpha1.PillarProtocol,
+) ([]corev1.TopologySelectorTerm, error) {
+	if !usesNativeLocalFiles(binding, pool, protocol) {
+		return nil, nil
+	}
+	nfs := protocol.Spec.Protocol.NFS
+	if nfs.EffectiveVersion() != "4.2" || nfs.EffectivePort() != 2049 {
+		return nil, fmt.Errorf("native local-only files storage requires a valid NFSv4.2 protocol declaration on port 2049")
+	}
+	switch nfs.EffectiveSquash() {
+	case pillarcsiv1alpha1.NFSSquashRoot, pillarcsiv1alpha1.NFSSquashNone, pillarcsiv1alpha1.NFSSquashAll:
+	default:
+		return nil, fmt.Errorf("native local-only files storage requires a valid NFS squash declaration")
+	}
+
+	target := &pillarcsiv1alpha1.PillarAgent{}
+	err := r.Get(ctx, types.NamespacedName{Name: pool.Spec.AgentRef}, target)
+	if err != nil {
+		return nil, fmt.Errorf("native local-only files storage requires PillarAgent %q: %w",
+			pool.Spec.AgentRef, err)
+	}
+	if target.Spec.NodeRef == nil || target.Spec.NodeRef.Name == "" {
+		return nil, fmt.Errorf(
+			"native local-only files storage requires PillarAgent %q to declare a nodeRef",
+			pool.Spec.AgentRef,
+		)
+	}
+	ready := meta.FindStatusCondition(target.Status.Conditions, conditionReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue {
+		return nil, fmt.Errorf(
+			"native local-only files storage requires PillarAgent %q to be Ready",
+			pool.Spec.AgentRef,
+		)
+	}
+	if status, _, message := evaluatePoolDiscovered(pool, target); status != metav1.ConditionTrue {
+		return nil, fmt.Errorf("native local-only files storage requires trusted backend layout: %s", message)
+	}
+	if status, _, message := evaluateBackendSupported(pool, target); status != metav1.ConditionTrue {
+		return nil, fmt.Errorf("native local-only files storage requires backend support: %s", message)
+	}
+	if !target.DeletionTimestamp.IsZero() {
+		return nil, fmt.Errorf("native local-only files storage agent %q is being deleted", target.Name)
+	}
+	return []corev1.TopologySelectorTerm{{
+		MatchLabelExpressions: []corev1.TopologySelectorLabelRequirement{{
+			Key:    localFilesNodeTopologyKey,
+			Values: []string{target.Spec.NodeRef.Name},
+		}},
+	}}, nil
+}
+
+func usesNativeLocalFiles(
+	binding *pillarcsiv1alpha1.PillarStorageClass,
+	pool *pillarcsiv1alpha1.PillarStore,
+	protocol *pillarcsiv1alpha1.PillarProtocol,
+) bool {
+	return binding.Spec.EffectiveCSIDriver() == pillarcsiv1alpha1.FileCSIDriver &&
+		binding.Spec.LocalAttach &&
+		protocol.Spec.Protocol.Kind() == pillarcsiv1alpha1.ProtocolIDNFS &&
+		pillarcsiv1alpha1.CategoryOf(pool.Spec.Backend.Kind()) == pillarcsiv1alpha1.BackendCategoryFilesystem
 }
 
 // Parameters of a generated StorageClass.  The generated class carries only
@@ -531,12 +648,13 @@ func nodeStageSecretFor(
 func (r *PillarStorageClassReconciler) desiredStorageClassOver(
 	binding *pillarcsiv1alpha1.PillarStorageClass,
 	protocol *pillarcsiv1alpha1.PillarProtocol,
+	localTopologies ...[]corev1.TopologySelectorTerm,
 ) (desiredStorageClass, error) {
 	stageSecret, ok, err := nodeStageSecretFor(protocol, r.Namespace)
 	if err != nil || !ok {
-		return desiredStorageClassFor(binding, protocol, nil), err
+		return desiredStorageClassFor(binding, protocol, nil, localTopologies...), err
 	}
-	return desiredStorageClassFor(binding, protocol, &stageSecret), nil
+	return desiredStorageClassFor(binding, protocol, &stageSecret, localTopologies...), nil
 }
 
 // storageClassMountOptions returns the mountOptions of the StorageClass
@@ -572,9 +690,10 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 	binding *pillarcsiv1alpha1.PillarStorageClass,
 	protocol *pillarcsiv1alpha1.PillarProtocol,
 	scName string,
+	localTopologies ...[]corev1.TopologySelectorTerm,
 ) error {
 	log := logf.FromContext(ctx)
-	desired, err := r.desiredStorageClassOver(binding, protocol)
+	desired, err := r.desiredStorageClassOver(binding, protocol, localTopologies...)
 	if err != nil {
 		return err
 	}
@@ -582,6 +701,9 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 	existing := &storagev1.StorageClass{}
 	getErr := r.Get(ctx, types.NamespacedName{Name: scName}, existing)
 	switch {
+	case getErr == nil && isPillarCSIDriver(existing.Provisioner) && existing.Provisioner != desired.provisioner:
+		return fmt.Errorf("StorageClass %q provisioner %q is immutable; create a new PillarStorageClass for driver %q",
+			scName, existing.Provisioner, desired.provisioner)
 	case getErr == nil && storageClassImmutableDrift(existing, desired):
 		return r.recreateStorageClass(ctx, binding, existing, desired)
 	case getErr != nil && !errors.IsNotFound(getErr):
@@ -602,26 +724,7 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 	}
 
 	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, sc, func() error {
-		// A create completing an interrupted re-create restores the fields
-		// recorded before the old StorageClass was deleted.
-		if sc.ResourceVersion == "" && pending {
-			carryOver.applyTo(sc)
-		}
-
-		// Set owner reference so that the StorageClass is garbage-collected
-		// when the PillarStorageClass is deleted (after PVC blocking is resolved).
-		setErr := controllerutil.SetControllerReference(binding, sc, r.Scheme)
-		if setErr != nil {
-			return fmt.Errorf("failed to set owner reference on StorageClass: %w", setErr)
-		}
-
-		if sc.ResourceVersion != "" && storageClassDrifted(sc, desired) {
-			r.recordEvent(binding, "StorageClassReverted",
-				"StorageClass %q drifted, reverting to PillarStorageClass spec", scName)
-		}
-
-		applyDesiredStorageClass(sc, desired)
-		return nil
+		return r.updateStorageClassFields(binding, sc, desired, carryOver, pending)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create or update StorageClass %q: %w", scName, err)
@@ -632,6 +735,33 @@ func (r *PillarStorageClassReconciler) reconcileStorageClass(
 		// The StorageClass exists again, so the record has served its purpose.
 		return r.recordCarryOver(ctx, checkpoint, nil)
 	}
+	return nil
+}
+
+func (r *PillarStorageClassReconciler) updateStorageClassFields(
+	binding *pillarcsiv1alpha1.PillarStorageClass,
+	sc *storagev1.StorageClass,
+	desired desiredStorageClass,
+	carryOver *storageClassCarryOver,
+	pending bool,
+) error {
+	// A create completing an interrupted re-create restores the fields
+	// recorded before the old StorageClass was deleted.
+	if sc.ResourceVersion == "" && pending {
+		carryOver.applyTo(sc)
+	}
+
+	// Set owner reference so that the StorageClass is garbage-collected
+	// when the PillarStorageClass is deleted (after PVC blocking is resolved).
+	err := controllerutil.SetControllerReference(binding, sc, r.Scheme)
+	if err != nil {
+		return fmt.Errorf("failed to set owner reference on StorageClass: %w", err)
+	}
+	if sc.ResourceVersion != "" && storageClassDrifted(sc, desired) {
+		r.recordEvent(binding, "StorageClassReverted",
+			"StorageClass %q drifted, reverting to PillarStorageClass spec", sc.Name)
+	}
+	applyDesiredStorageClass(sc, desired)
 	return nil
 }
 
@@ -819,6 +949,7 @@ func desiredStorageClassFor(
 	binding *pillarcsiv1alpha1.PillarStorageClass,
 	protocol *pillarcsiv1alpha1.PillarProtocol,
 	stageSecret *types.NamespacedName,
+	localTopologies ...[]corev1.TopologySelectorTerm,
 ) desiredStorageClass {
 	reclaimPolicy := corev1.PersistentVolumeReclaimDelete
 	if binding.Spec.StorageClass.ReclaimPolicy == pillarcsiv1alpha1.ReclaimPolicyRetain {
@@ -830,40 +961,57 @@ func desiredStorageClassFor(
 		volumeBindingMode = storagev1.VolumeBindingWaitForFirstConsumer
 	}
 
-	// Expansion is enabled by default; the CSI controller applies the
-	// protocol-specific expansion semantics.
+	// Expansion is enabled by default for the legacy driver; the filesystem
+	// adoption driver intentionally advertises no expansion capability.
 	allowVolumeExpansion := binding.Spec.StorageClass.AllowVolumeExpansion
-	if allowVolumeExpansion == nil {
+	if binding.Spec.EffectiveCSIDriver() == pillarcsiv1alpha1.FileCSIDriver {
+		disallow := false
+		allowVolumeExpansion = &disallow
+	} else if allowVolumeExpansion == nil {
 		defaultAllow := true
 		allowVolumeExpansion = &defaultAllow
 	}
+	allowedTopologies := []corev1.TopologySelectorTerm(nil)
+	manageAllowedTopologies := binding.Spec.EffectiveCSIDriver() == pillarcsiv1alpha1.FileCSIDriver &&
+		binding.Spec.LocalAttach && len(localTopologies) > 0 && localTopologies[0] != nil
+	if manageAllowedTopologies {
+		allowedTopologies = append([]corev1.TopologySelectorTerm(nil), localTopologies[0]...)
+	}
 	return desiredStorageClass{
-		params:               buildStorageClassParams(binding, protocol, stageSecret),
-		mountOptions:         storageClassMountOptions(binding),
-		reclaimPolicy:        reclaimPolicy,
-		volumeBindingMode:    volumeBindingMode,
-		allowVolumeExpansion: allowVolumeExpansion,
+		provisioner:             binding.Spec.EffectiveCSIDriver(),
+		params:                  buildStorageClassParams(binding, protocol, stageSecret),
+		mountOptions:            storageClassMountOptions(binding),
+		reclaimPolicy:           reclaimPolicy,
+		volumeBindingMode:       volumeBindingMode,
+		allowVolumeExpansion:    allowVolumeExpansion,
+		allowedTopologies:       allowedTopologies,
+		manageAllowedTopologies: manageAllowedTopologies,
 	}
 }
 
 // applyDesiredStorageClass writes the managed fields of desired into sc.
 func applyDesiredStorageClass(sc *storagev1.StorageClass, desired desiredStorageClass) {
-	sc.Provisioner = pillarCSIProvisioner
+	sc.Provisioner = desired.provisioner
 	sc.Parameters = desired.params
 	sc.MountOptions = desired.mountOptions
 	sc.ReclaimPolicy = &desired.reclaimPolicy
 	sc.VolumeBindingMode = &desired.volumeBindingMode
 	sc.AllowVolumeExpansion = desired.allowVolumeExpansion
+	if desired.manageAllowedTopologies {
+		sc.AllowedTopologies = desired.allowedTopologies
+	}
 }
 
 // storageClassImmutableDrift reports whether a managed field that the API
 // server refuses to update differs from desired.
 func storageClassImmutableDrift(sc *storagev1.StorageClass, desired desiredStorageClass) bool {
-	return sc.Provisioner != pillarCSIProvisioner ||
+	return sc.Provisioner != desired.provisioner ||
 		!equality.Semantic.DeepEqual(sc.Parameters, desired.params) ||
 		!equality.Semantic.DeepEqual(sc.MountOptions, desired.mountOptions) ||
 		!equality.Semantic.DeepEqual(sc.ReclaimPolicy, &desired.reclaimPolicy) ||
-		!equality.Semantic.DeepEqual(sc.VolumeBindingMode, &desired.volumeBindingMode)
+		!equality.Semantic.DeepEqual(sc.VolumeBindingMode, &desired.volumeBindingMode) ||
+		(desired.manageAllowedTopologies &&
+			!equality.Semantic.DeepEqual(sc.AllowedTopologies, desired.allowedTopologies))
 }
 
 func storageClassDrifted(sc *storagev1.StorageClass, desired desiredStorageClass) bool {

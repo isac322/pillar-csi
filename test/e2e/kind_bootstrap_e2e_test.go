@@ -234,15 +234,16 @@ var _ = SynchronizedAfterSuite(
 		ctx, cancel := context.WithTimeout(context.Background(), deleteTimeout)
 		defer cancel()
 
+		var helmTeardownErr error
 		// Sub-AC 2: uninstall the suite-level Helm release (if pre-installed by
 		// bootstrapSuiteHelm) before the Kind cluster is deleted. This keeps
 		// Helm's release registry consistent and avoids "release already installed"
-		// errors on the next run. Errors are non-fatal: the cluster deletion that
-		// follows will clean up all Kubernetes resources regardless.
+		// errors on the next run. Native fixture teardown must report loop or
+		// mount leaks even though owned cluster deletion still runs afterward.
 		if suiteHelmBootstrap != nil {
 			helmCtx, helmCancel := context.WithTimeout(context.Background(), helmTeardownTimeout)
 			defer helmCancel()
-			teardownSuiteHelm(helmCtx, suiteHelmBootstrap, suiteKindCluster, GinkgoWriter)
+			helmTeardownErr = teardownSuiteHelm(helmCtx, suiteHelmBootstrap, suiteKindCluster, GinkgoWriter)
 			suiteHelmBootstrap = nil
 		}
 
@@ -257,5 +258,6 @@ var _ = SynchronizedAfterSuite(
 		// retains a reference after suite teardown panics immediately rather
 		// than silently using stale cluster state.
 		suiteRestConfig = nil
+		Expect(helmTeardownErr).NotTo(HaveOccurred(), "Helm/native filesystem cleanup must complete before cluster disposal")
 	},
 )

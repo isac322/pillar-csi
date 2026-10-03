@@ -289,42 +289,42 @@ func (s *Server) resolveISCSILocalDevicePath(volumeID string) (string, error) {
 func (h *ISCSIAgentHandler) Reconcile(ctx context.Context, desired []ExportDesiredState) []error {
 	errs := make([]error, len(desired))
 	targets := make([]*lio.Target, len(desired))
-	for i, export := range desired {
-		targets[i], errs[i] = h.reconcileTarget(export)
+	for i := range desired {
+		targets[i], errs[i] = h.reconcileTarget(desired[i])
 		if errs[i] != nil {
-			recordReconcileItemFailed(ctx, export.VolumeID, reconcilePhasePrepare, errs[i])
+			recordReconcileItemFailed(ctx, desired[i].VolumeID, reconcilePhasePrepare, errs[i])
 		}
 	}
 
 	unlock := h.lockTargets(ctx, targets)
 	defer unlock()
 
-	for i, export := range desired {
+	for i := range desired {
 		if errs[i] != nil {
 			continue
 		}
 		target := targets[i]
-		errs[i] = h.server.fenced(ctx, export.VolumeID, export.Fence, fenceGrant, func() error {
-			return h.prepareTarget(ctx, export.VolumeID, target)
+		errs[i] = h.server.fenced(ctx, desired[i].VolumeID, desired[i].Fence, fenceGrant, func() error {
+			return h.prepareTarget(ctx, desired[i].VolumeID, target)
 		})
 		if errs[i] != nil {
-			recordReconcileItemFailed(ctx, export.VolumeID, reconcilePhasePrepare, errs[i])
+			recordReconcileItemFailed(ctx, desired[i].VolumeID, reconcilePhasePrepare, errs[i])
 		}
 	}
-	for i, export := range desired {
+	for i := range desired {
 		if errs[i] != nil {
 			continue
 		}
 		target := targets[i]
-		errs[i] = h.server.recheckFence(ctx, export.VolumeID, export.Fence, fenceGrant, func() error {
+		errs[i] = h.server.recheckFence(ctx, desired[i].VolumeID, desired[i].Fence, fenceGrant, func() error {
 			activateErr := target.Activate()
 			if activateErr != nil {
-				return fmt.Errorf("Reconcile: volume %q: %w", export.VolumeID, activateErr)
+				return fmt.Errorf("Reconcile: volume %q: %w", desired[i].VolumeID, activateErr)
 			}
 			return nil
 		})
 		if errs[i] != nil {
-			recordReconcileItemFailed(ctx, export.VolumeID, reconcilePhaseLink, errs[i])
+			recordReconcileItemFailed(ctx, desired[i].VolumeID, reconcilePhaseLink, errs[i])
 		}
 	}
 	return errs

@@ -99,22 +99,21 @@ func secretCacheOptions(namespace string) cache.Options {
 // AgentDialer is the gRPC connection manager injected into the
 // PillarAgentReconciler so that it can perform live HealthCheck calls against
 // pillar-agent instances and reflect the results in AgentConnected conditions.
-// AgentExports restores an agent's exports when it reports its export restore
-// pending; exports resyncs single volumes; reaper ends the lifecycle of
-// volumes whose provisioning was abandoned.
+// The legacy server restores an agent's complete old/files desired state in
+// one batch. Single-volume exports and abandoned-volume teardown are routed
+// to the appropriate server by the persisted filesystem adoption descriptor.
 func setupControllers(
 	mgr ctrl.Manager,
 	agentDialer agentclient.Dialer,
-	agentExports controller.AgentExportRestorer,
-	exports controller.VolumeExportReconciler,
-	reaper controller.VolumeReaper,
+	legacyServer *csi.ControllerServer,
+	fileServer *csi.ControllerServer,
 	namespace string,
 ) error {
 	err := (&controller.PillarAgentReconciler{
 		Client:  mgr.GetClient(),
 		Scheme:  mgr.GetScheme(),
 		Dialer:  agentDialer,
-		Exports: agentExports,
+		Exports: legacyServer,
 	}).SetupWithManager(mgr)
 	if err != nil {
 		return fmt.Errorf("PillarAgent controller: %w", err)
@@ -145,9 +144,11 @@ func setupControllers(
 		return fmt.Errorf("PillarStorageClass controller: %w", err)
 	}
 	err = (&controller.PillarVolumeStateReconciler{
-		Client:  mgr.GetClient(),
-		Exports: exports,
-		Reaper:  reaper,
+		Client:      mgr.GetClient(),
+		Exports:     legacyServer,
+		Reaper:      legacyServer,
+		FileExports: fileServer,
+		FileReaper:  fileServer,
 	}).SetupWithManager(mgr)
 	if err != nil {
 		return fmt.Errorf("PillarVolumeState controller: %w", err)
@@ -184,8 +185,8 @@ func setupControllers(
 // ─────────────────────────────────────────────────────────────────────────────.
 
 const (
-	// DriverName is the CSI provisioner name registered in the cluster.
-	driverName = "pillar-csi.bhyoo.com"
+	// DriverName is the unchanged default identity served by the public socket.
+	driverName = pillarcsiv1alpha1.DefaultCSIDriver
 
 	// DefaultCSIEndpoint is the well-known Unix socket path used by the
 	// Kubernetes CSI external-provisioner side-car to contact the driver.
@@ -213,9 +214,9 @@ func resolvedDefaultCSIEndpoint() string {
 // status.publicationGeneration fencing token, so the elected sidecar's calls
 // cannot interleave destructively even during a lease transition.
 type csiGRPCServer struct {
-	endpoint string
-	grpcSrv  *grpc.Server
-	ctrlSrv  *csi.ControllerServer
+	endpoint    string
+	grpcSrv     *grpc.Server
+	ctrlServers [2]*csi.ControllerServer
 	// serving flips true once the socket listener exists and the gRPC server
 	// is about to accept, and back to false when Serve returns.  It backs the
 	// IdentityServer Probe readiness gate.
@@ -245,10 +246,13 @@ func (s *csiGRPCServer) probeReady(_ context.Context) (bool, error) {
 func (s *csiGRPCServer) Start(ctx context.Context) error {
 	log := ctrl.Log.WithName("csi-grpc")
 
-	// Restore any PillarVolumeState state that survived a controller restart.
-	err := s.ctrlSrv.LoadStateFromPillarVolumeStates(ctx)
-	if err != nil {
-		return fmt.Errorf("CSI gRPC server: load PillarVolumeState state: %w", err)
+	// Restore both driver-scoped state machines, independently of which
+	// frontend this process serves. Native reconciliation handles both scopes.
+	for _, server := range s.ctrlServers {
+		loadErr := server.LoadStateFromPillarVolumeStates(ctx)
+		if loadErr != nil {
+			return fmt.Errorf("CSI gRPC server: load PillarVolumeState state: %w", loadErr)
+		}
 	}
 
 	scheme, addr, err := parseCSIEndpoint(s.endpoint)
@@ -341,17 +345,11 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	var driverNameFlag string
+	var csiEndpoint string
 
 	// mTLS flags for the controller→agent gRPC connection.
-	// When all three cert flags are provided the controller uses mutual TLS;
-	// when they are omitted it falls back to a plaintext connection and logs
-	// a warning suitable for development / pre-PKI deployments.
 	var agentTLSCert, agentTLSKey, agentTLSCA, agentTLSServerName string
-
-	// CSI gRPC endpoint.  The controller binary serves the CSI Identity and
-	// Controller services on this Unix socket so that the Kubernetes
-	// external-provisioner side-car can reach the driver.
-	var csiEndpoint string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -381,6 +379,9 @@ func main() {
 	flag.StringVar(&agentTLSServerName, "agent-tls-server-name", "",
 		"Override the TLS server name used for SAN verification when connecting to pillar-agent. "+
 			"Leave empty to derive the server name from the resolved agent address.")
+	flag.StringVar(&driverNameFlag, "driver-name", driverName,
+		"CSI driver identity served by this controller. The default preserves "+
+			"pillar-csi.bhyoo.com; use files.pillar-csi.bhyoo.com for adopted filesystems.")
 	flag.StringVar(&csiEndpoint, "csi-endpoint", resolvedDefaultCSIEndpoint(),
 		"Unix socket endpoint for the CSI gRPC server served by the controller binary "+
 			"(IdentityServer + ControllerServer). The Kubernetes external-provisioner "+
@@ -529,7 +530,7 @@ func main() {
 		}
 	}()
 
-	runErr := runManager(mgr, agentDialer, csiEndpoint)
+	runErr := runManager(mgr, agentDialer, csiEndpoint, driverNameFlag)
 	if runErr != nil {
 		setupLog.Error(runErr, "manager exited with error")
 	}
@@ -595,21 +596,54 @@ func initAgentDialer(cert, key, ca, serverName string) (*agentclient.Manager, er
 	}
 }
 
+// newScopedControllerServers keeps native reconciliation independent of the
+// selected public frontend. Both servers share the manager's Kubernetes
+// readers and agent connection manager; neither owns its shutdown.
+func newScopedControllerServers(
+	k8sClient client.Client,
+	apiReader client.Reader,
+	agentDialer agentclient.Dialer,
+	namespace, selectedDriver string,
+) (servers [2]*csi.ControllerServer, frontend *csi.ControllerServer, err error) {
+	selected := 0
+	switch selectedDriver {
+	case pillarcsiv1alpha1.DefaultCSIDriver:
+	case pillarcsiv1alpha1.FileCSIDriver:
+		selected = 1
+	default:
+		return servers, nil, fmt.Errorf("unsupported CSI driver identity %q", selectedDriver)
+	}
+	servers[0] = csi.NewControllerServerWithAgentDialer(
+		k8sClient, apiReader, pillarcsiv1alpha1.DefaultCSIDriver, agentDialer,
+	)
+	servers[1] = csi.NewControllerServerWithAgentDialer(
+		k8sClient, apiReader, pillarcsiv1alpha1.FileCSIDriver, agentDialer,
+	)
+	for _, server := range servers {
+		server.SetInstallNamespace(namespace)
+	}
+	return servers, servers[selected], nil
+}
+
 // runManager wires controllers, the CSI gRPC server, health endpoints, and
 // then starts the controller-runtime manager.  It returns the first error
 // encountered so that main can log it and allow deferred cleanup to run.
-func runManager(mgr ctrl.Manager, agentDialer agentclient.Dialer, csiEndpoint string) error {
-	// The CSI controller server is built before setupControllers so that the
-	// PillarAgent reconciler can drive the batch export restore of a restarted
-	// agent and the PillarVolumeState reconciler its per-volume export resync.
-	ctrlSrv := csi.NewControllerServerWithAgentDialer(mgr.GetClient(), mgr.GetAPIReader(), driverName, agentDialer)
+func runManager(mgr ctrl.Manager, agentDialer agentclient.Dialer, csiEndpoint, driverName string) error {
+	// Both internal driver scopes exist regardless of the selected frontend.
+	// The native controllers always retain legacy defaults and dispatch adopted
+	// filesystem records to the file server.
 	namespace := installNamespace()
 	if namespace == "" {
 		setupLog.Info("POD_NAMESPACE is unset: iSCSI CHAP authentication is unavailable")
 	}
-	ctrlSrv.SetInstallNamespace(namespace)
+	servers, frontend, err := newScopedControllerServers(
+		mgr.GetClient(), mgr.GetAPIReader(), agentDialer, namespace, driverName,
+	)
+	if err != nil {
+		return err
+	}
 
-	err := setupControllers(mgr, agentDialer, ctrlSrv, ctrlSrv, ctrlSrv, namespace)
+	err = setupControllers(mgr, agentDialer, servers[0], servers[1], namespace)
 	if err != nil {
 		return fmt.Errorf("unable to create controllers: %w", err)
 	}
@@ -633,13 +667,13 @@ func runManager(mgr ctrl.Manager, agentDialer agentclient.Dialer, csiEndpoint st
 				telemetry.UnaryServerFailureInterceptor(telemetry.LogrFailureLogger(ctrl.Log.WithName("csi"))),
 			),
 		),
-		ctrlSrv: ctrlSrv,
+		ctrlServers: servers,
 	}
 	// Probe readiness is bound to the CSI socket actually serving, not to
 	// leader election: standby replicas must answer Ready so their sidecars
 	// stay alive and join their own elections (issue #96).
 	identitySrv := csi.NewIdentityServerWithReadyFn(driverName, driverVersion, csiSrv.probeReady)
-	csi.RegisterGRPC(csiSrv.grpcSrv, identitySrv, ctrlSrv)
+	csi.RegisterGRPC(csiSrv.grpcSrv, identitySrv, frontend)
 
 	err = mgr.Add(csiSrv)
 	if err != nil {

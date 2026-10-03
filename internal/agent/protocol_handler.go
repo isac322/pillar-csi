@@ -79,7 +79,10 @@ type ExportParams struct {
 	ProtocolParams *agentv1.ExportParams
 	ACLEnabled     bool
 	// Fence is the request's fencing token.
-	Fence *agentv1.FencingToken
+	Fence              *agentv1.FencingToken
+	FilesystemAdoption *agentv1.FilesystemAdoption
+	CapacityBytes      int64
+	BackendParams      *agentv1.BackendParams
 }
 
 // ExportResult is the agent-local export result returned by protocol handlers.
@@ -105,7 +108,10 @@ type ExportDesiredState struct {
 	Fence *agentv1.FencingToken
 	// LocalAttach keeps the export fenced for a local attach on the storage
 	// node: no remote initiator may do I/O through it.
-	LocalAttach bool
+	LocalAttach        bool
+	FilesystemAdoption *agentv1.FilesystemAdoption
+	CapacityBytes      int64
+	BackendParams      *agentv1.BackendParams
 }
 
 // NVMeoFTCPAgentHandler wraps the nvmeof configfs package behind the generic
@@ -388,10 +394,10 @@ func (h *NVMeoFTCPAgentHandler) Reconcile(
 ) []error {
 	errs := make([]error, len(desired))
 	targets := make([]*nvmeof.NvmetTarget, len(desired))
-	for i, export := range desired {
-		targets[i], errs[i] = h.reconcileTarget(export)
+	for i := range desired {
+		targets[i], errs[i] = h.reconcileTarget(desired[i])
 		if errs[i] != nil {
-			recordReconcileItemFailed(ctx, export.VolumeID, reconcilePhasePrepare, errs[i])
+			recordReconcileItemFailed(ctx, desired[i].VolumeID, reconcilePhasePrepare, errs[i])
 		}
 	}
 	setPortMDTSFloors(targets)
@@ -400,19 +406,19 @@ func (h *NVMeoFTCPAgentHandler) Reconcile(
 	defer unlock()
 
 	prepared := make([]nvmeof.PreparedTarget, len(desired))
-	for i, export := range desired {
+	for i := range desired {
 		if errs[i] == nil {
-			prepared[i], errs[i] = h.prepareExport(ctx, export, targets[i])
+			prepared[i], errs[i] = h.prepareExport(ctx, desired[i], targets[i])
 			if errs[i] != nil {
-				recordReconcileItemFailed(ctx, export.VolumeID, reconcilePhasePrepare, errs[i])
+				recordReconcileItemFailed(ctx, desired[i].VolumeID, reconcilePhasePrepare, errs[i])
 			}
 		}
 	}
-	for i, export := range desired {
+	for i := range desired {
 		if errs[i] == nil {
-			errs[i] = h.server.recheckFence(ctx, export.VolumeID, export.Fence, fenceGrant, prepared[i].Link)
+			errs[i] = h.server.recheckFence(ctx, desired[i].VolumeID, desired[i].Fence, fenceGrant, prepared[i].Link)
 			if errs[i] != nil {
-				recordReconcileItemFailed(ctx, export.VolumeID, reconcilePhaseLink, errs[i])
+				recordReconcileItemFailed(ctx, desired[i].VolumeID, reconcilePhaseLink, errs[i])
 			}
 		}
 	}

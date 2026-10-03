@@ -63,7 +63,10 @@ import (
 
 // driverName is the CSI provisioner name declared in the StorageClass.
 // It must match the name served by the controller plugin.
-const driverName = "pillar-csi.bhyoo.com"
+const (
+	driverName     = "pillar-csi.bhyoo.com"
+	fileDriverName = "files.pillar-csi.bhyoo.com"
+)
 
 const defaultNodeStateDir = "/var/lib/pillar-csi/node"
 
@@ -168,6 +171,17 @@ func newFabricsConnector(hostNQN, hostID string) *fabricsConnector {
 
 func resolvedDefaultStateDir() string {
 	return runtimepaths.ResolveNodeStateDir(defaultNodeStateDir)
+}
+
+func resolvedNodeStateDir(driver, configured string) string {
+	if configured != "" {
+		return configured
+	}
+	root := resolvedDefaultStateDir()
+	if driver == fileDriverName {
+		return filepath.Join(root, "files")
+	}
+	return root
 }
 
 func nodeReadyFn(fabricsDevice, stateDir string) func(context.Context) (bool, error) {
@@ -1002,6 +1016,25 @@ func (m *mkdirMounter) MountEntryExists(target string) (bool, error) {
 // main
 // ─────────────────────────────────────────────────────────────────────────────
 
+// startNodeProtocols leaves node-wide block initiator identities and sessions
+// exclusively to the block driver. The file container has neither the durable
+// identity mounts nor the kernel interfaces required to own those sessions.
+func startNodeProtocols(
+	ctx context.Context, cfg nodeFlags,
+) (iscsiInitiator *iscsi.Initiator, protocols map[string]csisvc.ProtocolHandler) {
+	if cfg.driverName == fileDriverName {
+		handlers := make(map[string]csisvc.ProtocolHandler)
+		if csisvc.NFSClientAvailable() {
+			handlers[csisvc.ProtocolNFS] = csisvc.NewNFSHandler()
+		}
+		return nil, handlers
+	}
+	initiator, iqn := startISCSIInitiatorOrExit(ctx, cfg.iscsiNameFile, cfg.iscsiNetns)
+	publishNodeIdentity(ctx, cfg.nodeID, iqn)
+	hostNQN, hostID := resolveHostIdentityOrExit()
+	return initiator, nodeProtocolHandlers(hostNQN, hostID, initiator, iqn)
+}
+
 func nodeProtocolHandlers(
 	hostNQN, hostID string, iscsiInitiator *iscsi.Initiator, iscsiIQN string,
 ) map[string]csisvc.ProtocolHandler {
@@ -1017,91 +1050,155 @@ func nodeProtocolHandlers(
 	return handlers
 }
 
-func main() {
-	nodeID := flag.String("node-id", "",
+type nodeFlags struct {
+	nodeID             string
+	csiSocket          string
+	driverName         string
+	filesystemHostRoot string
+	stateDir           string
+	agentTLSCert       string
+	agentTLSKey        string
+	agentTLSCA         string
+	agentTLSServerName string
+	metricsAddr        string
+	iscsiNameFile      string
+	iscsiNetns         string
+	trimInterval       time.Duration
+}
+
+func parseNodeFlags() nodeFlags {
+	var cfg nodeFlags
+	flag.StringVar(&cfg.nodeID, "node-id", "",
 		"Unique identifier for this Kubernetes node (typically the Node name). Required.")
-	csiSocket := flag.String("csi-socket", "/var/lib/kubelet/plugins/pillar-csi.bhyoo.com/csi.sock",
-		"Path to the Unix domain socket on which the CSI gRPC server listens.")
-	metricsAddr := flag.String("metrics-bind-address", metricsDisabled,
+	flag.StringVar(
+		&cfg.csiSocket, "csi-socket", "/var/lib/kubelet/plugins/pillar-csi.bhyoo.com/csi.sock",
+		"Path to the Unix domain socket on which the CSI gRPC server listens.",
+	)
+	flag.StringVar(&cfg.driverName, "driver-name", driverName,
+		"CSI driver identity served by this node. The default preserves "+
+			"pillar-csi.bhyoo.com; use files.pillar-csi.bhyoo.com for adopted filesystems.")
+	flag.StringVar(&cfg.filesystemHostRoot, "filesystem-host-root", "",
+		"Host filesystem root visible inside the node container for trusted filesystem sources.")
+	flag.StringVar(&cfg.stateDir, "state-dir", "",
+		"Durable node stage-state directory. Empty defaults to /var/lib/pillar-csi/node "+
+			"for the block driver and /var/lib/pillar-csi/node/files for the file driver.")
+	flag.StringVar(&cfg.agentTLSCert, "agent-tls-cert", "",
+		"Path to the PEM client certificate for file-driver agent metadata mTLS; "+
+			"requires --agent-tls-key and --agent-tls-ca.")
+	flag.StringVar(&cfg.agentTLSKey, "agent-tls-key", "",
+		"Path to the PEM private key for the agent metadata client certificate.")
+	flag.StringVar(&cfg.agentTLSCA, "agent-tls-ca", "",
+		"Path to the PEM CA certificate verifying pillar-agent servers.")
+	flag.StringVar(&cfg.agentTLSServerName, "agent-tls-server-name", "",
+		"Override the agent TLS server name; empty derives it from the controller-selected endpoint.")
+	flag.StringVar(&cfg.metricsAddr, "metrics-bind-address", metricsDisabled,
 		"The address the plaintext Prometheus /metrics endpoint binds to, e.g. :9502. "+
 			"Leave as 0 to disable the metrics endpoint.")
-	iscsiNameFile := flag.String("iscsi-initiator-name-file", csisvc.DefaultISCSIInitiatorNameFile,
+	flag.StringVar(&cfg.iscsiNameFile, "iscsi-initiator-name-file", csisvc.DefaultISCSIInitiatorNameFile,
 		"open-iscsi style file holding this node's iSCSI initiator IQN (InitiatorName=...). "+
 			"Generated and persisted on first start when absent.")
-	iscsiNetns := flag.String("iscsi-netlink-netns", "",
+	flag.StringVar(&cfg.iscsiNetns, "iscsi-netlink-netns", "",
 		"Path to a network namespace file (e.g. /proc/1/ns/net) in which the NETLINK_ISCSI socket is "+
 			"opened. Empty uses the pod's own namespace (hostNetwork). Needed only for nested-container nodes.")
-	trimInterval := flag.Duration("trim-interval", defaultTrimInterval, trimIntervalUsage)
+	flag.DurationVar(&cfg.trimInterval, "trim-interval", defaultTrimInterval, trimIntervalUsage)
 	flag.Parse()
-	validateTrimIntervalOrExit(*trimInterval)
-
-	if *nodeID == "" {
+	validateTrimIntervalOrExit(cfg.trimInterval)
+	if cfg.nodeID == "" {
 		// Fall back to the NODE_NAME env var injected by the DaemonSet pod spec
 		// (fieldRef: spec.nodeName) so operators don't have to pass --node-id explicitly.
-		*nodeID = os.Getenv("NODE_NAME")
+		cfg.nodeID = os.Getenv("NODE_NAME")
 	}
-	if *nodeID == "" {
+	if cfg.nodeID == "" {
 		fmt.Fprintln(os.Stderr, "error: --node-id (or NODE_NAME env var) is required")
 		os.Exit(1)
 	}
+	return cfg
+}
+
+func main() {
+	cfg := parseNodeFlags()
 
 	// Determine the driver version from build metadata when available.
 	version, _ := telemetry.BuildVersion()
 
-	// ── iSCSI initiator ────────────────────────────────────────────────────
-	// The in-process initiator needs the kernel iscsi_tcp transport.  When
-	// it is absent the iSCSI handler is not registered and the IQN is not
-	// published, so iscsi volumes fail NodeStage with an explicit error.
-	// ctx lives as long as the gRPC server; canceling it after Serve
-	// returns stops the initiator's netlink reader and session-recovery
-	// supervisor.
+	// Block initiators and identity publication belong only to the block
+	// process; the file process must not touch the shared CSINode annotations.
 	ctx, cancel := context.WithCancel(context.Background())
-	iscsiInitiator, iscsiIQN := startISCSIInitiatorOrExit(ctx, *iscsiNameFile, *iscsiNetns)
-
-	// ── Publish node identity annotations to the CSINode object ──────────
-	// Read /etc/nvme/hostnqn and write it as the
-	// pillar-csi.bhyoo.com/nvmeof-host-nqn annotation (plus the iSCSI
-	// initiator IQN as pillar-csi.bhyoo.com/iscsi-initiator-iqn when the
-	// iSCSI initiator is enabled) on the CSINode named after this node.
-	// The controller plugin reads these annotations when processing
-	// ControllerPublishVolume to resolve the initiator identity without
-	// assuming node_id == NQN/IQN (RFC §5.2).
-	//
-	// Publication is best-effort with a short retry loop: the CSINode object
-	// is created by kubelet during driver registration, which may race with
-	// this startup path.  If publication fails after retries we log and
-	// continue — volume attach will return FailedPrecondition until the
-	// annotation is present, which is the expected degraded behavior.
-	publishNodeIdentity(*nodeID, iscsiIQN)
-
-	// Resolve the local host NQN now that publishNodeIdentity has read or
-	// generated /etc/nvme/hostnqn.  The fabricsConnector must thread this
-	// exact value into every nvme-fabrics connect; see the field doc on
-	// fabricsConnector.hostNQN for the kernel-vs-userland contract.
-	hostNQN, hostID := resolveHostIdentityOrExit()
+	iscsiInitiator, handlers := startNodeProtocols(ctx, cfg)
 
 	// ── Build the CSI service implementations ──────────────────────────────
-	// Build the protocol handlers. NVMe-oF is always available; iSCSI and NFS
-	// are registered only when their node-side prerequisites are present.
-	handlers := nodeProtocolHandlers(hostNQN, hostID, iscsiInitiator, iscsiIQN)
-	stateDir := resolvedDefaultStateDir()
+	stateDir := resolvedNodeStateDir(cfg.driverName, cfg.stateDir)
+	readyFn := nodeReadyFn(csisvc.NvmeFabricsDevice, stateDir)
+	if cfg.driverName == fileDriverName {
+		readyFn = func(context.Context) (bool, error) {
+			return stateDirWritable(stateDir), nil
+		}
+	}
 	identitySrv := csisvc.NewIdentityServerWithReadyFn(
-		driverName,
+		cfg.driverName,
 		version,
-		nodeReadyFn(csisvc.NvmeFabricsDevice, stateDir),
+		readyFn,
 	)
-	// The exec DeviceMapper (dmsetup) holds the backend device of a local
-	// attach on the storage node; see csisvc.DeviceMapper.
-	nodeSrv := csisvc.NewNodeServer(*nodeID, handlers, &mkdirMounter{wrapped: csisvc.NewKubeMounter()}).
-		WithDeviceMapper(csisvc.NewExecDeviceMapper())
-	restoreProtocolSessions(nodeSrv)
+	nodeSrv := csisvc.NewNodeServer(cfg.nodeID, handlers, &mkdirMounter{wrapped: csisvc.NewKubeMounter()}).
+		WithStateDir(stateDir).
+		WithDriverName(cfg.driverName).
+		WithFilesystemHostRoot(cfg.filesystemHostRoot)
+	if cfg.driverName != fileDriverName {
+		nodeSrv.WithDeviceMapper(csisvc.NewExecDeviceMapper())
+	}
+	var filesystemStatsGateway *csisvc.FilesystemStatsGateway
+	if cfg.driverName == fileDriverName {
+		var gatewayErr error
+		filesystemStatsGateway, gatewayErr = csisvc.NewFilesystemStatsGateway(
+			cfg.agentTLSCert, cfg.agentTLSKey, cfg.agentTLSCA, cfg.agentTLSServerName,
+		)
+		if gatewayErr != nil {
+			fmt.Fprintf(os.Stderr, "pillar-node: configure filesystem stats gateway: %v\n", gatewayErr)
+			cancel()
+			closeISCSIInitiator(iscsiInitiator)
+			os.Exit(1)
+		}
+		nodeSrv.WithFilesystemStatsReader(filesystemStatsGateway.Read)
+	}
+	if cfg.driverName != fileDriverName {
+		restoreProtocolSessions(nodeSrv)
+	}
 
-	lis := listenCSISocketOrExit(*csiSocket)
+	lis := listenCSISocketOrExit(cfg.csiSocket)
 
 	// ── Tracing, metrics, and the gRPC server ─────────────────────────────
-	obs := startObservability(*metricsAddr, version)
-	stopTrim := startTrimmerOrExit(ctx, nodeSrv, *trimInterval, obs.trim)
-	startTransferLimitReconciler(ctx, nodeSrv)
+	obs := startObservability(cfg.metricsAddr, version)
+	stopTrim := func() {}
+	if cfg.driverName != fileDriverName {
+		stopTrim = startTrimmerOrExit(ctx, nodeSrv, cfg.trimInterval, obs.trim, cfg.driverName)
+		startTransferLimitReconciler(ctx, nodeSrv, cfg.driverName)
+	}
+	grpcSrv := newNodeGRPCServerWithServices(identitySrv, nodeSrv)
+
+	fmt.Fprintf(os.Stderr, "pillar-node: node-id=%s version=%s socket=%s\n",
+		cfg.nodeID, version, cfg.csiSocket)
+	serveErr := grpcSrv.Serve(lis)
+	// Stop the trim loop (at most one chunk) before the iSCSI initiator it
+	// may be trimming through is closed.
+	stopTrim()
+	// os.Exit skips defers: stop the metrics endpoint and flush spans
+	// explicitly on both the clean and the error path.
+	obs.shutdown()
+	cancel()
+	closeISCSIInitiator(iscsiInitiator)
+	if filesystemStatsGateway != nil {
+		closeErr := filesystemStatsGateway.Close()
+		if closeErr != nil {
+			fmt.Fprintf(os.Stderr, "pillar-node: %v\n", closeErr)
+		}
+	}
+	if serveErr != nil {
+		fmt.Fprintf(os.Stderr, "pillar-node: serve: %v\n", serveErr)
+		os.Exit(1)
+	}
+}
+
+func newNodeGRPCServerWithServices(identitySrv *csisvc.IdentityServer, nodeSrv *csisvc.NodeServer) *grpc.Server {
 	grpcSrv := newNodeGRPCServer()
 	csi.RegisterIdentityServer(grpcSrv, identitySrv)
 	csi.RegisterNodeServer(grpcSrv, nodeSrv)
@@ -1116,22 +1213,7 @@ func main() {
 		<-sigs
 		runNodeShutdown(healthSrv, grpcSrv.GracefulStop, defaultNodeShutdownGracePeriod)
 	}()
-
-	fmt.Fprintf(os.Stderr, "pillar-node: node-id=%s version=%s socket=%s\n",
-		*nodeID, version, *csiSocket)
-	serveErr := grpcSrv.Serve(lis)
-	// Stop the trim loop (at most one chunk) before the iSCSI initiator it
-	// may be trimming through is closed.
-	stopTrim()
-	// os.Exit skips defers: stop the metrics endpoint and flush spans
-	// explicitly on both the clean and the error path.
-	obs.shutdown()
-	cancel()
-	closeISCSIInitiator(iscsiInitiator)
-	if serveErr != nil {
-		fmt.Fprintf(os.Stderr, "pillar-node: serve: %v\n", serveErr)
-		os.Exit(1)
-	}
+	return grpcSrv
 }
 
 // listenCSISocketOrExit opens the CSI Unix socket at path, exiting the
@@ -1193,6 +1275,7 @@ func validateTrimIntervalOrExit(interval time.Duration) {
 // non-zero.
 func startTrimmerOrExit(
 	ctx context.Context, nodeSrv *csisvc.NodeServer, interval time.Duration, observer csisvc.TrimObserver,
+	driverName string,
 ) (stop func()) {
 	if interval == 0 {
 		fmt.Fprintln(os.Stderr, "pillar-node: periodic filesystem trim disabled (--trim-interval=0)")
@@ -1302,7 +1385,7 @@ func restoreProtocolSessions(nodeSrv *csisvc.NodeServer) {
 // It runs until ctx is canceled; shutdown does not wait for it, since it
 // only writes sysfs attributes and holds nothing another shutdown step
 // closes.
-func startTransferLimitReconciler(ctx context.Context, nodeSrv *csisvc.NodeServer) {
+func startTransferLimitReconciler(ctx context.Context, nodeSrv *csisvc.NodeServer, driverName string) {
 	_ = nodeSrv.StartNVMeoFTransferLimitReconciler(ctx, driverName,
 		slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("component", "nvmeof-transfer-limit"))
 }
@@ -1395,7 +1478,7 @@ func resolveHostIdentityOrExit() (hostNQN, hostID string) {
 // Failures after all retries are logged but do not prevent the node plugin
 // from starting — the controller will return FailedPrecondition for attach
 // requests until the annotation is visible (RFC §5.2 degraded behavior).
-func publishNodeIdentity(nodeName, iscsiIQN string) {
+func publishNodeIdentity(ctx context.Context, nodeName, iscsiIQN string) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr,
@@ -1416,7 +1499,7 @@ func publishNodeIdentity(nodeName, iscsiIQN string) {
 	const maxRetries = 10
 	const retryInterval = 3 * time.Second
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(maxRetries)*retryInterval+5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(maxRetries)*retryInterval+5*time.Second)
 	defer cancel()
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {

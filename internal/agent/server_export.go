@@ -33,6 +33,26 @@ func (s *Server) ExportVolume(
 	req *agentv1.ExportVolumeRequest,
 ) (*agentv1.ExportVolumeResponse, error) {
 	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
+	if req.GetFilesystemAdoption() != nil {
+		if req.GetProtocolType() != agentv1.ProtocolType_PROTOCOL_TYPE_NFS {
+			return nil, status.Errorf(codes.InvalidArgument, "adopted filesystems require NFS for remote export")
+		}
+		err := s.checkExportRestoreDone("ExportVolume")
+		if err != nil {
+			return nil, err
+		}
+		params, err := exportParamsForRequest(req)
+		if err != nil {
+			return nil, err
+		}
+		result, err := s.exportFilesystem(ctx, params, false, nil)
+		if err != nil {
+			return nil, err
+		}
+		return &agentv1.ExportVolumeResponse{ExportInfo: &agentv1.ExportInfo{
+			TargetId: result.TargetID, Address: result.Address, Port: result.Port, VolumeRef: result.VolumeRef,
+		}}, nil
+	}
 	handler, err := s.handlerForProtocol(req.GetProtocolType())
 	if err != nil {
 		return nil, protocolRPCError(err)
@@ -62,11 +82,14 @@ func (s *Server) ExportVolume(
 
 func exportParamsForRequest(req *agentv1.ExportVolumeRequest) (ExportParams, error) {
 	params := ExportParams{
-		VolumeID:       req.GetVolumeId(),
-		DevicePath:     req.GetDevicePath(),
-		ProtocolParams: req.GetExportParams(),
-		ACLEnabled:     req.GetAclEnabled(),
-		Fence:          req.GetFence(),
+		VolumeID:           req.GetVolumeId(),
+		DevicePath:         req.GetDevicePath(),
+		ProtocolParams:     req.GetExportParams(),
+		ACLEnabled:         req.GetAclEnabled(),
+		Fence:              req.GetFence(),
+		FilesystemAdoption: req.GetFilesystemAdoption(),
+		CapacityBytes:      req.GetCapacityBytes(),
+		BackendParams:      req.GetBackendParams(),
 	}
 
 	switch req.GetProtocolType() {
@@ -98,6 +121,13 @@ func (s *Server) UnexportVolume(
 	req *agentv1.UnexportVolumeRequest,
 ) (*agentv1.UnexportVolumeResponse, error) {
 	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
+	if req.GetFilesystemAdoption() != nil {
+		err := s.unexportFilesystem(ctx, req.GetVolumeId(), req.GetFilesystemAdoption(), req.GetFence())
+		if err != nil {
+			return nil, err
+		}
+		return &agentv1.UnexportVolumeResponse{}, nil
+	}
 	handler, err := s.handlerForProtocol(req.GetProtocolType())
 	if err != nil {
 		return nil, protocolRPCError(err)
@@ -116,6 +146,20 @@ func (s *Server) AllowInitiator(
 	req *agentv1.AllowInitiatorRequest,
 ) (*agentv1.AllowInitiatorResponse, error) {
 	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
+	if req.GetFilesystemAdoption() != nil {
+		if req.GetProtocolType() != agentv1.ProtocolType_PROTOCOL_TYPE_NFS {
+			return nil, status.Errorf(codes.InvalidArgument, "filesystem client grants require NFS")
+		}
+		err := s.checkExportRestoreDone("AllowInitiator")
+		if err != nil {
+			return nil, err
+		}
+		err = s.changeFilesystemClient(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		return &agentv1.AllowInitiatorResponse{}, nil
+	}
 	handler, err := s.handlerForProtocol(req.GetProtocolType())
 	if err != nil {
 		return nil, protocolRPCError(err)
@@ -138,6 +182,16 @@ func (s *Server) DenyInitiator(
 	req *agentv1.DenyInitiatorRequest,
 ) (*agentv1.DenyInitiatorResponse, error) {
 	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
+	if req.GetFilesystemAdoption() != nil {
+		if req.GetProtocolType() != agentv1.ProtocolType_PROTOCOL_TYPE_NFS {
+			return nil, status.Errorf(codes.InvalidArgument, "filesystem client revocations require NFS")
+		}
+		err := s.denyFilesystemClient(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		return &agentv1.DenyInitiatorResponse{}, nil
+	}
 	handler, err := s.handlerForProtocol(req.GetProtocolType())
 	if err != nil {
 		return nil, protocolRPCError(err)
@@ -159,6 +213,13 @@ func (s *Server) SetLocalAttach(
 	req *agentv1.SetLocalAttachRequest,
 ) (*agentv1.SetLocalAttachResponse, error) {
 	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
+	if req.GetFilesystemAdoption() != nil {
+		err := s.checkExportRestoreDone("SetLocalAttach")
+		if err != nil {
+			return nil, err
+		}
+		return s.localFilesystem(ctx, req)
+	}
 	_, err := poolFromVolumeID(req.GetVolumeId())
 	if err != nil {
 		return nil, err

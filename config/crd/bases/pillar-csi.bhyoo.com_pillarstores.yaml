@@ -65,8 +65,29 @@ spec:
               backend:
                 description: |-
                   backend describes the storage backend and pool to use.  Exactly one
-                  member (zfs or lvm) must be set.
+                  member (zfs, lvm, or directory) must be set.
                 properties:
+                  directory:
+                    description: directory holds existing host-directory adoption
+                      configuration.
+                    properties:
+                      hostRoot:
+                        description: |-
+                          hostRoot is the absolute, trusted allow-root on the storage node.
+                          It must equal the directory backend's configured root on the agent.
+                        minLength: 1
+                        pattern: ^/
+                        type: string
+                      logicalPool:
+                        description: logicalPool is the routing name of this directory
+                          backend.
+                        minLength: 1
+                        pattern: ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$
+                        type: string
+                    required:
+                    - hostRoot
+                    - logicalPool
+                    type: object
                   lvm:
                     description: lvm holds LVM-specific configuration.
                     properties:
@@ -134,8 +155,9 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-validations:
-                - message: exactly one of zfs or lvm must be set
-                  rule: '(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) == 1'
+                - message: exactly one of zfs, lvm, or directory must be set
+                  rule: '(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) + (has(self.directory)
+                    ? 1 : 0) == 1'
             required:
             - agentRef
             - backend

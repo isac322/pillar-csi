@@ -96,3 +96,11 @@ func WithNFSManager(manager *nfs.Manager) ServerOption {
 func WithBackendVariants(variants map[string]map[agentv1.BackendType]backend.VolumeBackend) ServerOption {
 	return func(s *Server) { s.backendVariants = variants }
 }
+
+// WithFilesystemProxy configures the host-owned bind mount root. Host source
+// prefixes belong to the backend that opens and pins the native source.
+func WithFilesystemProxy(root string) ServerOption {
+	return func(s *Server) {
+		s.filesystemProxyRoot = root
+	}
+}
