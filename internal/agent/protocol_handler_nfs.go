@@ -37,6 +37,21 @@ func (h *NFSAgentHandler) exportSpec(params ExportParams) (nfs.Export, error) {
 	if err != nil {
 		return e, err
 	}
+	b, backendErr := h.server.backendForType(params.VolumeID, agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET)
+	if backendErr != nil {
+		return e, backendErr
+	}
+	if b.Type() == agentv1.BackendType_BACKEND_TYPE_DIRECTORY {
+		return e, status.Errorf(codes.FailedPrecondition, "directory export requires recorded filesystem adoption")
+	}
+	if b.Type() == agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET {
+		expected := b.DevicePath(params.VolumeID)
+		if expected == "" || (params.DevicePath != "" && params.DevicePath != expected) {
+			return e, status.Errorf(codes.FailedPrecondition, "legacy NFS path does not match the configured dataset volume")
+		}
+		e.Path = expected
+		return e, nil
+	}
 	e.Path, err = h.server.resolveExportDevicePath(params.VolumeID, params.DevicePath)
 	return e, err
 }
@@ -114,7 +129,7 @@ func (h *NFSAgentHandler) Export(ctx context.Context, params ExportParams) (*Exp
 	}
 	unlock := h.server.lockTarget(ctx, agentv1.ProtocolType_PROTOCOL_TYPE_NFS, params.VolumeID)
 	defer unlock()
-	err = h.server.fenced(ctx, params.VolumeID, params.Fence, fenceGrant, func() error {
+	err = h.server.fencedLegacyFilesystem(ctx, params.VolumeID, params.Fence, fenceGrant, func() error {
 		return nfsStatus("ExportVolume", params.VolumeID, h.manager.Put(ctx, e, false, true))
 	})
 	if err != nil {
@@ -131,7 +146,7 @@ func (h *NFSAgentHandler) Export(ctx context.Context, params ExportParams) (*Exp
 func (h *NFSAgentHandler) Unexport(ctx context.Context, volumeID string, fence *agentv1.FencingToken) error {
 	unlock := h.server.lockTarget(ctx, agentv1.ProtocolType_PROTOCOL_TYPE_NFS, volumeID)
 	defer unlock()
-	return h.server.fenced(ctx, volumeID, fence, fenceRevoke, func() error {
+	return h.server.fencedLegacyFilesystem(ctx, volumeID, fence, fenceRevoke, func() error {
 		return nfsStatus("UnexportVolume", volumeID, h.manager.Remove(ctx, volumeID))
 	})
 }
@@ -147,7 +162,7 @@ func (h *NFSAgentHandler) AllowInitiator(
 	}
 	unlock := h.server.lockTarget(ctx, agentv1.ProtocolType_PROTOCOL_TYPE_NFS, volumeID)
 	defer unlock()
-	return h.server.fenced(ctx, volumeID, fence, fenceGrant, func() error {
+	return h.server.fencedLegacyFilesystem(ctx, volumeID, fence, fenceGrant, func() error {
 		return nfsStatus("AllowInitiator", volumeID, h.manager.ChangeClient(ctx, volumeID, initiatorID, true))
 	})
 }
@@ -163,7 +178,7 @@ func (h *NFSAgentHandler) DenyInitiator(
 	}
 	unlock := h.server.lockTarget(ctx, agentv1.ProtocolType_PROTOCOL_TYPE_NFS, volumeID)
 	defer unlock()
-	return h.server.fenced(ctx, volumeID, fence, fenceRevoke, func() error {
+	return h.server.fencedLegacyFilesystem(ctx, volumeID, fence, fenceRevoke, func() error {
 		return nfsStatus("DenyInitiator", volumeID, h.manager.ChangeClient(ctx, volumeID, initiatorID, false))
 	})
 }
@@ -188,12 +203,12 @@ func (h *NFSAgentHandler) Reconcile(ctx context.Context, desired []ExportDesired
 			unlock()
 		}
 	}()
-	for i, d := range desired {
+	for i := range desired {
 		if errs[i] != nil {
 			continue
 		}
-		errs[i] = h.server.fenced(ctx, d.VolumeID, d.Fence, fenceGrant, func() error {
-			return nfsStatus("Reconcile", d.VolumeID, h.manager.Put(ctx, specs[i], true, true))
+		errs[i] = h.server.fencedLegacyFilesystem(ctx, desired[i].VolumeID, desired[i].Fence, fenceGrant, func() error {
+			return nfsStatus("Reconcile", desired[i].VolumeID, h.manager.Put(ctx, specs[i], true, true))
 		})
 	}
 	return errs
@@ -204,24 +219,25 @@ func (h *NFSAgentHandler) reconcileSpecs(desired []ExportDesiredState) ([]nfs.Ex
 	specs := make([]nfs.Export, len(desired))
 	ids := make([]string, 0, len(desired))
 	seen := make(map[string]int, len(desired))
-	for i, d := range desired {
-		if first, exists := seen[d.VolumeID]; exists {
+	for i := range desired {
+		if first, exists := seen[desired[i].VolumeID]; exists {
 			errs[first] = status.Error(codes.InvalidArgument, "duplicate NFS volume in reconcile batch")
 			errs[i] = errs[first]
 			continue
 		}
-		seen[d.VolumeID] = i
-		if d.LocalAttach {
+		seen[desired[i].VolumeID] = i
+		if desired[i].LocalAttach {
 			errs[i] = status.Error(codes.FailedPrecondition, "NFS does not support localAttach")
 			continue
 		}
 		specs[i], errs[i] = h.exportSpec(ExportParams{
-			VolumeID: d.VolumeID, DevicePath: d.DevicePath, BindAddress: d.BindAddress,
-			Port: d.Port, ProtocolParams: d.ProtocolParams, ACLEnabled: d.ACLEnabled, Fence: d.Fence,
+			VolumeID: desired[i].VolumeID, DevicePath: desired[i].DevicePath, BindAddress: desired[i].BindAddress,
+			Port: desired[i].Port, ProtocolParams: desired[i].ProtocolParams,
+			ACLEnabled: desired[i].ACLEnabled, Fence: desired[i].Fence,
 		})
 		if errs[i] == nil {
-			specs[i].Clients = slices.Clone(d.AllowedInitiators)
-			ids = append(ids, d.VolumeID)
+			specs[i].Clients = slices.Clone(desired[i].AllowedInitiators)
+			ids = append(ids, desired[i].VolumeID)
 		}
 	}
 	slices.Sort(ids)

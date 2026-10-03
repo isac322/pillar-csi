@@ -81,6 +81,10 @@ func (s *Server) reconcileVolumes(ctx context.Context, vols []*agentv1.VolumeDes
 	var protocolOrder []agentv1.ProtocolType
 
 	for i, vol := range vols {
+		if vol.GetFilesystemAdoption() != nil {
+			failures[i] = s.reconcileFilesystem(ctx, vol)
+			continue
+		}
 		devicePath, err := s.resolveVolumeHandlers(ctx, vol, handlers, &protocolOrder)
 		failures[i] = err
 		if failures[i] != nil {
@@ -179,13 +183,16 @@ func setReconcileSpanAttributes(ctx context.Context, complete bool, failures []e
 
 func exportDesiredState(vol *agentv1.VolumeDesiredState, export *agentv1.ExportDesiredState) ExportDesiredState {
 	state := ExportDesiredState{
-		VolumeID:          vol.GetVolumeId(),
-		DevicePath:        vol.GetDevicePath(),
-		ProtocolParams:    export.GetExportParams(),
-		AllowedInitiators: export.GetAllowedInitiators(),
-		ACLEnabled:        export.GetAclEnabled(),
-		Fence:             vol.GetFence(),
-		LocalAttach:       export.GetLocalAttach(),
+		VolumeID:           vol.GetVolumeId(),
+		DevicePath:         vol.GetDevicePath(),
+		ProtocolParams:     export.GetExportParams(),
+		AllowedInitiators:  export.GetAllowedInitiators(),
+		ACLEnabled:         export.GetAclEnabled(),
+		Fence:              vol.GetFence(),
+		LocalAttach:        export.GetLocalAttach(),
+		FilesystemAdoption: vol.GetFilesystemAdoption(),
+		CapacityBytes:      vol.GetCapacityBytes(),
+		BackendParams:      vol.GetBackendParams(),
 	}
 	if export.GetProtocolType() == agentv1.ProtocolType_PROTOCOL_TYPE_NFS {
 		nfsParams := export.GetExportParams().GetNfs()

@@ -51,6 +51,7 @@ import (
 
 	v1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/agent/backend"
 
 	"k8s.io/apimachinery/pkg/types"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -263,8 +264,23 @@ func (s *ControllerServer) volumeStateNameForID(ctx context.Context, volumeID st
 	if len(parts) != volumeIDParts {
 		return "", nil
 	}
-	agentName := parts[0]
-	agentVolID := parts[3]
+	agentName, agentVolID := parts[0], parts[3]
+	fileDriver := s.effectiveDriverName() == v1alpha1.FileCSIDriver
+	if fileDriver {
+		if s.k8sClient == nil {
+			return "", status.Errorf(
+				codes.FailedPrecondition, "file lifecycle lookup requires its durable records")
+		}
+		return s.lookupVolumeStateByID(
+			ctx, volumeID, agentName, agentVolID, true)
+	}
+	return s.lookupLegacyVolumeStateByID(ctx, volumeID, agentName, agentVolID)
+}
+
+func (s *ControllerServer) lookupLegacyVolumeStateByID(
+	ctx context.Context,
+	volumeID, agentName, agentVolID string,
+) (string, error) {
 	leaf := agentVolID
 	if _, suffix, found := strings.CutLast(agentVolID, "/"); found {
 		leaf = suffix
@@ -275,28 +291,46 @@ func (s *ControllerServer) volumeStateNameForID(ctx context.Context, volumeID st
 	if s.k8sClient == nil {
 		return leaf, nil
 	}
-	// Fast path: the PillarVolumeState name equals the leaf.  A single Get
-	// avoids a list for every non-imported volume.
 	probe, exists, err := s.readVolumeState(ctx, leaf)
 	if err != nil {
-		return "", status.Errorf(codes.Internal, "lookup PillarVolumeState %q: %v", leaf, err)
+		return "", status.Errorf(
+			codes.Internal, "lookup PillarVolumeState %q: %v", leaf, err)
 	}
 	if exists && ownsVolume(probe, volumeID, agentName, agentVolID) {
+		err = s.validateVolumeDriver(probe)
+		if err != nil {
+			return "", err
+		}
 		return leaf, nil
 	}
-	// Imported (or otherwise renamed) volume: find the owner by its IDs.
-	// The list runs on the uncached apiReader like readVolumeState: an
-	// informer-cache copy could miss a PillarVolumeState created moments
-	// ago on another controller replica and wrongly report no owner.
+	return s.lookupVolumeStateByID(
+		ctx, volumeID, agentName, agentVolID, false)
+}
+
+func (s *ControllerServer) lookupVolumeStateByID(
+	ctx context.Context,
+	volumeID, agentName, agentVolID string,
+	fileDriver bool,
+) (string, error) {
 	var list v1alpha1.PillarVolumeStateList
-	listErr := s.uncachedReader().List(ctx, &list)
-	if listErr != nil {
-		return "", status.Errorf(codes.Internal, "list PillarVolumeStates: %v", listErr)
+	err := s.uncachedReader().List(ctx, &list)
+	if err != nil {
+		return "", status.Errorf(codes.Internal, "list PillarVolumeStates: %v", err)
 	}
 	for i := range list.Items {
-		if ownsVolume(&list.Items[i], volumeID, agentName, agentVolID) {
-			return list.Items[i].Name, nil
+		item := &list.Items[i]
+		owns := item.Spec.VolumeID == volumeID
+		if !fileDriver {
+			owns = ownsVolume(item, volumeID, agentName, agentVolID)
 		}
+		if !owns {
+			continue
+		}
+		err = s.validateVolumeDriver(item)
+		if err != nil {
+			return "", err
+		}
+		return item.Name, nil
 	}
 	return "", nil // no lifecycle owns this backend volume
 }
@@ -311,15 +345,18 @@ func (s *ControllerServer) uncachedReader() ctrlclient.Reader {
 	return s.k8sClient
 }
 
-// ownsVolume reports whether pvs is the lifecycle record of the CSI volume
-// volumeID whose backend volume is agentVolID on the agent agentName.  The
-// exact spec.volumeID match also owns the volume for states written before
-// spec.agentVolumeID existed; the agentVolumeID match is scoped to the same
-// agent because backend volume IDs are only unique per storage node.
+// ownsVolume requires the immutable issued CSI handle whenever it is recorded.
+// A legacy record without a handle must match every routing component; matching
+// an agentVolumeID alone must never redirect an RPC to a different protocol or
+// backend.
 func ownsVolume(pvs *v1alpha1.PillarVolumeState, volumeID, agentName, agentVolID string) bool {
-	return pvs.Spec.VolumeID == volumeID ||
-		(pvs.Spec.AgentVolumeID != "" && pvs.Spec.AgentVolumeID == agentVolID &&
-			pvs.Spec.AgentRef == agentName)
+	if pvs.Spec.VolumeID != "" {
+		return pvs.Spec.VolumeID == volumeID
+	}
+	parts := strings.SplitN(volumeID, "/", volumeIDParts)
+	return len(parts) == volumeIDParts && pvs.Spec.AgentVolumeID != "" &&
+		pvs.Spec.AgentVolumeID == agentVolID && pvs.Spec.AgentRef == agentName &&
+		pvs.Spec.ProtocolType == parts[1] && pvs.Spec.BackendType == parts[2]
 }
 
 // mustVolumeState resolves the owning PillarVolumeState for a CSI volume ID
@@ -342,6 +379,17 @@ func (s *ControllerServer) mustVolumeState(
 	}
 	if !exists {
 		return "", nil, status.Errorf(codes.NotFound, "volume %q not found", volumeID)
+	}
+	if pvs.Spec.VolumeID != "" && pvs.Spec.VolumeID != volumeID {
+		return "", nil, status.Errorf(codes.NotFound, "volume %q not found", volumeID)
+	}
+	err = s.validateVolumeDriver(pvs)
+	if err != nil {
+		return "", nil, err
+	}
+	if pvs.Spec.FilesystemAdoption != nil && !isFilesystemVolumeID(pvs) {
+		return "", nil, status.Errorf(
+			codes.FailedPrecondition, "file lifecycle handle is invalid")
 	}
 	return pvName, pvs, nil
 }
@@ -424,6 +472,15 @@ func (s *ControllerServer) importBackend(
 				grpcSt, _ := status.FromError(callErr)
 				return "", 0, status.Errorf(grpcSt.Code(),
 					"agent ImportVolume(%q) failed: %v", req.GetVolumeId(), callErr)
+			}
+			if req.GetFilesystemAdoption() != nil {
+				incompatible := resp.GetCapacityBytes() != req.GetCapacityBytes() ||
+					resp.GetDevicePath() != backend.FilesystemMountSource(req.GetFilesystemAdoption())
+				if incompatible {
+					return "", 0, status.Errorf(
+						codes.FailedPrecondition,
+						"agent import returned incompatible filesystem capacity or source")
+				}
 			}
 			capacity = req.GetCapacityBytes()
 			if allocated := resp.GetCapacityBytes(); allocated != 0 {

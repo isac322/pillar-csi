@@ -13,6 +13,10 @@
 // structural field in a per-volume document is rejected as such, and every
 // union document must set exactly one member.  The same numeric domains,
 // enums and defaults apply at every layer.
+//
+// Directory backend documents declare logicalPool and the trusted hostRoot.
+// Both fields are structural. Directory overrides have no tunables, and the
+// agent only adopts existing quota-bounded sources; it never provisions them.
 package configdocs
 
 import (
@@ -57,8 +61,9 @@ const (
 
 // Backend union member names.
 const (
-	memberZFS = "zfs"
-	memberLVM = "lvm"
+	memberZFS       = "zfs"
+	memberLVM       = "lvm"
+	memberDirectory = "directory"
 )
 
 // Protocol union member names.
@@ -122,6 +127,13 @@ var backendMembers = map[string]memberSpec{
 			"volumeGroup":      {kind: fieldStructural, validate: nonEmptyString, required: true},
 			"thinPool":         {kind: fieldStructural, validate: stringValue},
 			"provisioningMode": {kind: fieldTunable, validate: enumValue("linear", "thin")},
+		},
+	},
+	memberDirectory: {
+		name: memberDirectory,
+		fields: map[string]fieldSpec{
+			"logicalPool": {kind: fieldStructural, validate: nonEmptyString, required: true},
+			"hostRoot":    {kind: fieldStructural, validate: nonEmptyString, required: true},
 		},
 	},
 }
@@ -208,6 +220,8 @@ func DecodeBackendOverride(source, raw string) (*pillarv1alpha1.BackendOverrides
 			return nil, err
 		}
 		out.LVM = cfg
+	case memberDirectory:
+		out.Directory = &pillarv1alpha1.DirectoryBackendOverrides{}
 	}
 	return out, nil
 }
@@ -300,6 +314,13 @@ func DecodeBackendSpec(source, raw string) (*pillarv1alpha1.BackendSpec, error) 
 			cfg.ProvisioningMode = pillarv1alpha1.LVMProvisioningModeLinear
 		}
 		out.LVM = cfg
+	case memberDirectory:
+		cfg := &pillarv1alpha1.DirectoryBackendConfig{}
+		err := unmarshalMember(source, member, body, cfg)
+		if err != nil {
+			return nil, err
+		}
+		out.Directory = cfg
 	}
 	return out, nil
 }

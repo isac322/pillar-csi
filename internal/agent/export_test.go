@@ -24,9 +24,11 @@ limitations under the License.
 package agent
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 )
 
@@ -76,4 +78,22 @@ func SetDeviceClaimer(t *testing.T, s *Server, claimer nvmeof.DeviceClaimer) {
 	orig := s.deviceClaimer
 	s.deviceClaimer = claimer
 	t.Cleanup(func() { s.deviceClaimer = orig })
+}
+
+// SetNFSUnexportTestHandler uses the existing protocol test double for a
+// server with no active exports, without requiring the kernel NFS runtime.
+func SetNFSUnexportTestHandler(t *testing.T, s *Server) {
+	t.Helper()
+	original := s.protocolHandlerResolver
+	handler := &recordingProtocolHandler{}
+	s.protocolHandlerResolver = func(protocol agentv1.ProtocolType) (AgentProtocolHandler, error) {
+		if protocol == agentv1.ProtocolType_PROTOCOL_TYPE_NFS {
+			return handler, nil
+		}
+		if original == nil {
+			return nil, fmt.Errorf("test NFS unexport fixture received protocol %s", protocol)
+		}
+		return original(protocol)
+	}
+	t.Cleanup(func() { s.protocolHandlerResolver = original })
 }

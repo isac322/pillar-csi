@@ -277,7 +277,10 @@ jobs:
           set -Eeuo pipefail
           NFS_LOG="${RUNNER_TEMP}/e2e-kind-nfs-run.log"
           set +e
-          make test-e2e-internal 2>&1 | tee "${NFS_LOG}"
+          # E71 network consumers use the Helm bootstrap build tag in
+          # addition to the suite's base e2e tag.  Keep the existing Make
+          # setup/teardown and nfs label lane; only widen compilation here.
+          make E2E_GO_FLAGS='-tags=e2e,e2e_helm ./test/e2e/ -v -timeout=20m' test-e2e-internal 2>&1 | tee "${NFS_LOG}"
           NFS_RC=${PIPESTATUS[0]}
           set -e
           if [ "${NFS_RC}" -ne 0 ]; then

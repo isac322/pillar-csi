@@ -37,7 +37,7 @@ func CategoryOf(b BackendID) BackendCategory {
 	switch b {
 	case BackendIDZFSZvol, BackendIDLVMLV:
 		return BackendCategoryBlock
-	case BackendIDZFSDataset:
+	case BackendIDZFSDataset, BackendIDDirectory:
 		return BackendCategoryFilesystem
 	default:
 		return BackendCategoryUnknown

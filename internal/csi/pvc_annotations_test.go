@@ -402,3 +402,27 @@ func TestDecodePVCAnnotations_UnknownPillarKeyRejected(t *testing.T) {
 		requireDecodeError(t, map[string]string{key: "x"}, key)
 	}
 }
+
+func TestDecodePVCAnnotations_FilesystemSelectorsRejectEmpty(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{v1alpha1.AnnotationImportDirectory, v1alpha1.AnnotationImportZFSDataset,
+		v1alpha1.AnnotationImportZvol} {
+		t.Run(key, func(t *testing.T) {
+			requireDecodeError(t, map[string]string{key: " \n\t "}, key, "empty")
+		})
+	}
+}
+
+func TestDecodePVCAnnotations_FilesystemSelectorValues(t *testing.T) {
+	t.Parallel()
+	directory := mustDecodeAnnotations(t, map[string]string{
+		v1alpha1.AnnotationImportDirectory: " /srv/imports/app "})
+	if directory.ImportDirectory != "/srv/imports/app" || directory.ImportZFSDataset != "" || directory.ImportZvol != "" {
+		t.Fatalf("directory intent changed: %+v", directory)
+	}
+	dataset := mustDecodeAnnotations(t, map[string]string{
+		v1alpha1.AnnotationImportZFSDataset: " tank/existing "})
+	if dataset.ImportZFSDataset != "tank/existing" || dataset.ImportDirectory != "" || dataset.ImportZvol != "" {
+		t.Fatalf("dataset intent changed: %+v", dataset)
+	}
+}

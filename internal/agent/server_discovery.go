@@ -104,6 +104,7 @@ func (s *Server) collectPoolInfo(ctx context.Context) []*agentv1.PoolInfo {
 				AvailableBytes: avail,
 				ParentDataset:  layout.ParentDataset,
 				ThinPool:       layout.ThinPool,
+				HostRoot:       layout.HostRoot,
 			})
 		}
 	}
@@ -121,6 +122,7 @@ func (s *Server) collectPoolInfo(ctx context.Context) []*agentv1.PoolInfo {
 				AvailableBytes: avail,
 				ParentDataset:  layout.ParentDataset,
 				ThinPool:       layout.ThinPool,
+				HostRoot:       layout.HostRoot,
 			})
 		}
 	}

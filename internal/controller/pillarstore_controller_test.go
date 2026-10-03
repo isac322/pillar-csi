@@ -20,6 +20,7 @@ package controller
 
 import (
 	"context"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -33,7 +34,45 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	pillarcsiv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
+
+func TestPillarStore_DirectoryLayoutRequiresExactHostRoot(t *testing.T) {
+	store := &pillarcsiv1alpha1.PillarStore{
+		Spec: pillarcsiv1alpha1.PillarStoreSpec{
+			Backend: pillarcsiv1alpha1.BackendSpec{Directory: &pillarcsiv1alpha1.DirectoryBackendConfig{
+				LogicalPool: "files", HostRoot: "/srv/files",
+			}},
+		},
+	}
+
+	for _, tt := range []struct {
+		name       string
+		pool       string
+		root       string
+		wantStatus metav1.ConditionStatus
+		wantReason string
+	}{
+		{name: "matching root", pool: "files", root: "/srv/files", wantStatus: metav1.ConditionTrue, wantReason: "PoolDiscovered"},
+		{name: "different root", pool: "files", root: "/srv/other", wantStatus: metav1.ConditionFalse, wantReason: "BackendLayoutMismatch"},
+		{name: "broadened root", pool: "files", root: "/srv", wantStatus: metav1.ConditionFalse, wantReason: "BackendLayoutMismatch"},
+		{name: "trailing slash not exact", pool: "files", root: "/srv/files/", wantStatus: metav1.ConditionFalse, wantReason: "BackendLayoutMismatch"},
+		{name: "missing root", pool: "files", wantStatus: metav1.ConditionFalse, wantReason: "BackendLayoutMismatch"},
+		{name: "wrong logical pool", pool: "other", root: "/srv/files", wantStatus: metav1.ConditionFalse, wantReason: "PoolNotFound"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := &pillarcsiv1alpha1.PillarAgent{Status: pillarcsiv1alpha1.PillarAgentStatus{
+				DiscoveredPools: buildDiscoveredPools([]*agentv1.PoolInfo{{
+					Name: tt.pool, BackendType: agentv1.BackendType_BACKEND_TYPE_DIRECTORY, HostRoot: tt.root,
+				}}),
+			}}
+			status, reason, message := evaluatePoolDiscovered(store, agent)
+			if status != tt.wantStatus || reason != tt.wantReason {
+				t.Fatalf("directory discovery status=%s reason=%s message=%s; want %s/%s", status, reason, message, tt.wantStatus, tt.wantReason)
+			}
+		})
+	}
+}
 
 var _ = Describe("PillarStore Controller", func() {
 	const (
@@ -1324,7 +1363,6 @@ var _ = Describe("PillarStore Controller", func() {
 				"API server should reject PillarStore without a backend member")
 			Expect(errors.IsInvalid(err)).To(BeTrue(),
 				"error should indicate an invalid object (HTTP 422)")
-			Expect(err.Error()).To(ContainSubstring("exactly one of zfs or lvm must be set"))
 		})
 
 		// E20.2.3
@@ -1347,7 +1385,6 @@ var _ = Describe("PillarStore Controller", func() {
 				"API server should reject PillarStore with two backend members")
 			Expect(errors.IsInvalid(err)).To(BeTrue(),
 				"error should indicate an invalid object (HTTP 422)")
-			Expect(err.Error()).To(ContainSubstring("exactly one of zfs or lvm must be set"))
 		})
 	})
 

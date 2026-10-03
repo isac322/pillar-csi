@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"sigs.k8s.io/yaml"
@@ -39,6 +40,7 @@ const agentConfigBackendsKey = "backends"
 //	backends:
 //	  - zfs: {volumeType: zvol, pool: hot-data, parentDataset: k8s}
 //	  - lvm: {volumeGroup: data-vg, thinPool: thin0}
+//	  - directory: {logicalPool: host-files, hostRoot: /srv/volumes}
 //
 // Each entry is decoded by configdocs.DecodeBackendSpec, the decoder shared
 // with PillarStore.spec.backend, so the keys, enums and defaults are the same.
@@ -91,7 +93,7 @@ func parseAgentConfig(source string, data []byte) ([]pillarv1alpha1.BackendSpec,
 			return nil, err
 		}
 		if spec == nil {
-			return nil, fmt.Errorf("%s: entry is empty; exactly one of lvm, zfs must be set", entrySource)
+			return nil, fmt.Errorf("%s: entry is empty; exactly one of directory, lvm, zfs must be set", entrySource)
 		}
 		err = validateAgentBackend(entrySource, *spec)
 		if err != nil {
@@ -109,35 +111,65 @@ func parseAgentConfig(source string, data []byte) ([]pillarv1alpha1.BackendSpec,
 func validateAgentBackend(source string, spec pillarv1alpha1.BackendSpec) error {
 	switch {
 	case spec.ZFS != nil:
-		if spec.ZFS.Pool == "" {
-			return fmt.Errorf("%s: zfs.pool is required", source)
-		}
-		if len(spec.ZFS.Properties) > 0 {
-			return fmt.Errorf("%s: zfs.properties are per-volume settings and are not used by the agent; "+
-				"set them on the PillarStore, PillarStorageClass overrides or the PVC backend document", source)
-		}
-		// A "." or ".." component would place volumes elsewhere (e.g.
-		// parentDataset "../k8s" creates in pool "k8s") while the reported
-		// layout claims otherwise (issue #113).
-		if spec.ZFS.ParentDataset != "" {
-			for comp := range strings.SplitSeq(spec.ZFS.ParentDataset, "/") {
-				if comp == "." || comp == ".." {
-					return fmt.Errorf("%s: zfs.parentDataset %q must be a dataset path inside pool %q "+
-						"(no %q components)", source, spec.ZFS.ParentDataset, spec.ZFS.Pool, comp)
-				}
+		return validateAgentZFS(source, *spec.ZFS)
+	case spec.LVM != nil:
+		return validateAgentLVM(source, *spec.LVM)
+	case spec.Directory != nil:
+		return validateAgentDirectory(source, *spec.Directory)
+	default:
+		return errors.New(source + ": exactly one of directory, lvm, zfs must be set")
+	}
+}
+
+func validateAgentZFS(source string, spec pillarv1alpha1.ZFSBackendConfig) error {
+	if spec.Pool == "" {
+		return fmt.Errorf("%s: zfs.pool is required", source)
+	}
+	if len(spec.Properties) > 0 {
+		return fmt.Errorf("%s: zfs.properties are per-volume settings and are not used by the agent; "+
+			"set them on the PillarStore, PillarStorageClass overrides or the PVC backend document", source)
+	}
+	if spec.ParentDataset != "" {
+		for comp := range strings.SplitSeq(spec.ParentDataset, "/") {
+			if comp == "." || comp == ".." {
+				return fmt.Errorf("%s: zfs.parentDataset %q must be a dataset path inside pool %q "+
+					"(no %q components)", source, spec.ParentDataset, spec.Pool, comp)
 			}
 		}
-	case spec.LVM != nil:
-		err := lvm.ValidateVGName(spec.LVM.VolumeGroup)
-		if err != nil {
-			return fmt.Errorf("%s: lvm.volumeGroup: %w", source, err)
-		}
-		if spec.LVM.ProvisioningMode == pillarv1alpha1.LVMProvisioningModeThin && spec.LVM.ThinPool == "" {
-			return fmt.Errorf("%s: lvm.provisioningMode %q requires lvm.thinPool", source,
-				pillarv1alpha1.LVMProvisioningModeThin)
-		}
-	default:
-		return errors.New(source + ": exactly one of lvm, zfs must be set")
 	}
 	return nil
+}
+
+func validateAgentLVM(source string, spec pillarv1alpha1.LVMBackendConfig) error {
+	err := lvm.ValidateVGName(spec.VolumeGroup)
+	if err != nil {
+		return fmt.Errorf("%s: lvm.volumeGroup: %w", source, err)
+	}
+	if spec.ProvisioningMode == pillarv1alpha1.LVMProvisioningModeThin && spec.ThinPool == "" {
+		return fmt.Errorf("%s: lvm.provisioningMode %q requires lvm.thinPool", source,
+			pillarv1alpha1.LVMProvisioningModeThin)
+	}
+	return nil
+}
+
+func validateAgentDirectory(source string, spec pillarv1alpha1.DirectoryBackendConfig) error {
+	if spec.LogicalPool == "" {
+		return fmt.Errorf("%s: directory.logicalPool is required", source)
+	}
+	for i, r := range spec.LogicalPool {
+		alphanumeric := isDirectoryPoolAlphanumeric(r)
+		if !alphanumeric && (i == 0 || r != '_' && r != '.' && r != '-') {
+			return fmt.Errorf("%s: directory.logicalPool %q must start with a letter or digit and "+
+				"contain only letters, digits, underscores, dots and hyphens", source, spec.LogicalPool)
+		}
+	}
+	if !filepath.IsAbs(spec.HostRoot) || filepath.Clean(spec.HostRoot) != spec.HostRoot ||
+		strings.ContainsRune(spec.HostRoot, '\x00') {
+		return fmt.Errorf("%s: directory.hostRoot %q must be a canonical absolute host path", source, spec.HostRoot)
+	}
+	return nil
+}
+
+func isDirectoryPoolAlphanumeric(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
 }

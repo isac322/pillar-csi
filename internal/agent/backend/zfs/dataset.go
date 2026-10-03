@@ -35,23 +35,35 @@ import (
 )
 
 const (
-	defaultDatasetMountRoot = "/var/lib/pillar-csi/agent/datasets"
-	datasetPoolSetting      = "ZFS pool"
-	datasetQuotaUnset       = "none"
-	datasetMounted          = "yes"
-	datasetFilesystem       = "filesystem"
-	datasetFSType           = "zfs"
+	defaultDatasetMountRoot        = "/var/lib/pillar-csi/agent/datasets"
+	datasetPoolSetting             = "ZFS pool"
+	datasetQuotaUnset              = "none"
+	datasetMounted                 = "yes"
+	datasetFilesystem              = "filesystem"
+	datasetFSType                  = "zfs"
+	datasetTypeProperty            = "type"
+	datasetGUIDProperty            = "guid"
+	datasetMountpointProperty      = "mountpoint"
+	datasetMountedProperty         = "mounted"
+	datasetRefquotaProperty        = "refquota"
+	datasetPropertyOff             = "off"
+	datasetMachineOutput           = "-Hp"
+	datasetNamePropertyValueOutput = "name,property,value"
+	zfsGetOperation                = "get"
+	datasetAdoptionKind            = "zfs-dataset"
 )
 
 // DatasetBackend implements backend.VolumeBackend using ZFS filesystem datasets.
 // Each volume is a mounted filesystem dataset with a managed refquota. The
 // returned resource path is the durable mountpoint, not a block device.
 type DatasetBackend struct {
-	pool          string
-	parentDataset string
-	mountRoot     string
-	exec          executor
-	mountInfoPath string
+	pool                string
+	parentDataset       string
+	mountRoot           string
+	exec                executor
+	hostRootPrefix      string
+	mountInfoPath       string
+	filesystemProxyRoot string
 }
 
 // DatasetOption customizes a DatasetBackend.
@@ -70,6 +82,23 @@ func WithDatasetMountRoot(root string) DatasetOption {
 // the exact ZFS mount. It is primarily useful for isolated component tests.
 func WithDatasetMountInfoPath(path string) DatasetOption {
 	return func(b *DatasetBackend) { b.mountInfoPath = path }
+}
+
+// WithHostRootPrefix maps host paths recorded by ZFS into the agent's mount
+// namespace. The durable adoption descriptor always retains the unprefixed
+// host path; the prefix is used only when opening or verifying that path.
+func WithHostRootPrefix(root string) DatasetOption {
+	return func(b *DatasetBackend) {
+		if root != "" {
+			b.hostRootPrefix = filepath.Clean(root)
+		}
+	}
+}
+
+// WithFilesystemProxyRoot supplies the agent-owned proxy root in its mount
+// namespace. It never changes the durable host path or the dataset layout.
+func WithFilesystemProxyRoot(root string) DatasetOption {
+	return func(b *DatasetBackend) { b.filesystemProxyRoot = root }
 }
 
 // NewDataset creates a filesystem-dataset backend for one ZFS pool and layout.
@@ -105,14 +134,16 @@ func NewDatasetWithExecFn(
 }
 
 var _ backend.VolumeBackend = (*DatasetBackend)(nil)
-var _ backend.ProvisionedBytesReporter = (*DatasetBackend)(nil)
+var _ backend.VolumeInspector = (*DatasetBackend)(nil)
+var _ backend.FilesystemImporter = (*DatasetBackend)(nil)
 
 // Type reports the filesystem-dataset backend kind.
 func (*DatasetBackend) Type() agentv1.BackendType {
 	return agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET
 }
 
-// Layout returns the configured parent dataset.
+// Layout returns the configured parent dataset. HostRoot is a directory-backend
+// layout field; ZFS host namespace mapping is an agent-only option.
 func (d *DatasetBackend) Layout() backend.Layout {
 	return backend.Layout{ParentDataset: normalizeDataset(d.parentDataset)}
 }
@@ -223,7 +254,7 @@ func (d *DatasetBackend) validateParams(volumeID string, params *agentv1.Backend
 	}
 	for key := range zfsParams.GetProperties() {
 		switch strings.ToLower(key) {
-		case "refquota", "mountpoint", "sharenfs":
+		case datasetRefquotaProperty, datasetMountpointProperty, "sharenfs":
 			return fmt.Errorf("zfs dataset backend: property %q is managed and cannot be overridden", key)
 		case "volsize", "volblocksize", "volmode", "volthreading", "sparse":
 			return fmt.Errorf("zfs dataset backend: zvol-only property %q is not supported", key)
@@ -264,9 +295,9 @@ func parseDatasetState(out []byte, dataset string) (datasetState, error) {
 
 func (s *datasetState) setProperty(property, value, dataset string) error {
 	switch property {
-	case "type":
+	case datasetTypeProperty:
 		s.typeName = value
-	case "refquota":
+	case datasetRefquotaProperty:
 		quota, err := parseDatasetQuota(value, dataset)
 		if err != nil {
 			return err
@@ -275,11 +306,11 @@ func (s *datasetState) setProperty(property, value, dataset string) error {
 		if value != datasetQuotaUnset && value != "-" {
 			s.refquota = quota
 		}
-	case "mountpoint":
+	case datasetMountpointProperty:
 		s.mountpoint = value
 	case "sharenfs":
 		s.sharenfs = value
-	case "mounted":
+	case datasetMountedProperty:
 		s.mounted = value
 	}
 	return nil
@@ -300,7 +331,7 @@ func parseDatasetQuota(value, dataset string) (int64, error) {
 }
 
 func (d *DatasetBackend) readState(ctx context.Context, dataset string) (datasetState, error) {
-	out, err := d.exec.run(ctx, datasetFSType, "get", "-Hp", "-o", "property,value",
+	out, err := d.exec.run(ctx, datasetFSType, zfsGetOperation, datasetMachineOutput, "-o", "property,value",
 		"type,refquota,mountpoint,sharenfs,mounted", dataset)
 	if err != nil {
 		if isNotExistOutput(out) {
@@ -319,7 +350,7 @@ func validateDatasetState(dataset, mountpoint string, state datasetState, reques
 	if state.mountpoint != mountpoint {
 		return fmt.Errorf("zfs dataset %q has mountpoint %q, want %q", dataset, state.mountpoint, mountpoint)
 	}
-	if state.sharenfs != "off" {
+	if state.sharenfs != datasetPropertyOff {
 		return fmt.Errorf("zfs dataset %q has sharenfs=%q, want off", dataset, state.sharenfs)
 	}
 	if state.refquota <= 0 {
@@ -721,7 +752,7 @@ func (d *DatasetBackend) Capacity(ctx context.Context) (totalBytes, availableByt
 		return 0, 0, fmt.Errorf("zfs dataset: invalid configured pool/layout")
 	}
 	ancestors := datasetAncestors(root)
-	args := append([]string{"get", "-Hp", "-o", "name,property,value",
+	args := append([]string{zfsGetOperation, datasetMachineOutput, "-o", datasetNamePropertyValueOutput,
 		"available,used,usedbyrefreservation,refquota,quota,reservation"}, ancestors...)
 	out, err := d.exec.run(ctx, datasetFSType, args...)
 	if err != nil {
@@ -755,7 +786,8 @@ func (d *DatasetBackend) ListVolumes(ctx context.Context) ([]*agentv1.VolumeInfo
 	if !validDatasetPath(d.pool, false) || !validDatasetPath(d.parentDataset, true) {
 		return nil, fmt.Errorf("zfs dataset: invalid configured pool/layout")
 	}
-	out, err := d.exec.run(ctx, datasetFSType, "list", "-Hp", "-t", datasetFilesystem, "-o", "name,refquota", "-r", root)
+	out, err := d.exec.run(ctx, datasetFSType, "list", datasetMachineOutput,
+		"-t", datasetFilesystem, "-o", "name,refquota", "-r", root)
 	if err != nil {
 		if isNotExistOutput(out) {
 			return []*agentv1.VolumeInfo{}, nil

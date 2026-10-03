@@ -18,6 +18,8 @@ import (
 // Faults represent a kernel/etab mutation whose acknowledgement was lost.
 type memoryRuntime struct {
 	rows         []entry
+	startRows    []entry
+	listError    error
 	alive        bool
 	failGrant    bool
 	loseReadOnly bool
@@ -32,12 +34,16 @@ func (r *memoryRuntime) validateExport(e Export) error { return r.invalid[e.Volu
 
 func (*memoryRuntime) identity() (string, error) { return "boot/netns", nil }
 func (r *memoryRuntime) start(_ context.Context, s *diskState, save func() error, failed func(error)) error {
+	r.startRows = slices.Clone(r.rows)
 	r.alive = true
 	r.failure = failed
 	s.Identity = "boot/netns"
 	return save()
 }
 func (r *memoryRuntime) list(ctx context.Context) ([]entry, error) {
+	if r.listError != nil {
+		return nil, r.listError
+	}
 	err := ctx.Err()
 	if err != nil {
 		return nil, err
@@ -584,5 +590,135 @@ func TestConvergenceTimeoutFailurePreservesForeignExports(t *testing.T) {
 	}
 	if r.alive || !reflect.DeepEqual(r.rows, []entry{foreign}) || m.Health() == nil {
 		t.Fatalf("runtime timeout left partial owned state or changed foreign admissions: %#v", r.rows)
+	}
+}
+
+func TestAdoptedActivationGuardIsolatesUnsafeRecovery(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	r := &memoryRuntime{}
+	m := testManager(t, r, stateDir)
+	m.config.BeforeActivate = func(context.Context, Export) error { return nil }
+	good := testExport(t, m)
+	good.Clients = []string{"192.0.2.20"}
+	bad := testExport(t, m)
+	bad.VolumeID = "pool/adopted"
+	bad.Clients = []string{"192.0.2.21"}
+	bad.SourceKey = "filesystem/native-key"
+	bad.FenceUID = "uid-1"
+	for _, e := range []Export{good, bad} {
+		if err := m.Put(t.Context(), e, true, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := releaseLock(m.lock); err != nil {
+		t.Fatal(err)
+	}
+	m.lock = nil
+	m.closed = true
+
+	restarted := testManager(t, r, stateDir)
+	rejectBad := true
+	var guarded []string
+	restarted.config.BeforeActivate = func(_ context.Context, e Export) error {
+		guarded = append(guarded, e.VolumeID)
+		if rejectBad && e.VolumeID == bad.VolumeID {
+			return errors.New("native identity or quota drift")
+		}
+		return nil
+	}
+	if err := restarted.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(guarded, bad.VolumeID) {
+		t.Fatal("startup did not validate persisted adopted export")
+	}
+	for _, row := range r.startRows {
+		if row.Client == bad.Clients[0] {
+			t.Fatal("unsafe adopted export remained admitted when runtime started")
+		}
+	}
+	assertOnlyGoodDataset(t, r, good, bad)
+	if err := restarted.Health(); err == nil || !strings.Contains(err.Error(), bad.VolumeID) {
+		t.Fatalf("unsafe adopted export was not surfaced by health: %v", err)
+	}
+	withoutHints := bad
+	withoutHints.SourceKey = ""
+	withoutHints.FenceUID = ""
+	if err := restarted.Put(t.Context(), withoutHints, true, true); err == nil {
+		t.Fatal("reconcile erased adopted ownership hints")
+	}
+
+	rejectBad = false
+	if err := restarted.Put(t.Context(), bad, true, true); err != nil {
+		t.Fatalf("healthy adopted export was not readmitted: %v", err)
+	}
+	if restarted.Health() != nil || !reflect.DeepEqual(admitted(r), []string{"192.0.2.20", "192.0.2.21"}) {
+		t.Fatal("healthy adopted export did not recover")
+	}
+}
+
+func TestAdoptedActivationGuardCannotBeBypassed(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	r := &memoryRuntime{}
+	m := testManager(t, r, stateDir)
+	m.config.BeforeActivate = func(context.Context, Export) error { return nil }
+	e := testExport(t, m)
+	e.Clients = []string{"192.0.2.20"}
+	e.SourceKey = "filesystem/native-key"
+	e.FenceUID = "uid-1"
+	if err := m.Put(t.Context(), e, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := releaseLock(m.lock); err != nil {
+		t.Fatal(err)
+	}
+	m.lock = nil
+	m.closed = true
+
+	restarted := testManager(t, r, stateDir)
+	if err := restarted.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(admitted(r)) != 0 {
+		t.Fatal("adopted export resumed without an activation guard")
+	}
+	if err := restarted.Health(); err == nil || !strings.Contains(err.Error(), e.VolumeID) {
+		t.Fatalf("missing activation guard was not surfaced: %v", err)
+	}
+}
+
+func TestAdoptedRemovalCrashCannotResumeAdmission(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	r := &memoryRuntime{}
+	m := testManager(t, r, stateDir)
+	m.config.BeforeActivate = func(context.Context, Export) error { return nil }
+	e := testExport(t, m)
+	e.Clients = []string{"192.0.2.20"}
+	e.SourceKey = "filesystem/native-key"
+	e.FenceUID = "uid-1"
+	if err := m.Put(t.Context(), e, true, true); err != nil {
+		t.Fatal(err)
+	}
+
+	r.listError = errors.New("crash after durable removal")
+	if err := m.Remove(t.Context(), e.VolumeID); err == nil {
+		t.Fatal("removal failure was hidden")
+	}
+	if err := releaseLock(m.lock); err != nil {
+		t.Fatal(err)
+	}
+	m.lock = nil
+	m.closed = true
+	r.listError = nil
+
+	restarted := testManager(t, r, stateDir)
+	if err := restarted.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.startRows) != 0 || len(r.rows) != 0 {
+		t.Fatalf("removed adopted export resumed before convergence: start=%#v rows=%#v", r.startRows, r.rows)
 	}
 }

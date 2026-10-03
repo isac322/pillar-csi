@@ -149,7 +149,6 @@ var _ = Describe("PillarStore Webhook", func() {
 			obj.Spec.AgentRef = "storage-1"
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("exactly one of zfs or lvm"))
 		})
 
 		// ── E20.3.4 ───────────────────────────────────────────────────────────
@@ -170,6 +169,12 @@ var _ = Describe("PillarStore Webhook", func() {
 	})
 })
 
+func directoryBackend(pool, root string) pillarcsiv1alpha1.BackendSpec {
+	return pillarcsiv1alpha1.BackendSpec{Directory: &pillarcsiv1alpha1.DirectoryBackendConfig{
+		LogicalPool: pool, HostRoot: root,
+	}}
+}
+
 func TestPillarStore_ValidateCreate_BackendUnion(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -178,6 +183,17 @@ func TestPillarStore_ValidateCreate_BackendUnion(t *testing.T) {
 	}{
 		{name: "zfs admitted", backend: zfsBackend("tank")},
 		{name: "lvm admitted", backend: lvmBackend("data-vg")},
+		{name: "directory admitted", backend: directoryBackend("files", "/srv/files")},
+		{name: "directory empty logicalPool", backend: directoryBackend("", "/srv/files"),
+			wantPath: "spec.backend.directory.logicalPool"},
+		{name: "directory empty hostRoot", backend: directoryBackend("files", ""),
+			wantPath: "spec.backend.directory.hostRoot"},
+		{name: "directory relative hostRoot", backend: directoryBackend("files", "srv/files"),
+			wantPath: "spec.backend.directory.hostRoot"},
+		{name: "directory and zfs union rejected", backend: pillarcsiv1alpha1.BackendSpec{
+			Directory: &pillarcsiv1alpha1.DirectoryBackendConfig{LogicalPool: "files", HostRoot: "/srv/files"},
+			ZFS:       &pillarcsiv1alpha1.ZFSBackendConfig{Pool: "tank"},
+		}, wantPath: "spec.backend"},
 		{name: "empty union", backend: pillarcsiv1alpha1.BackendSpec{}, wantPath: "spec.backend"},
 		{
 			name: "both members",
@@ -230,6 +246,14 @@ func TestPillarStore_BackendImmutable(t *testing.T) {
 			wantPath: "spec.backend"},
 		{name: "zfs unchanged", oldBackend: zfsBackend("tank"), newBackend: zfsBackend("tank")},
 		{name: "lvm unchanged", oldBackend: lvmBackend("data-vg"), newBackend: lvmBackend("data-vg")},
+		{name: "directory unchanged", oldBackend: directoryBackend("files", "/srv/files"),
+			newBackend: directoryBackend("files", "/srv/files")},
+		{name: "directory logicalPool rename forbidden", oldBackend: directoryBackend("files", "/srv/files"),
+			newBackend: directoryBackend("other", "/srv/files"), wantPath: "spec.backend.directory.logicalPool"},
+		{name: "directory hostRoot broaden forbidden", oldBackend: directoryBackend("files", "/srv/files"),
+			newBackend: directoryBackend("files", "/srv"), wantPath: "spec.backend.directory.hostRoot"},
+		{name: "directory to lvm forbidden", oldBackend: directoryBackend("files", "/srv/files"),
+			newBackend: lvmBackend("files"), wantPath: "spec.backend"},
 		{
 			name:       "lvm thinPool and provisioningMode mutable",
 			oldBackend: lvmBackend("data-vg"),

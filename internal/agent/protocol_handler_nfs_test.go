@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/agent/backend"
 	"github.com/isac322/pillar-csi/internal/agent/nfs"
 )
 
@@ -147,5 +148,35 @@ func TestNFSReconcileReportsEachVolumeFailureIndependently(t *testing.T) {
 	}
 	if err := srv.fenced(t.Context(), fencingTestVolume, token("owner", 9), fenceGrant, nil); err != nil {
 		t.Fatalf("peer failure changed the surviving volume fence: %v", err)
+	}
+}
+
+func TestLegacyNFSRejectsBorrowedFileProxyBeforeFencing(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	expected := filepath.Join(root, "pool", "legacy")
+	b := &proxyTestBackend{
+		backendType: agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET,
+		source:      expected, present: true,
+	}
+	s := NewServer(map[string]backend.VolumeBackend{"pool": b}, "", WithDrainStateDir(t.TempDir()))
+	manager, err := nfs.NewManager(nfs.Config{StateDir: t.TempDir(), BindAddress: "192.0.2.10", ExportRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewNFSAgentHandler(s, manager)
+	params := ExportParams{
+		VolumeID: "pool/legacy", DevicePath: filepath.Join(root, "filesystem", "borrowed-native-resource"),
+		ProtocolParams: nfsTestParams(), Fence: token("legacy-owner", 8),
+	}
+	if _, err := h.Export(t.Context(), params); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("legacy routing ID exposed another filesystem proxy: %v", err)
+	}
+	if _, exists, err := s.readFencingMark(params.VolumeID); err != nil || exists {
+		t.Fatalf("borrowed path left a phantom legacy owner: exists=%t, err=%v", exists, err)
+	}
+	params.DevicePath = expected
+	if _, err := h.exportSpec(params); err != nil {
+		t.Fatalf("configured legacy dataset path rejected before normal NFS validation: %v", err)
 	}
 }

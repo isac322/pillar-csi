@@ -19,11 +19,16 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	pillarcsiv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 )
@@ -52,6 +57,12 @@ func TestVolumeRefFromPV(t *testing.T) {
 			wantOK: true,
 		},
 		{
+			name:   "pooled filesystem-adoption volume",
+			pv:     pvWithHandle(pillarcsiv1alpha1.FileCSIDriver, "node-a/nfs/directory/files/pvc-1"),
+			want:   volumeRef{agent: "node-a", protocol: "nfs", backend: "directory", pool: "files"},
+			wantOK: true,
+		},
+		{
 			name:   "volume without a pool segment",
 			pv:     pvWithHandle(pillarCSIProvisioner, "node-a/nvmeof-tcp/lvm-lv/pvc-1"),
 			want:   volumeRef{agent: "node-a", protocol: "nvmeof-tcp", backend: "lvm-lv"},
@@ -75,6 +86,54 @@ func TestVolumeRefFromPV(t *testing.T) {
 			got, ok := volumeRefFromPV(tc.pv)
 			if ok != tc.wantOK || got != tc.want {
 				t.Errorf("volumeRefFromPV() = %+v, %v; want %+v, %v", got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestDeletionGuards_BothPillarDriverIdentities(t *testing.T) {
+	for _, driver := range []string{pillarcsiv1alpha1.DefaultCSIDriver, pillarcsiv1alpha1.FileCSIDriver} {
+		t.Run(driver, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := runtime.NewScheme()
+			if err := clientgoscheme.AddToScheme(scheme); err != nil {
+				t.Fatal(err)
+			}
+			if err := pillarcsiv1alpha1.AddToScheme(scheme); err != nil {
+				t.Fatal(err)
+			}
+			target := &pillarcsiv1alpha1.PillarAgent{
+				ObjectMeta: metav1.ObjectMeta{Name: "node-a", Finalizers: []string{pillarAgentFinalizer}},
+			}
+			pv := pvWithHandle(driver, "node-a/nfs/directory/files/adopted")
+			pv.Name = "adopted"
+			c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(target).WithObjects(target, pv).Build()
+			r := &PillarAgentReconciler{Client: c, Scheme: scheme}
+			result, err := r.reconcileDelete(ctx, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.RequeueAfter != requeueAfterTargetDeletionBlock {
+				t.Fatalf("PV of driver %q did not block agent deletion: %+v", driver, result)
+			}
+			stored := &pillarcsiv1alpha1.PillarAgent{}
+			if err := c.Get(ctx, types.NamespacedName{Name: target.Name}, stored); err != nil {
+				t.Fatal(err)
+			}
+			if len(stored.Finalizers) != 1 || stored.Finalizers[0] != pillarAgentFinalizer {
+				t.Fatal("agent finalizer was removed while its PersistentVolume remained")
+			}
+			if err := c.Delete(ctx, pv); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.reconcileDelete(ctx, stored); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(ctx, types.NamespacedName{Name: target.Name}, stored); err != nil {
+				t.Fatal(err)
+			}
+			if len(stored.Finalizers) != 0 {
+				t.Fatal("agent finalizer remained after its last volume was deleted")
 			}
 		})
 	}

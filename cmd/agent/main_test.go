@@ -26,17 +26,24 @@ limitations under the License.
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	pillarv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	"github.com/isac322/pillar-csi/internal/agent"
 	"github.com/isac322/pillar-csi/internal/agent/backend"
 	"github.com/isac322/pillar-csi/internal/agent/backend/lvm"
 	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
+	"github.com/isac322/pillar-csi/internal/configdocs"
 )
 
 const testConfigSource = "/etc/pillar-agent/config.yaml"
@@ -499,5 +506,216 @@ func TestLoadAgentConfig_File(t *testing.T) {
 	missing := filepath.Join(dir, "absent.yaml")
 	if _, err := loadAgentConfig(missing); err == nil || !strings.Contains(err.Error(), missing) {
 		t.Errorf("loadAgentConfig(missing) err = %v; want error naming %s", err, missing)
+	}
+}
+
+func TestDirectoryStartupPreservesSourceAndAllowsLocalOnly(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("directory startup uses Linux filesystem syscalls")
+	}
+	assertDirectoryStartupPreservesSource(t)
+}
+
+func assertDirectoryStartupPreservesSource(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	marker := filepath.Join(root, "existing-data")
+	if writeErr := os.WriteFile(marker, []byte("preserve me"), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	originalInfo, err := os.Stat(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	doc := fmt.Sprintf(
+		"backends:\n  - directory: {logicalPool: host-files, hostRoot: %q}\n",
+		root,
+	)
+	if writeErr := os.WriteFile(configPath, []byte(doc), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	configured, err := configureAgent(configPath, t.TempDir(), "", "", t.TempDir())
+	if err != nil {
+		t.Fatalf("configure directory local-only: %v", err)
+	}
+	if configured.nfsManager != nil {
+		t.Fatal("local-only directory startup unexpectedly enabled NFS")
+	}
+	b := configured.volumeBackends["host-files"]
+	if b == nil || b.Type() != agentv1.BackendType_BACKEND_TYPE_DIRECTORY {
+		t.Fatalf("directory routing backend = %T", b)
+	}
+	if got := b.Layout().HostRoot; got != root {
+		t.Fatalf("configured directory host root = %q, want %q", got, root)
+	}
+	_, _, createErr := b.Create(context.Background(), "host-files/new-volume", 1024, nil)
+	if createErr == nil {
+		t.Fatal("directory backend allowed provisioning")
+	}
+	assertDirectorySourceUnchanged(t, root, marker, originalInfo)
+}
+
+func assertDirectorySourceUnchanged(t *testing.T, root, marker string, originalInfo os.FileInfo) {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "existing-data" {
+		t.Fatalf("directory source changed after rejected provisioning: entries=%v err=%v", entries, err)
+	}
+	// marker is created in the test-owned temporary directory above.
+	data, err := os.ReadFile(marker) //nolint:gosec // test-owned temporary path
+	if err != nil || string(data) != "preserve me" {
+		t.Fatalf("original data changed: data=%q err=%v", data, err)
+	}
+	info, err := os.Stat(marker)
+	if err != nil || info.Mode().Perm() != originalInfo.Mode().Perm() {
+		t.Fatalf("original permissions changed: info=%v err=%v", info, err)
+	}
+}
+
+func TestDirectoryConfigRejectsUnsafePlacementAndOverrides(t *testing.T) {
+	t.Parallel()
+	for _, doc := range []string{
+		"backends:\n  - directory: {logicalPool: host-files}\n",
+		"backends:\n  - directory: {hostRoot: /srv/volumes}\n",
+		"backends:\n  - directory: {logicalPool: ../host-files, hostRoot: /srv/volumes}\n",
+		"backends:\n  - directory: {logicalPool: host-files, hostRoot: relative/path}\n",
+		"backends:\n  - directory: {logicalPool: host-files, hostRoot: /srv/../volumes}\n",
+		"backends:\n  - directory: {logicalPool: host-files, hostRoot: /srv/volumes, quota: 1024}\n",
+	} {
+		if _, err := parseAgentConfig(testConfigSource, []byte(doc)); err == nil {
+			t.Errorf("unsafe or unknown directory config accepted: %s", doc)
+		}
+	}
+	for _, doc := range []string{
+		"directory: {logicalPool: other}",
+		"directory: {hostRoot: /outside}",
+		"directory: {quota: 1024}",
+	} {
+		if _, err := configdocs.DecodeBackendOverride("override", doc); err == nil {
+			t.Errorf("directory structural or unknown override accepted: %s", doc)
+		}
+	}
+	override, err := configdocs.DecodeBackendOverride("override", "directory: {}")
+	if err != nil || override == nil || override.Directory == nil {
+		t.Fatalf("empty directory override = %+v, %v", override, err)
+	}
+}
+
+func TestDirectoryLogicalPoolCannotShadowAnotherBackend(t *testing.T) {
+	t.Parallel()
+	for _, doc := range []string{
+		"backends:\n  - directory: {logicalPool: shared, hostRoot: /srv/a}\n" +
+			"  - directory: {logicalPool: shared, hostRoot: /srv/b}\n",
+		"backends:\n  - directory: {logicalPool: shared, hostRoot: /srv/a}\n" +
+			"  - zfs: {pool: shared}\n",
+		"backends:\n  - zfs: {pool: shared}\n" +
+			"  - directory: {logicalPool: shared, hostRoot: /srv/a}\n",
+		"backends:\n  - lvm: {volumeGroup: shared}\n" +
+			"  - directory: {logicalPool: shared, hostRoot: /srv/a}\n",
+	} {
+		registry, err := buildVolumeBackends(mustParse(t, doc), t.TempDir())
+		if err == nil || registry != nil {
+			t.Errorf("ambiguous logical pool accepted: registry=%v err=%v", registry, err)
+		}
+	}
+}
+
+func TestExplicitNFSConfigurationFailureIsFatal(t *testing.T) {
+	t.Parallel()
+	for _, spec := range []pillarv1alpha1.BackendSpec{
+		{Directory: &pillarv1alpha1.DirectoryBackendConfig{LogicalPool: "host-files", HostRoot: "/srv/volumes"}},
+		{ZFS: &pillarv1alpha1.ZFSBackendConfig{Pool: "tank", VolumeType: pillarv1alpha1.ZFSVolumeTypeDataset}},
+	} {
+		srv := agent.NewServer(nil, t.TempDir())
+		manager, err := startNFSManager(
+			[]pillarv1alpha1.BackendSpec{spec}, "not-a-numeric-address", t.TempDir(), srv,
+		)
+		if err == nil || manager != nil {
+			if manager != nil {
+				closeNFSManager(manager)
+			}
+			t.Fatalf("explicit invalid NFS address silently disabled NFS: manager=%v err=%v",
+				manager, err)
+		}
+	}
+}
+
+func TestDirectoryDiscoveryKeepsHostLayoutWithContainerPrefix(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("directory capacity uses Linux filesystem syscalls")
+	}
+	hostRoot := filepath.Join(t.TempDir(), "host-source")
+	prefix := t.TempDir()
+	actualRoot := filepath.Join(prefix, strings.TrimPrefix(hostRoot, "/"))
+	if err := os.MkdirAll(actualRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	doc := fmt.Sprintf("backends:\n  - directory: {logicalPool: host-files, hostRoot: %q}\n", hostRoot)
+	if err := os.WriteFile(configPath, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configured, err := configureAgent(configPath, t.TempDir(), "", prefix, t.TempDir())
+	if err != nil {
+		t.Fatalf("configure prefixed directory: %v", err)
+	}
+	caps, err := configured.server.GetCapabilities(context.Background(), &agentv1.GetCapabilitiesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundBackend := false
+	for _, typ := range caps.GetSupportedBackends() {
+		if typ == agentv1.BackendType_BACKEND_TYPE_DIRECTORY {
+			foundBackend = true
+		}
+	}
+	if !foundBackend {
+		t.Fatalf("directory backend missing from supported backends: %v", caps.GetSupportedBackends())
+	}
+	pools := caps.GetDiscoveredPools()
+	if len(pools) != 1 || pools[0].GetName() != "host-files" ||
+		pools[0].GetBackendType() != agentv1.BackendType_BACKEND_TYPE_DIRECTORY ||
+		pools[0].GetHostRoot() != hostRoot {
+		t.Fatalf("prefixed source failed discovery or leaked container path into host layout: %v", pools)
+	}
+	if _, err := os.Stat(hostRoot); !os.IsNotExist(err) {
+		t.Fatalf("discovery created or resolved the unprefixed source: %v", err)
+	}
+}
+
+func TestDirectoryStartupRejectsUnavailableHostRoot(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "linux" {
+		t.Skip("directory startup uses Linux filesystem syscalls")
+	}
+	hostParent := t.TempDir()
+	fileRoot := filepath.Join(hostParent, "regular-file")
+	if err := os.WriteFile(fileRoot, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		root    string
+		prefix  string
+		wantErr error
+	}{
+		{name: "missing source", root: filepath.Join(hostParent, "missing"), wantErr: os.ErrNotExist},
+		{name: "regular file source", root: fileRoot, wantErr: syscall.ENOTDIR},
+		{name: "missing prefixed source", root: hostParent, prefix: t.TempDir(), wantErr: os.ErrNotExist},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "agent.yaml")
+			doc := fmt.Sprintf("backends:\n  - directory: {logicalPool: host-files, hostRoot: %q}\n", tc.root)
+			if err := os.WriteFile(configPath, []byte(doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			configured, err := configureAgent(configPath, t.TempDir(), "", tc.prefix, t.TempDir())
+			if !errors.Is(err, tc.wantErr) || configured.server != nil {
+				t.Fatalf("startup accepted unavailable source or lost native error: server=%v err=%v", configured.server, err)
+			}
+		})
 	}
 }

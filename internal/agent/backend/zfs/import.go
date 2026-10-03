@@ -142,7 +142,16 @@ func (z *Backend) Import(
 // datasetProps returns the type and volsize of dataset via a single
 // `zfs get -Hp` call.  A missing dataset is reported as *notExistError.
 func (z *Backend) datasetProps(ctx context.Context, dataset string) (dtype string, volsize int64, err error) {
-	out, runErr := z.exec.run(ctx, "zfs", "get", "-Hp", "-o", "property,value", "type,volsize", dataset)
+	out, runErr := z.exec.run(
+		ctx,
+		"zfs",
+		zfsGetOperation,
+		datasetMachineOutput,
+		"-o",
+		"property,value",
+		"type,volsize",
+		dataset,
+	)
 	if runErr != nil {
 		if isNotExistOutput(out) {
 			return "", 0, &notExistError{dataset: dataset}
@@ -157,7 +166,7 @@ func (z *Backend) datasetProps(ctx context.Context, dataset string) (dtype strin
 			continue
 		}
 		switch prop {
-		case "type":
+		case datasetTypeProperty:
 			dtype = strings.TrimSpace(val)
 		case "volsize":
 			volsizeRaw = strings.TrimSpace(val)

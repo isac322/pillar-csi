@@ -189,6 +189,80 @@ func resyncPVS(spec *v1alpha1.VolumeExportSpec, initiators ...string) *v1alpha1.
 
 var aclSpec = &v1alpha1.VolumeExportSpec{BindAddress: "10.0.0.1", Port: 4420, ACLEnabled: true}
 
+func TestDesiredVolumeState_CarriesRecordedFilesystemIdentityCapacityAndBackend(t *testing.T) {
+	t.Parallel()
+
+	pvs := resyncPVS(aclSpec, resyncHostA)
+	pvs.Spec.BackendType = "directory"
+	pvs.Spec.AgentVolumeID = "files/fs-identity"
+	pvs.Spec.CapacityBytes = 1073741824
+	pvs.Spec.FilesystemAdoption = &v1alpha1.FilesystemAdoption{
+		Kind:            v1alpha1.FilesystemAdoptionKindDirectory,
+		CanonicalSource: "/srv/pillar/app-data",
+		ResourceID:      "01234567-89ab-cdef-0123-456789abcdef:42",
+		FilesystemType:  "ext4",
+		FilesystemID:    "01234567-89ab-cdef-0123-456789abcdef",
+		Inode:           "42",
+		ProjectID:       1234,
+	}
+	pvs.Spec.Resolved = &v1alpha1.ResolvedVolumeConfig{
+		Backend: v1alpha1.BackendSpec{Directory: &v1alpha1.DirectoryBackendConfig{
+			LogicalPool: "files",
+			HostRoot:    "/srv/pillar",
+		}},
+	}
+
+	got, err := desiredVolumeState(pvs, nil)
+	if err != nil {
+		t.Fatalf("desiredVolumeState: %v", err)
+	}
+	adoption := got.GetFilesystemAdoption()
+	if adoption == nil || adoption.GetCanonicalSource() != pvs.Spec.FilesystemAdoption.CanonicalSource ||
+		adoption.GetResourceId() != pvs.Spec.FilesystemAdoption.ResourceID {
+		t.Fatalf("desired filesystem identity = %+v, want recorded descriptor", adoption)
+	}
+	if got.GetCapacityBytes() != pvs.Spec.CapacityBytes {
+		t.Fatalf("desired capacity = %d, want %d", got.GetCapacityBytes(), pvs.Spec.CapacityBytes)
+	}
+	directory := got.GetBackendParams().GetDirectory()
+	if directory == nil || directory.GetLogicalPool() != "files" || directory.GetHostRoot() != "/srv/pillar" {
+		t.Fatalf("desired backend params = %+v, want recorded directory layout", directory)
+	}
+}
+
+func TestDesiredVolumeState_LocalOnlyFilesystemCarriesFenceWithoutNetworkExport(t *testing.T) {
+	t.Parallel()
+
+	pvs := resyncPVS(nil)
+	pvs.Spec.CapacityBytes = 1073741824
+	pvs.Spec.FilesystemAdoption = &v1alpha1.FilesystemAdoption{
+		Kind:            v1alpha1.FilesystemAdoptionKindDirectory,
+		CanonicalSource: "/srv/pillar/app-data",
+		ResourceID:      "01234567-89ab-cdef-0123-456789abcdef:42",
+		FilesystemType:  "ext4",
+		FilesystemID:    "01234567-89ab-cdef-0123-456789abcdef",
+		Inode:           "42",
+		ProjectID:       1234,
+	}
+	pvs.Spec.Resolved = &v1alpha1.ResolvedVolumeConfig{
+		LocalAttach: true,
+		Backend: v1alpha1.BackendSpec{Directory: &v1alpha1.DirectoryBackendConfig{
+			LogicalPool: "files", HostRoot: "/srv/pillar",
+		}},
+	}
+
+	got, err := desiredVolumeState(pvs, nil)
+	if err != nil {
+		t.Fatalf("desiredVolumeState(local-only): %v", err)
+	}
+	if len(got.GetExports()) != 0 {
+		t.Fatalf("local-only desired exports = %d, want none", len(got.GetExports()))
+	}
+	if got.GetFilesystemAdoption() == nil || got.GetCapacityBytes() != pvs.Spec.CapacityBytes {
+		t.Fatalf("local-only desired state lost adoption/capacity: %+v", got)
+	}
+}
+
 // resyncFence is the fencing token of the test volume's lifecycle at gen.
 func resyncFence(gen uint64) *agentv1.FencingToken {
 	return &agentv1.FencingToken{VolumeUid: resyncPVSUID, Generation: gen}

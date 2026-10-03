@@ -55,6 +55,14 @@ const (
 // (recorded on the condition) so the caller requeues with backoff.
 var errExportReconcile = errors.New("export reconcile failed")
 
+func wrapExportErrors(errs ...error) error {
+	joined := errors.Join(errs...)
+	if joined == nil {
+		return nil
+	}
+	return fmt.Errorf("%w", joined)
+}
+
 // exportReconcileTimeout bounds one agent ReconcileState call.  The resync
 // holds the volume lock shared with publish/unpublish/delete and runs on the
 // reconciler's worker, so an agent that accepts the call but never answers
@@ -182,17 +190,36 @@ func desiredVolumeState(pvs *v1alpha1.PillarVolumeState, chap *agentv1.IscsiChap
 	if err != nil {
 		return nil, err
 	}
-	return &agentv1.VolumeDesiredState{
-		VolumeId:    pvs.Spec.AgentVolumeID,
-		BackendType: mapBackendType(pvs.Spec.BackendType),
-		Fence:       fence,
-		Exports: []*agentv1.ExportDesiredState{{
+	var adoptionProto *agentv1.FilesystemAdoption
+	if adoption := pvs.Spec.FilesystemAdoption; adoption != nil {
+		var adoptionProtoErr error
+		adoptionProto, adoptionProtoErr = filesystemAdoptionProto(adoption)
+		if adoptionProtoErr != nil {
+			return nil, invalidFilesystemDescriptor(adoptionProtoErr)
+		}
+	}
+	var backendParams *agentv1.BackendParams
+	if pvs.Spec.Resolved != nil {
+		backendParams = backendParamsFromResolved(pvs.Spec.Resolved.Backend)
+	}
+	var exports []*agentv1.ExportDesiredState
+	if !localOnlyFilesystem(pvs) {
+		exports = []*agentv1.ExportDesiredState{{
 			ProtocolType:      protocol,
 			ExportParams:      withISCSIChap(exportParamsFor(protocol, pvs.Status.ExportSpec), chap),
 			AllowedInitiators: initiators,
 			AclEnabled:        pvs.Status.ExportSpec.ACLEnabled,
-			LocalAttach:       pvs.Status.LocalAttachNode != "",
-		}},
+			LocalAttach:       pvs.Spec.FilesystemAdoption == nil && pvs.Status.LocalAttachNode != "",
+		}}
+	}
+	return &agentv1.VolumeDesiredState{
+		VolumeId:           pvs.Spec.AgentVolumeID,
+		BackendType:        mapBackendType(pvs.Spec.BackendType),
+		BackendParams:      backendParams,
+		FilesystemAdoption: adoptionProto,
+		CapacityBytes:      pvs.Spec.CapacityBytes,
+		Fence:              fence,
+		Exports:            exports,
 	}, nil
 }
 
@@ -216,6 +243,10 @@ func (s *ControllerServer) ReconcileVolumeExport(ctx context.Context, pvsName st
 	if err != nil || !found {
 		return err
 	}
+	err = s.validateVolumeDriver(pvs)
+	if err != nil {
+		return err
+	}
 
 	unlock := s.volumeLocks.lock(pvs.Spec.VolumeID)
 	defer unlock()
@@ -224,6 +255,18 @@ func (s *ControllerServer) ReconcileVolumeExport(ctx context.Context, pvsName st
 	if err != nil || !found || !pvs.DeletionTimestamp.IsZero() {
 		return err
 	}
+	err = s.validateVolumeDriver(pvs)
+	if err != nil {
+		return err
+	}
+
+	// A local-only filesystem is not recoverable until its import has durably
+	// reached Ready; never let a pre-import state create an owned proxy.
+	if localOnlyFilesystem(pvs) &&
+		(pvs.Status.Phase == v1alpha1.PillarVolumeStatePhaseProvisioning ||
+			pvs.Status.Phase == v1alpha1.PillarVolumeStatePhaseCreatePartial) {
+		return nil
+	}
 
 	// The volume is being deleted: UnexportVolume already carried the fencing
 	// generation, and re-creating the export here would resurrect it.
@@ -231,7 +274,7 @@ func (s *ControllerServer) ReconcileVolumeExport(ctx context.Context, pvsName st
 		return nil
 	}
 
-	if pvs.Status.ExportSpec == nil {
+	if pvs.Status.ExportSpec == nil && !localOnlyFilesystem(pvs) {
 		return s.setExportReconciled(ctx, pvsName, metav1.ConditionFalse, reasonExportSpecMissing,
 			"status.exportSpec is not recorded; the export cannot be re-created from durable state")
 	}
@@ -359,6 +402,14 @@ type restoreEntry struct {
 	rank    int
 }
 
+// prepareRestoreResult is the outcome of preparing one restore entry.
+type prepareRestoreResult struct {
+	entry   restoreEntry
+	include bool
+	failed  bool
+	err     error
+}
+
 // restoreRank orders a batch restore.  The agent links exports in request
 // order, and the first export linked to a port fixes the port's
 // param_inline_data_size and param_mdts until no subsystem is linked any
@@ -372,6 +423,9 @@ type restoreEntry struct {
 // requires a specific value.
 func restoreRank(pvs *v1alpha1.PillarVolumeState) int {
 	spec := pvs.Status.ExportSpec
+	if spec == nil {
+		return 2
+	}
 	if spec.InCapsuleDataSize == nil && spec.MaxDataTransferSize == nil {
 		return 2
 	}
@@ -397,9 +451,11 @@ func restoreRank(pvs *v1alpha1.PillarVolumeState) int {
 // deadlock), until the outcomes are recorded.  Otherwise a concurrent unpublish
 // could advance a volume's fencing generation after it was read, the agent
 // would reject that item as stale, and its subsystem would stay unlinked while
-// the agent leaves the restore state.  Volumes are skipped under the same rules
-// as ReconcileVolumeExport.  The outcome of each volume is recorded on its
-// ExportReconciled condition; a non-nil error asks the caller to retry.
+// the agent leaves the restore state.  Lifecycle-ineligible volumes are
+// skipped, but every CSI driver profile on the agent is included so one
+// profile cannot remove another profile's durable export.  The outcome of
+// each volume is recorded on its ExportReconciled condition; a non-nil error
+// asks the caller to retry.
 func (s *ControllerServer) RestoreAgentExports(ctx context.Context, agentName string) error {
 	ctx, span := telemetry.Tracer().Start(ctx, telemetry.SpanControllerRestoreExports,
 		trace.WithNewRoot(), trace.WithSpanKind(trace.SpanKindInternal),
@@ -439,47 +495,72 @@ func (s *ControllerServer) restoreAgentExports(
 	entries := make([]restoreEntry, 0, len(names))
 	var errs []error
 	for _, name := range names {
-		pvs, found, readErr := s.readVolumeState(ctx, name)
-		if readErr != nil {
-			return len(names), failed, readErr
+		prepared := s.prepareRestoreEntry(ctx, agentName, name)
+		if prepared.err != nil && !prepared.failed {
+			return len(names), failed, prepared.err
 		}
-		if !found || !pvs.DeletionTimestamp.IsZero() || pvs.Status.Deleting || pvs.Spec.AgentRef != agentName {
-			continue
-		}
-		if pvs.Status.ExportSpec == nil {
+		if prepared.failed {
 			failed++
-			errs = append(errs, s.setExportReconciled(ctx, name, metav1.ConditionFalse, reasonExportSpecMissing,
-				"status.exportSpec is not recorded; the export cannot be re-created from durable state"))
-			continue
 		}
-		// A CHAP volume whose Secret is missing or invalid is left out of
-		// the restore (its export stays down, never unauthenticated) and
-		// retried with the next restore.
-		chap, chapErr := s.volumeISCSIChap(ctx, pvs)
-		if chapErr != nil {
-			failed++
-			reason := chapErrorReason(chapErr)
-			chapErr = fmt.Errorf("%w: volume %q: %w", errExportReconcile, pvs.Spec.AgentVolumeID, chapErr)
-			errs = append(errs, chapErr,
-				s.setExportReconciled(ctx, name, metav1.ConditionFalse, reason, chapErr.Error()))
-			continue
+		if prepared.err != nil {
+			errs = append(errs, prepared.err)
 		}
-		desired, buildErr := desiredVolumeState(pvs, chap)
-		if buildErr != nil {
-			failed++
-			buildErr = fmt.Errorf("%w: build desired state for %q: %w", errExportReconcile, pvs.Spec.AgentVolumeID, buildErr)
-			errs = append(errs, buildErr,
-				s.setExportReconciled(ctx, name, metav1.ConditionFalse, reasonReconcileFailed, buildErr.Error()))
-			continue
+		if prepared.include {
+			entries = append(entries, prepared.entry)
 		}
-		entries = append(entries, restoreEntry{pvsName: name, desired: desired, rank: restoreRank(pvs)})
 	}
 
 	slices.SortStableFunc(entries, func(a, b restoreEntry) int { return a.rank - b.rank })
 	sendFailed, sendErr := s.sendAgentRestore(ctx, agentName, entries)
 	errs = append(errs, sendErr)
 	failed += sendFailed
-	return len(names), failed, errors.Join(errs...)
+	return len(names), failed, wrapExportErrors(errs...)
+}
+
+func (s *ControllerServer) prepareRestoreEntry(
+	ctx context.Context,
+	agentName, name string,
+) prepareRestoreResult {
+	pvs, found, readErr := s.readVolumeState(ctx, name)
+	if readErr != nil {
+		return prepareRestoreResult{err: readErr}
+	}
+	if !found || !pvs.DeletionTimestamp.IsZero() || pvs.Status.Deleting || pvs.Spec.AgentRef != agentName {
+		return prepareRestoreResult{}
+	}
+	if localOnlyFilesystem(pvs) &&
+		(pvs.Status.Phase == v1alpha1.PillarVolumeStatePhaseProvisioning ||
+			pvs.Status.Phase == v1alpha1.PillarVolumeStatePhaseCreatePartial) {
+		return prepareRestoreResult{}
+	}
+	if pvs.Status.ExportSpec == nil && !localOnlyFilesystem(pvs) {
+		conditionErr := s.setExportReconciled(ctx, name, metav1.ConditionFalse,
+			reasonExportSpecMissing,
+			"status.exportSpec is not recorded; the export cannot be re-created from durable state")
+		return prepareRestoreResult{failed: true, err: conditionErr}
+	}
+	chap, chapErr := s.volumeISCSIChap(ctx, pvs)
+	if chapErr != nil {
+		reason := chapErrorReason(chapErr)
+		chapErr = fmt.Errorf("%w: volume %q: %w", errExportReconcile, pvs.Spec.AgentVolumeID, chapErr)
+		conditionErr := s.setExportReconciled(ctx, name, metav1.ConditionFalse,
+			reason, chapErr.Error())
+		return prepareRestoreResult{failed: true, err: wrapExportErrors(chapErr, conditionErr)}
+	}
+	desired, buildErr := desiredVolumeState(pvs, chap)
+	if buildErr != nil {
+		buildErr = fmt.Errorf("%w: build desired state for %q: %w",
+			errExportReconcile, pvs.Spec.AgentVolumeID, buildErr)
+		conditionErr := s.setExportReconciled(ctx, name, metav1.ConditionFalse,
+			reasonReconcileFailed, buildErr.Error())
+		return prepareRestoreResult{failed: true, err: wrapExportErrors(buildErr, conditionErr)}
+	}
+	return prepareRestoreResult{
+		entry: restoreEntry{
+			pvsName: name, desired: desired, rank: restoreRank(pvs),
+		},
+		include: true,
+	}
 }
 
 // agentVolumeStates lists, uncached, the PillarVolumeStates of the agent and
@@ -494,11 +575,12 @@ func (s *ControllerServer) agentVolumeStates(
 		return nil, nil, fmt.Errorf("list PillarVolumeStates of agent %q: %w", agentName, err)
 	}
 	for i := range list.Items {
-		if list.Items[i].Spec.AgentRef != agentName {
+		pvs := &list.Items[i]
+		if pvs.Spec.AgentRef != agentName {
 			continue
 		}
-		names = append(names, list.Items[i].Name)
-		volumeIDs = append(volumeIDs, list.Items[i].Spec.VolumeID)
+		names = append(names, pvs.Name)
+		volumeIDs = append(volumeIDs, pvs.Spec.VolumeID)
 	}
 	slices.Sort(volumeIDs)
 	return names, slices.Compact(volumeIDs), nil
@@ -533,7 +615,7 @@ func (s *ControllerServer) sendAgentRestore(
 			errs = append(errs, s.setExportReconciled(ctx, entry.pvsName, metav1.ConditionFalse,
 				reasonAgentUnavailable, err.Error()))
 		}
-		return len(entries), errors.Join(errs...)
+		return len(entries), wrapExportErrors(errs...)
 	}
 
 	results := make(map[string]*agentv1.ReconcileItemResult, len(resp.GetResults()))
@@ -558,7 +640,7 @@ func (s *ControllerServer) sendAgentRestore(
 		errs = append(errs, fmt.Errorf("%w: %w", errExportReconcile, itemErr),
 			s.setExportReconciled(ctx, entry.pvsName, metav1.ConditionFalse, reason, itemErr.Error()))
 	}
-	return failed, errors.Join(errs...) //nolint:wrapcheck // multi-error is already wrapped per item
+	return failed, wrapExportErrors(errs...)
 }
 
 // setExportReconciled records the ExportReconciled condition, writing only

@@ -1,5 +1,5 @@
 {{- $agentConfig := include "pillar-csi.agent.config" . -}}
-{{- $nfsEnabled := false -}}
+{{- $nfsEnabled := and .Values.fileDriver.enabled .Values.fileDriver.nfs.enabled -}}
 {{- range (fromYaml $agentConfig).backends -}}
   {{- with .zfs -}}
     {{- if eq (.volumeType | default "zvol") "dataset" -}}
@@ -12,6 +12,9 @@
 {{- end -}}
 {{- if and $nfsEnabled (not .Values.agent.privileged) -}}
   {{- fail "agent.privileged must be true for dataset/NFS backends" -}}
+{{- end -}}
+{{- if and .Values.fileDriver.enabled (not .Values.agent.privileged) -}}
+  {{- fail "agent.privileged must be true when fileDriver.enabled is true" -}}
 {{- end -}}
 apiVersion: apps/v1
 kind: DaemonSet
@@ -146,6 +149,10 @@ spec:
           args:
             - --listen-address=:{{ .Values.agent.grpcPort }}
             - --config={{ include "pillar-csi.agent.configPath" . }}
+            {{- if .Values.fileDriver.enabled }}
+            - --filesystem-host-root={{ .Values.fileDriver.sourceHostRoot }}
+            - --nfs-export-root={{ .Values.fileDriver.proxyRoot }}
+            {{- end }}
             {{- if .Values.mtls.enabled }}
             - --tls-cert={{ include "pillar-csi.mtls.certDir" . }}/tls.crt
             - --tls-key={{ include "pillar-csi.mtls.certDir" . }}/tls.key
@@ -244,14 +251,27 @@ spec:
             # Never use a PVC here: the agent cannot depend on volumes it serves.
             - name: agent-state
               mountPath: /var/lib/pillar-csi/agent
-              {{- if $nfsEnabled }}
+              {{- if or $nfsEnabled .Values.fileDriver.enabled }}
               mountPropagation: Bidirectional
+              {{- end }}
+            {{- if .Values.fileDriver.enabled }}
+            # File adoption resolves source identities below a read-only host
+            # root and creates owned bind/NFS proxies below a host-backed root.
+            - name: file-source-host-root
+              mountPath: {{ .Values.fileDriver.sourceHostRoot }}
+              readOnly: true
+              mountPropagation: HostToContainer
+            - name: file-proxy-root
+              mountPath: {{ .Values.fileDriver.proxyRoot }}
+              mountPropagation: Bidirectional
+            {{- end }}
+            {{- if $nfsEnabled }}
             # nfs-utils owns etab and NFSv4 recovery beneath this private
             # persistent tree. Do not bind the host's foreign /var/lib/nfs.
             - name: agent-state
               mountPath: /var/lib/nfs
               subPath: nfs/lib
-              {{- end }}
+            {{- end }}
             # Backend placement config rendered from agent.backends.
             - name: agent-config
               mountPath: {{ include "pillar-csi.agent.configDir" . }}
@@ -280,6 +300,16 @@ spec:
           hostPath:
             path: /var/lib/pillar-csi/agent
             type: DirectoryOrCreate
+        {{- if .Values.fileDriver.enabled }}
+        - name: file-source-host-root
+          hostPath:
+            path: /
+            type: Directory
+        - name: file-proxy-root
+          hostPath:
+            path: {{ .Values.fileDriver.proxyRoot }}
+            type: DirectoryOrCreate
+        {{- end }}
         # /lib/modules — read-only access for the modprobe init container.
         - name: lib-modules
           hostPath:

@@ -760,7 +760,7 @@ func TestReleaseBackendVolume_StaleReadKeepsReplacement(t *testing.T) {
 	env.srv.apiReader = hook
 
 	err := env.srv.releaseBackendVolume(context.Background(),
-		"pvc-data", "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/legacy-vol")
+		"pvc-data", "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/legacy-vol", "")
 	if status.Code(err) != codes.Aborted {
 		t.Fatalf("release over a replaced reservation: err = %v, want Aborted", err)
 	}

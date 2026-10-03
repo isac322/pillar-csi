@@ -60,22 +60,26 @@ type pvcDocs struct {
 	// adopt instead of provisioning a new volume.  Empty means a normal
 	// create.  Its structural validation lives in CreateVolume, which has
 	// the resolved store context the check needs.
-	ImportZvol string
+	ImportZvol       string
+	ImportDirectory  string
+	ImportZFSDataset string
 }
 
 // decodePVCAnnotations decodes and validates the pillar-csi annotations of a
 // PVC.  It returns an error for any structural, unknown or malformed field,
-// and for any pillar-csi.bhyoo.com/ annotation that is not one of the three
-// document keys or the import-zvol key.  An absent or empty document leaves
-// its axis nil.
+// and for any unknown pillar-csi.bhyoo.com/ annotation. Import selectors are
+// mutually exclusive and a present selector must name a source. An absent or
+// empty configuration document leaves its axis nil.
 func decodePVCAnnotations(annotations map[string]string) (pvcDocs, error) {
 	var docs pvcDocs
 
 	err := rejectUnknownPillarKeys("PVC annotation", annotations, map[string]bool{
-		configdocs.BackendDocKey:      true,
-		configdocs.ProtocolDocKey:     true,
-		configdocs.FilesystemDocKey:   true,
-		v1alpha1.AnnotationImportZvol: true,
+		configdocs.BackendDocKey:            true,
+		configdocs.ProtocolDocKey:           true,
+		configdocs.FilesystemDocKey:         true,
+		v1alpha1.AnnotationImportZvol:       true,
+		v1alpha1.AnnotationImportDirectory:  true,
+		v1alpha1.AnnotationImportZFSDataset: true,
 	})
 	if err != nil {
 		return docs, err
@@ -98,15 +102,30 @@ func decodePVCAnnotations(annotations map[string]string) (pvcDocs, error) {
 	}
 
 	docs.Backend, docs.Protocol, docs.Filesystem = backend, protocol, filesystem
-	// The import annotation carries a plain dataset name, not a YAML document.
-	// A present-but-empty value is malformed: silently treating it as absent
-	// would turn an intended import into a fresh empty volume.
-	raw, present := annotations[v1alpha1.AnnotationImportZvol]
-	docs.ImportZvol = strings.TrimSpace(raw)
-	if present && docs.ImportZvol == "" {
-		return docs, fmt.Errorf("unsupported PVC annotation %q: value must name "+
-			"a ZFS dataset as \"<pool>[/<parent>/]<name>\", got empty",
-			v1alpha1.AnnotationImportZvol)
+	// Selectors are plain source names. Never turn malformed adoption intent
+	// into a fresh dynamically provisioned volume.
+	count := 0
+	for _, selector := range []struct {
+		key   string
+		value *string
+	}{
+		{v1alpha1.AnnotationImportZvol, &docs.ImportZvol},
+		{v1alpha1.AnnotationImportDirectory, &docs.ImportDirectory},
+		{v1alpha1.AnnotationImportZFSDataset, &docs.ImportZFSDataset},
+	} {
+		raw, present := annotations[selector.key]
+		if !present {
+			continue
+		}
+		count++
+		*selector.value = strings.TrimSpace(raw)
+		if *selector.value == "" {
+			return docs, fmt.Errorf("unsupported PVC annotation %q: value must name a source, got empty", selector.key)
+		}
+	}
+	if count > 1 {
+		return docs, fmt.Errorf("PVC import selectors %q, %q and %q are mutually exclusive",
+			v1alpha1.AnnotationImportZvol, v1alpha1.AnnotationImportDirectory, v1alpha1.AnnotationImportZFSDataset)
 	}
 	return docs, nil
 }

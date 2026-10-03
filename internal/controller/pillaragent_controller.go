@@ -809,6 +809,7 @@ func buildDiscoveredPools(pools []*agentv1.PoolInfo) []pillarcsiv1alpha1.Discove
 			Type:          backendTypeToString(p.GetBackendType()),
 			ParentDataset: p.GetParentDataset(),
 			ThinPool:      p.GetThinPool(),
+			HostRoot:      p.GetHostRoot(),
 		}
 		if total := p.GetTotalBytes(); total > 0 {
 			q := resource.NewQuantity(total, resource.BinarySI)
@@ -839,6 +840,8 @@ func backendTypeToString(bt agentv1.BackendType) string {
 		return string(pillarcsiv1alpha1.BackendIDZFSDataset)
 	case agentv1.BackendType_BACKEND_TYPE_LVM:
 		return string(pillarcsiv1alpha1.BackendIDLVMLV)
+	case agentv1.BackendType_BACKEND_TYPE_DIRECTORY:
+		return string(pillarcsiv1alpha1.BackendIDDirectory)
 	default:
 		return unknownCapability
 	}

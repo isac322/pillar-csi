@@ -138,9 +138,9 @@ func (h *recordingProtocolHandler) Reconcile(
 	desired []ExportDesiredState,
 ) []error {
 	copied := make([]ExportDesiredState, 0, len(desired))
-	for _, entry := range desired {
-		entryCopy := entry
-		entryCopy.AllowedInitiators = append([]string(nil), entry.AllowedInitiators...)
+	for i := range desired {
+		entryCopy := desired[i]
+		entryCopy.AllowedInitiators = append([]string(nil), desired[i].AllowedInitiators...)
 		copied = append(copied, entryCopy)
 	}
 	h.reconcileCalls = append(h.reconcileCalls, copied)

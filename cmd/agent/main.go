@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -44,6 +45,7 @@ import (
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/agent"
 	"github.com/isac322/pillar-csi/internal/agent/backend"
+	"github.com/isac322/pillar-csi/internal/agent/backend/directory"
 	"github.com/isac322/pillar-csi/internal/agent/backend/lvm"
 	"github.com/isac322/pillar-csi/internal/agent/backend/zfs"
 	"github.com/isac322/pillar-csi/internal/agent/nfs"
@@ -65,6 +67,8 @@ const (
 	agentNFSStateRoot        = agentDataRoot + "/nfs"
 )
 
+var errNFSManagerNotConfigured = errors.New("NFS manager not configured")
+
 // buildVolumeBackends constructs the pool→backend registry from the agent
 // config file's backends entries. A ZFS pool may have one zvol and one
 // dataset backend; exact (pool, backend type) duplicates are rejected.
@@ -72,13 +76,13 @@ func buildVolumeBackends(
 	specs []pillarv1alpha1.BackendSpec,
 	configfsRoot string,
 ) (map[string]backend.VolumeBackend, error) {
-	registries, _, err := buildVolumeBackendRegistry(specs, configfsRoot, agentDatasetRoot)
+	registries, _, err := buildVolumeBackendRegistry(specs, configfsRoot, agentDatasetRoot, "")
 	return registries, err
 }
 
 func buildVolumeBackendRegistry(
 	specs []pillarv1alpha1.BackendSpec,
-	configfsRoot, datasetRoot string,
+	configfsRoot, datasetRoot, filesystemHostRoot string,
 ) (
 	registries map[string]backend.VolumeBackend,
 	variantRegistry map[string]map[agentv1.BackendType]backend.VolumeBackend,
@@ -106,7 +110,7 @@ func buildVolumeBackendRegistry(
 			)
 		}
 		seen[seenKey] = i
-		b := newConfiguredBackend(spec, typ, configfsRoot, datasetRoot)
+		b := newConfiguredBackend(spec, typ, configfsRoot, datasetRoot, filesystemHostRoot)
 		if _, exists := registries[key]; !exists {
 			registries[key] = b
 		}
@@ -114,6 +118,20 @@ func buildVolumeBackendRegistry(
 			variantRegistry[key] = make(map[agentv1.BackendType]backend.VolumeBackend)
 		}
 		variantRegistry[key][typ] = b
+	}
+	for i, spec := range specs {
+		if spec.Directory == nil {
+			continue
+		}
+		key := spec.PoolName()
+		b := variantRegistry[key][agentv1.BackendType_BACKEND_TYPE_DIRECTORY]
+		_, _, capacityErr := b.Capacity(context.Background())
+		if capacityErr != nil {
+			return nil, nil, fmt.Errorf(
+				"agent config: backends[%d]: directory pool %q host root %q is unavailable: %w",
+				i, key, spec.Directory.HostRoot, capacityErr,
+			)
+		}
 	}
 	return registries, variantRegistry, nil
 }
@@ -126,9 +144,11 @@ func backendTypeForSpec(spec pillarv1alpha1.BackendSpec, index int) (agentv1.Bac
 		return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL, nil
 	case spec.LVM != nil:
 		return agentv1.BackendType_BACKEND_TYPE_LVM, nil
+	case spec.Directory != nil:
+		return agentv1.BackendType_BACKEND_TYPE_DIRECTORY, nil
 	default:
 		return agentv1.BackendType_BACKEND_TYPE_UNSPECIFIED, fmt.Errorf(
-			"agent config: backends[%d]: exactly one of lvm, zfs must be set", index,
+			"agent config: backends[%d]: exactly one of directory, lvm, zfs must be set", index,
 		)
 	}
 }
@@ -144,9 +164,19 @@ func rejectBackendCollision(
 	if typ == agentv1.BackendType_BACKEND_TYPE_LVM {
 		return fmt.Errorf("agent config: pool/VG name collision %q between LVM and another backend", key)
 	}
+	if typ == agentv1.BackendType_BACKEND_TYPE_DIRECTORY {
+		for existingType := range existing {
+			if existingType != typ {
+				return fmt.Errorf("agent config: logical pool name collision %q between directory and another backend", key)
+			}
+		}
+	}
 	for existingType := range existing {
 		if existingType == agentv1.BackendType_BACKEND_TYPE_LVM {
 			return fmt.Errorf("agent config: pool/VG name collision %q between LVM and another backend", key)
+		}
+		if existingType == agentv1.BackendType_BACKEND_TYPE_DIRECTORY && existingType != typ {
+			return fmt.Errorf("agent config: logical pool name collision %q between directory and another backend", key)
 		}
 	}
 	return nil
@@ -155,11 +185,13 @@ func rejectBackendCollision(
 func newConfiguredBackend(
 	spec pillarv1alpha1.BackendSpec,
 	typ agentv1.BackendType,
-	configfsRoot, datasetRoot string,
+	configfsRoot, datasetRoot, filesystemHostRoot string,
 ) backend.VolumeBackend {
 	switch {
 	case spec.ZFS != nil && typ == agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET:
-		return zfs.NewDataset(spec.ZFS.Pool, spec.ZFS.ParentDataset, datasetRoot)
+		return zfs.NewDataset(spec.ZFS.Pool, spec.ZFS.ParentDataset, datasetRoot,
+			zfs.WithHostRootPrefix(filesystemHostRoot),
+			zfs.WithFilesystemProxyRoot(datasetRoot))
 	case spec.ZFS != nil:
 		return zfs.New(spec.ZFS.Pool, spec.ZFS.ParentDataset,
 			zfs.WithConfigfsRoot(configfsRoot))
@@ -169,6 +201,9 @@ func newConfiguredBackend(
 			mode = lvm.ProvisionModeThin
 		}
 		return lvm.New(spec.LVM.VolumeGroup, spec.LVM.ThinPool).WithMode(mode)
+	case spec.Directory != nil:
+		return directory.New(spec.Directory.LogicalPool, spec.Directory.HostRoot,
+			directory.WithHostRootPrefix(filesystemHostRoot))
 	default:
 		panic("backend type derived without a configured backend")
 	}
@@ -192,51 +227,88 @@ func buildGRPCOpts(tlsEnabled bool, cert, key, ca string) ([]grpc.ServerOption, 
 
 type configuredAgent struct {
 	volumeBackends map[string]backend.VolumeBackend
-	variants       map[string]map[agentv1.BackendType]backend.VolumeBackend
 	nfsManager     *nfs.Manager
+	server         *agent.Server
 }
 
-func configureAgent(configPath, configfsRoot, nfsBindAddress string) (configuredAgent, error) {
+func configureAgent(
+	configPath, configfsRoot, nfsBindAddress, filesystemHostRoot, nfsExportRoot string,
+) (configuredAgent, error) {
+	if filesystemHostRoot != "" && (!filepath.IsAbs(filesystemHostRoot) ||
+		filepath.Clean(filesystemHostRoot) != filesystemHostRoot) {
+		return configuredAgent{}, errors.New("--filesystem-host-root must be a canonical absolute container path")
+	}
+	if !filepath.IsAbs(nfsExportRoot) || filepath.Clean(nfsExportRoot) != nfsExportRoot {
+		return configuredAgent{}, errors.New("--nfs-export-root must be a canonical absolute host path")
+	}
 	specs, err := loadAgentConfig(configPath)
 	if err != nil {
 		return configuredAgent{}, err
 	}
 	volumeBackends, variants, err := buildVolumeBackendRegistry(
-		specs, configfsRoot, agentDatasetRoot,
+		specs, configfsRoot, nfsExportRoot, filesystemHostRoot,
 	)
+	if err != nil {
+		return configuredAgent{}, err
+	}
+	srv := agent.NewServer(volumeBackends, configfsRoot,
+		agent.WithExportRestoreGate(),
+		agent.WithBackendVariants(variants),
+		agent.WithFilesystemProxy(nfsExportRoot),
+	)
+	nfsManager, err := startNFSManager(specs, nfsBindAddress, nfsExportRoot, srv)
+	if errors.Is(err, errNFSManagerNotConfigured) {
+		err = nil
+		nfsManager = nil
+	}
 	if err != nil {
 		return configuredAgent{}, err
 	}
 	return configuredAgent{
 		volumeBackends: volumeBackends,
-		variants:       variants,
-		nfsManager:     startNFSManager(specs, nfsBindAddress),
+		nfsManager:     nfsManager,
+		server:         srv,
 	}, nil
 }
 
-func startNFSManager(specs []pillarv1alpha1.BackendSpec, bindAddress string) *nfs.Manager {
+func startNFSManager(
+	specs []pillarv1alpha1.BackendSpec, bindAddress, exportRoot string, srv *agent.Server,
+) (*nfs.Manager, error) {
 	for _, spec := range specs {
-		if spec.ZFS == nil || spec.ZFS.VolumeType != pillarv1alpha1.ZFSVolumeTypeDataset {
+		if pillarv1alpha1.CategoryOf(spec.Kind()) != pillarv1alpha1.BackendCategoryFilesystem ||
+			spec.Directory != nil && bindAddress == "" {
 			continue
 		}
 		manager, err := nfs.NewManager(nfs.Config{
-			StateDir:    agentNFSStateRoot,
-			ExportRoot:  agentDatasetRoot,
-			BindAddress: bindAddress,
+			StateDir:       agentNFSStateRoot,
+			ExportRoot:     exportRoot,
+			BindAddress:    bindAddress,
+			BeforeActivate: srv.ValidateFilesystemExport,
 		})
 		if err != nil {
+			if bindAddress != "" {
+				return nil, fmt.Errorf("configure NFS: %w", err)
+			}
 			fmt.Fprintf(os.Stderr, "pillar-agent: WARNING: NFS unavailable: %v\n", err)
-			return nil
+			return nil, errNFSManagerNotConfigured
 		}
+		// Install the manager before restoring exports, so its activation
+		// callback validates durable sources against the server that will
+		// actually serve RPCs.
+		agent.WithNFSManager(manager)(srv)
 		startErr := manager.Start(context.Background())
 		if startErr != nil {
-			fmt.Fprintf(os.Stderr, "pillar-agent: WARNING: NFS unavailable: %v\n", startErr)
 			closeNFSManager(manager)
-			return nil
+			agent.WithNFSManager(nil)(srv)
+			if bindAddress != "" {
+				return nil, fmt.Errorf("start NFS: %w", startErr)
+			}
+			fmt.Fprintf(os.Stderr, "pillar-agent: WARNING: NFS unavailable: %v\n", startErr)
+			return nil, errNFSManagerNotConfigured
 		}
-		return manager
+		return manager, nil
 	}
-	return nil
+	return nil, errNFSManagerNotConfigured
 }
 
 func closeNFSManager(manager *nfs.Manager) {
@@ -260,11 +332,16 @@ func main() {
 		"Path to the backend placement config file (required). YAML, same shape as the chart's agent.backends:\n"+
 			"  backends:\n"+
 			"    - zfs: {pool: tank, parentDataset: k8s}\n"+
-			"    - lvm: {volumeGroup: data-vg, thinPool: thin-pool-0}")
+			"    - lvm: {volumeGroup: data-vg, thinPool: thin-pool-0}\n"+
+			"    - directory: {logicalPool: host-files, hostRoot: /srv/volumes}")
 	cfgRoot := flag.String("configfs-root", resolvedDefaultConfigfsRoot(),
 		"nvmet configfs root directory (override in tests)")
+	filesystemHostRoot := flag.String("filesystem-host-root", "",
+		"Container prefix exposing host filesystem sources (e.g. /host). Empty uses host paths directly.")
+	nfsExportRoot := flag.String("nfs-export-root", agentDatasetRoot,
+		"Host-owned filesystem export and bind-proxy root; mount it at the same container path.")
 	nfsBindAddress := flag.String("nfs-bind-address", os.Getenv("PILLAR_AGENT_BIND_ADDRESS"),
-		"numeric node address advertised by NFS (required for dataset backends)")
+		"numeric node address advertised by NFS (required for NFS exports; directory local-only can omit it)")
 	tlsCert := flag.String("tls-cert", "", "path to PEM server certificate for mTLS")
 	tlsKey := flag.String("tls-key", "", "path to PEM server private key for mTLS")
 	tlsCA := flag.String("tls-ca", "", "path to PEM CA certificate for mTLS client verification")
@@ -281,19 +358,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	runtime, err := configureAgent(*configPath, *cfgRoot, *nfsBindAddress)
+	runtime, err := configureAgent(*configPath, *cfgRoot, *nfsBindAddress, *filesystemHostRoot, *nfsExportRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	volumeBackends := runtime.volumeBackends
-	variants := runtime.variants
 	nfsManager := runtime.nfsManager
-	opts := []agent.ServerOption{agent.WithExportRestoreGate(), agent.WithBackendVariants(variants)}
-	if nfsManager != nil {
-		opts = append(opts, agent.WithNFSManager(nfsManager))
-	}
-	srv := agent.NewServer(volumeBackends, *cfgRoot, opts...)
+	srv := runtime.server
 	serveAgent(srv, serveConfig{
 		listenAddr: *listenAddr, metricsAddr: *metricsAddr, gracePeriod: *gracePeriod,
 		tlsEnabled: tlsEnabled, tlsCert: *tlsCert, tlsKey: *tlsKey, tlsCA: *tlsCA,

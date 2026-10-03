@@ -228,6 +228,11 @@ spec:
                       description: available is the free capacity of the pool.
                       pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                       x-kubernetes-int-or-string: true
+                    hostRoot:
+                      description: |-
+                        hostRoot is the directory backend's configured trusted allow-root.
+                        A PillarStore must declare the same directory.hostRoot to become Ready.
+                      type: string
                     name:
                       description: name is the pool name as known to the storage subsystem
                         (e.g. ZFS pool name).

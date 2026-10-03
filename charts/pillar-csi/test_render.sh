@@ -733,15 +733,41 @@ if render --set-string metrics.controller.secure=yes >/dev/null 2>&1; then
 fi
 
 # ──────────────────────────────────────────────────────────────────────────
+# File CSI opt-in consumer contract (#164)
+# ──────────────────────────────────────────────────────────────────────────
+# hack/chartcontract decodes the rendered Kubernetes objects and workload
+# arguments for this check. This deliberately validates resource identity,
+# fsGroupPolicy and paired CSI socket/registrar routes rather than matching
+# chart template source or incidental resource names.
+REPO_ROOT="$(cd "${CHART_DIR}/../.." && pwd)"
+check_file_driver_contract() {
+  local block_policy="$1"; shift
+  if ! render "$@" | (cd "${REPO_ROOT}" && go run ./hack/chartcontract \
+    -controller-role "${RELEASE}" \
+    -file-driver \
+    -file-driver-block-policy "${block_policy}"); then
+    mark_fail "fileDriver consumer contract (${*:-default values}) must preserve both CSI identities and routes"
+  fi
+}
+check_file_driver_contract File --set fileDriver.enabled=true
+check_file_driver_contract None --set fileDriver.enabled=true --set csiDriver.fsGroupPolicy=None
+
+# ──────────────────────────────────────────────────────────────────────────
 # API contract: rendered CRDs and RBAC vs controller-gen output
 # ──────────────────────────────────────────────────────────────────────────
 # Decodes the rendered objects (not text) and compares them with
 # config/crd/bases and config/rbac/role.yaml. installCRDs=false must still
 # grant RBAC only on resources the separately applied generated CRDs serve.
-REPO_ROOT="$(cd "${CHART_DIR}/../.." && pwd)"
 check_api_contract() {
   local mode="$1"; shift
-  if ! render "$@" | (cd "${REPO_ROOT}" && go run ./hack/chartcontract -controller-role "${RELEASE}" ${mode:+"${mode}"}); then
+  local -a chartcontract_args=(-controller-role "${RELEASE}")
+  if [[ -n "${mode}" ]]; then
+    chartcontract_args+=("${mode}")
+  fi
+  if ! render "$@" | (
+    cd "${REPO_ROOT}" &&
+      go run ./hack/chartcontract "${chartcontract_args[@]}"
+  ); then
     mark_fail "chart API contract (${*:-default values}) must match controller-gen CRDs and RBAC"
   fi
 }
