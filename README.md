@@ -168,7 +168,7 @@ agent:
 
 ```sh
 helm install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
-  --version 0.5.2 \
+  --version 0.5.3 \
   --namespace pillar-csi --create-namespace \
   -f values.yaml
 ```
@@ -322,6 +322,10 @@ Upgrading from 0.5.1 to 0.5.2 is a `helm upgrade` with no CRD changes; only the 
 
 - A bug fix: kubelet retries NodePublishVolume without ever re-calling NodeStageVolume while the VolumeAttachment persists, so the 0.5.1 staged-filesystem repair could never run during pod-delete — the pod stayed ContainerCreating with `mount` exit 32 until an operator detached the volume ([#172](https://github.com/isac322/pillar-csi/issues/172)); NodePublishVolume now probes the staged mount before bind-mounting and repairs a dead one in place (unmount + re-mount replays the journal) when nothing else pins it.
 - A bug fix (follow-up to [#168](https://github.com/isac322/pillar-csi/issues/168)): a volume published to two pod bind targets could be downgraded to `NodeStaged` after the first NodeUnpublishVolume while a bind still pinned it; the node plugin now keeps the volume `NodePublished` until the last bind is unpublished.
+
+Upgrading from 0.5.2 to 0.5.3 is a `helm upgrade` with no CRD or values changes; only the node plugin changed. What 0.5.3 adds:
+
+- A bug fix: on a staged filesystem in kernel shutdown, `stat(2)` on the mount point fails with EIO while the mount stays listed, and the 0.5.2 publish repair checked the mount with `stat` first — so every kubelet retry failed with `IsLikelyNotMountPoint ... input/output error` and the pod stayed ContainerCreating until the volume was detached ([#175](https://github.com/isac322/pillar-csi/issues/175)). The node plugin now decides whether a path is mounted from the kernel mount table, so the dead staged mount is repaired in place as soon as no pod bind pins it; read-only, NFS and raw block mounts that skip the write probe are checked with a non-writing probe and are still never reported healthy while dead.
 
 ### Local attach on the storage node
 
