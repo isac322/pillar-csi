@@ -58,15 +58,40 @@ func (*KubeMounter) CheckMountHealth(target string) error {
 func checkMountHealth(
 	target string, open func(string) (int, error), create func(string) (string, error),
 ) error {
-	err := probeMountWritable(target, open, create)
+	fd, err := open(target)
 	switch {
 	case err == nil:
+		_ = unix.Close(fd) //nolint:errcheck // unnamed inode dies with the fd
 		return nil
-	case errors.Is(err, unix.EIO), errors.Is(err, unix.EROFS):
-		return fmt.Errorf("probe %q: %w: %w", target, ErrMountUnhealthy, err)
+	case errors.Is(err, unix.EOPNOTSUPP), errors.Is(err, unix.EISDIR):
+		// O_TMPFILE unsupported on this filesystem — fall through to the
+		// named-file probe below.
 	default:
-		return fmt.Errorf("probe %q: %w", target, err)
+		return classifyProbeError(target, err)
 	}
+
+	name, err := create(target)
+	if err != nil {
+		return classifyProbeError(target, err)
+	}
+	rmErr := os.Remove(name)
+	if rmErr != nil {
+		// The probe write succeeded but left a stray file; report it rather
+		// than leaving debris (AGENTS.md: no silent failures).  The write
+		// itself was accepted, so this is never a dead-filesystem verdict.
+		return fmt.Errorf("probe %q: remove health-check file: %w", target, rmErr)
+	}
+	return nil
+}
+
+// classifyProbeError wraps a failed probe write: EIO and EROFS are the
+// kernel-shutdown signature (ErrMountUnhealthy); anything else is an
+// inconclusive probe failure.
+func classifyProbeError(target string, err error) error {
+	if errors.Is(err, unix.EIO) || errors.Is(err, unix.EROFS) {
+		return fmt.Errorf("probe %q: %w: %w", target, ErrMountUnhealthy, err)
+	}
+	return fmt.Errorf("probe %q: %w", target, err)
 }
 
 // openTmpfileProbe creates an unnamed inode in dir with O_TMPFILE: a
@@ -88,38 +113,6 @@ func createProbeFile(dir string) (string, error) {
 	}
 	_ = f.Close() //nolint:errcheck // empty probe file; nothing to flush
 	return f.Name(), nil
-}
-
-// probeMountWritable issues the metadata-write probe checkMountHealth
-// classifies: the O_TMPFILE open, falling back to create+unlink of a hidden
-// file on filesystems that reject O_TMPFILE.  The raw error is returned
-// unwrapped so the caller can classify the errno.
-func probeMountWritable(
-	target string, open func(string) (int, error), create func(string) (string, error),
-) error {
-	fd, err := open(target)
-	switch {
-	case err == nil:
-		_ = unix.Close(fd) //nolint:errcheck // unnamed inode dies with the fd
-		return nil
-	case errors.Is(err, unix.EOPNOTSUPP), errors.Is(err, unix.EISDIR):
-		// O_TMPFILE unsupported on this filesystem — fall through to the
-		// named-file probe below.
-	default:
-		return err
-	}
-
-	name, err := create(target)
-	if err != nil {
-		return err
-	}
-	rmErr := os.Remove(name)
-	if rmErr != nil {
-		// The probe write succeeded but left a stray file; report it rather
-		// than leaving debris (AGENTS.md: no silent failures).
-		return fmt.Errorf("remove health-check file: %w", rmErr)
-	}
-	return nil
 }
 
 // HasOtherMounts reports whether the filesystem mounted at target is also
