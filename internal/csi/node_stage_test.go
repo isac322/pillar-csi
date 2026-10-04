@@ -129,6 +129,7 @@ type mockMounter struct {
 	// errors to return per method (nil = success).
 	formatAndMountErr error
 	mountErr          error
+	mountErrOnce      error
 	unmountErr        error
 	isMountedErr      error
 	checkHealthErr    error
@@ -213,6 +214,10 @@ func (m *mockMounter) Mount(source, target, fsType string, options []string) err
 	if m.mountErr != nil {
 		return m.mountErr
 	}
+	if err := m.mountErrOnce; err != nil {
+		m.mountErrOnce = nil
+		return err
+	}
 	m.mountedPaths[target] = true
 	m.mountSource[target] = source
 	// A bind mount is read-only when asked ("ro") or when its source mount
@@ -273,6 +278,13 @@ func (m *mockMounter) HasOtherMounts(target string) (bool, error) {
 		return false, fmt.Errorf("%q is not a mount point", target)
 	}
 	return m.deviceMounts(m.resolveSource(target)) > 1, nil
+}
+
+func (m *mockMounter) MountSource(target string) (string, error) {
+	if !m.mountedPaths[target] {
+		return "", fmt.Errorf("%q is not a mount point", target)
+	}
+	return m.mountSource[target], nil
 }
 
 // Compile-time interface check.

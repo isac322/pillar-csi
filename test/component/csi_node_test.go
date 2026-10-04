@@ -25,6 +25,7 @@ package component_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -166,6 +167,7 @@ type csiMockMounter struct {
 	isMountedFn      func(target string) (bool, error)
 	checkHealthFn    func(target string) error
 	hasOtherMountsFn func(target string) (bool, error)
+	mountSourceFn    func(target string) (string, error)
 
 	// call counters
 	formatAndMountCalls int
@@ -175,13 +177,15 @@ type csiMockMounter struct {
 
 	// mounted tracks which paths are currently "mounted" by default behavior.
 	mounted map[string]bool
+	// mountSource records each mount's source so MountSource mirrors mountinfo.
+	mountSource map[string]string
 }
 
 // Verify csiMockMounter implements the full Mounter interface.
 var _ pillarcsi.Mounter = (*csiMockMounter)(nil)
 
 func newCsiMockMounter() *csiMockMounter {
-	return &csiMockMounter{mounted: make(map[string]bool)}
+	return &csiMockMounter{mounted: make(map[string]bool), mountSource: make(map[string]string)}
 }
 
 func (m *csiMockMounter) FormatAndMount(
@@ -196,6 +200,7 @@ func (m *csiMockMounter) FormatAndMount(
 	}
 	m.mu.Lock()
 	m.mounted[target] = true
+	m.mountSource[target] = source
 	m.mu.Unlock()
 	return nil
 }
@@ -210,6 +215,7 @@ func (m *csiMockMounter) Mount(source, target, fsType string, options []string) 
 	}
 	m.mu.Lock()
 	m.mounted[target] = true
+	m.mountSource[target] = source
 	m.mu.Unlock()
 	return nil
 }
@@ -224,6 +230,7 @@ func (m *csiMockMounter) Unmount(target string) error {
 	}
 	m.mu.Lock()
 	delete(m.mounted, target)
+	delete(m.mountSource, target)
 	m.mu.Unlock()
 	return nil
 }
@@ -260,6 +267,21 @@ func (m *csiMockMounter) HasOtherMounts(target string) (bool, error) {
 		return fn(target)
 	}
 	return false, nil
+}
+
+func (m *csiMockMounter) MountSource(target string) (string, error) {
+	m.mu.Lock()
+	fn := m.mountSourceFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(target)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.mounted[target] {
+		return "", fmt.Errorf("%q is not a mount point", target)
+	}
+	return m.mountSource[target], nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

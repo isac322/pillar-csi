@@ -40,29 +40,32 @@ func (c *fakeConnector) GetDevicePath(_ context.Context, _ string) (string, erro
 type fakeMounter struct {
 	mu      sync.Mutex
 	mounted map[string]bool
+	source  map[string]string
 }
 
 func newFakeMounter() *fakeMounter {
-	return &fakeMounter{mounted: map[string]bool{}}
+	return &fakeMounter{mounted: map[string]bool{}, source: map[string]string{}}
 }
 
-func (m *fakeMounter) FormatAndMount(_ context.Context, _, target, _ string, _, _ []string) error {
+func (m *fakeMounter) FormatAndMount(_ context.Context, source, target, _ string, _, _ []string) error {
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.mounted[target] = true
+	m.source[target] = source
 	return nil
 }
 
-func (m *fakeMounter) Mount(_, target, _ string, _ []string) error {
+func (m *fakeMounter) Mount(source, target, _ string, _ []string) error {
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.mounted[target] = true
+	m.source[target] = source
 	return nil
 }
 
@@ -70,6 +73,7 @@ func (m *fakeMounter) Unmount(target string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.mounted, target)
+	delete(m.source, target)
 	return nil
 }
 
@@ -100,6 +104,17 @@ func (m *fakeMounter) HasOtherMounts(target string) (bool, error) {
 		return false, fmt.Errorf("%q is not a mount point", target)
 	}
 	return false, nil
+}
+
+// MountSource reports the recorded mount source, or errors for unmounted
+// paths like the real mountinfo lookup.
+func (m *fakeMounter) MountSource(target string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.mounted[target] {
+		return "", fmt.Errorf("%q is not a mount point", target)
+	}
+	return m.source[target], nil
 }
 
 // fakeResizer is a no-op Resizer for NodeExpandVolume.

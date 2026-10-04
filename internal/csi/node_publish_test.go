@@ -267,10 +267,12 @@ func TestNodePublishVolume_DeadBindRecoversViaTeardown(t *testing.T) {
 	}
 }
 
-// TestNodePublishVolume_BindOntoStillDeadStage verifies that re-publishing
-// against a staged filesystem that is still shut down does not leave a dead
-// bind mounted: the fresh bind fails its health probe, is removed, and the
-// RPC fails so kubelet retries while NodeStageVolume repairs the stage.
+// TestNodePublishVolume_BindOntoStillDeadStage verifies the issue #172
+// repair path: publishing against a staged filesystem that entered kernel
+// shutdown drops the dead staged mount, re-mounts the still-attached
+// device so the journal replays, and then binds the healed filesystem —
+// kubelet's pod-delete flow never re-calls NodeStageVolume, so the publish
+// must repair in place.
 func TestNodePublishVolume_BindOntoStillDeadStage(t *testing.T) {
 	t.Parallel()
 
@@ -292,22 +294,36 @@ func TestNodePublishVolume_BindOntoStillDeadStage(t *testing.T) {
 		VolumeCapability:  mountCap("xfs"),
 		VolumeContext:     mountVolumeContext(nqn, testStorageAddr),
 	})
-	requireGRPCCode(t, err, codes.Internal)
-
-	mounted, _ := env.mounter.IsMounted(targetPath) //nolint:errcheck // mock never errors
-	if mounted {
-		t.Error("dead bind left mounted after the failed publish")
+	if err != nil {
+		t.Fatalf("NodePublishVolume did not repair the dead staged filesystem: %v", err)
 	}
-	if len(env.mounter.unmountCalls) != 1 || env.mounter.unmountCalls[0] != targetPath {
-		t.Errorf("Unmount calls = %v, want exactly [%s]", env.mounter.unmountCalls, targetPath)
+
+	// The dead staged mount was dropped once and the device re-mounted.
+	if len(env.mounter.unmountCalls) != 1 || env.mounter.unmountCalls[0] != stagingPath {
+		t.Errorf("Unmount calls = %v, want exactly [%s]", env.mounter.unmountCalls, stagingPath)
+	}
+	if got := len(env.mounter.formatAndMountCalls); got != 2 {
+		t.Errorf("FormatAndMount calls = %d, want 2 (stage + repair re-mount)", got)
+	} else if got := env.mounter.formatAndMountCalls[1]; got.source != env.connector.devicePath ||
+		got.target != stagingPath {
+		t.Errorf("repair re-mount = (%q -> %q), want (%q -> %q)",
+			got.source, got.target, env.connector.devicePath, stagingPath)
+	}
+	if err := env.mounter.CheckMountHealth(stagingPath); err != nil {
+		t.Errorf("re-mounted staged filesystem still unhealthy: %v", err)
+	}
+	mounted, _ := env.mounter.IsMounted(targetPath) //nolint:errcheck // mock never errors
+	if !mounted {
+		t.Error("target path not bind-mounted after the repaired publish")
 	}
 }
 
-// TestNodePublishVolume_IdempotentDeadBindNotSuccess verifies the original
-// symptom from issue #168: the idempotent path of NodePublishVolume must
-// not report success for a bind mount onto a kernel-shutdown filesystem.
-// The bind is dropped and re-published; while the staged filesystem is
-// still dead, the RPC must fail instead of succeeding.
+// TestNodePublishVolume_IdempotentDeadBindNotSuccess covers the pod-delete
+// sequence from issue #172: after the filesystem shuts down, an idempotent
+// publish drops its own dead bind, then repairs the dead staged mount in
+// place (unmount + re-mount, which replays the journal) and re-binds the
+// healed filesystem — the replacement pod reaches Running without a fresh
+// NodeStageVolume.
 func TestNodePublishVolume_IdempotentDeadBindNotSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -334,11 +350,16 @@ func TestNodePublishVolume_IdempotentDeadBindNotSuccess(t *testing.T) {
 	env.mounter.markUnhealthy(env.connector.devicePath)
 
 	_, err := env.srv.NodePublishVolume(context.Background(), req)
-	requireGRPCCode(t, err, codes.Internal)
+	if err != nil {
+		t.Fatalf("NodePublishVolume did not repair the dead staged filesystem: %v", err)
+	}
 
 	mounted, _ := env.mounter.IsMounted(targetPath) //nolint:errcheck // mock never errors
-	if mounted {
-		t.Error("dead bind left mounted after the failed publish")
+	if !mounted {
+		t.Error("bind not re-mounted after the repaired publish")
+	}
+	if err := env.mounter.CheckMountHealth(stagingPath); err != nil {
+		t.Errorf("re-mounted staged filesystem still unhealthy: %v", err)
 	}
 }
 
@@ -380,9 +401,9 @@ func TestNodePublishVolume_DeadBindProbeError(t *testing.T) {
 // TestNodePublishVolume_ReadonlyBindProbesStagedFilesystem covers the
 // read-only publish of a volume whose staged filesystem is dead: the
 // read-only bind cannot be write-probed (EROFS is its expected answer), so
-// the verdict comes from the staged mount that shares the superblock — a
-// dead verdict drops the bind and reports Internal, never a silent success
-// and never a probe of the read-only bind itself.
+// the verdict and the repair come from the staged mount that shares the
+// superblock — the dead staged mount is dropped and re-mounted, then the
+// read-only bind is restored.
 func TestNodePublishVolume_ReadonlyBindProbesStagedFilesystem(t *testing.T) {
 	t.Parallel()
 
@@ -417,11 +438,166 @@ func TestNodePublishVolume_ReadonlyBindProbesStagedFilesystem(t *testing.T) {
 	env.mounter.markUnhealthy(env.connector.devicePath)
 
 	_, err := env.srv.NodePublishVolume(context.Background(), req)
-	requireGRPCCode(t, err, codes.Internal)
+	if err != nil {
+		t.Fatalf("read-only publish did not repair the dead staged filesystem: %v", err)
+	}
 
 	mounted, _ := env.mounter.IsMounted(targetPath) //nolint:errcheck // mock never errors
+	if !mounted {
+		t.Error("read-only bind not restored after the repaired publish")
+	}
+	if err := env.mounter.CheckMountHealth(stagingPath); err != nil {
+		t.Errorf("re-mounted staged filesystem still unhealthy: %v", err)
+	}
+}
+
+// TestNodePublishVolume_PodDeleteRepairsDeadStage exercises the live
+// failure reported in issue #172 end to end: the old pod's bind is
+// unpublished, only the dead staged mount remains, and kubelet retries
+// NodePublishVolume for the replacement pod — no NodeStageVolume is ever
+// issued, so publish must drop the dead staged mount, re-mount the
+// still-attached device (journal replay), and bind the healed filesystem.
+func TestNodePublishVolume_PodDeleteRepairsDeadStage(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	oldTarget := t.TempDir()
+	newTarget := t.TempDir()
+	const volumeID = "tank/pvc-pod-delete"
+	const nqn = "nqn.test:pod-delete"
+	stageForPublish(t, env, stagingPath, volumeID, nqn)
+
+	volCtx := mountVolumeContext(nqn, testStorageAddr)
+	oldReq := &csi.NodePublishVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagingPath,
+		TargetPath:        oldTarget,
+		VolumeCapability:  mountCap("xfs"),
+		VolumeContext:     volCtx,
+	}
+	if _, err := env.srv.NodePublishVolume(context.Background(), oldReq); err != nil {
+		t.Fatalf("old pod NodePublishVolume: %v", err)
+	}
+
+	// XFS forced shutdown under both mounts; the kernel keeps them listed.
+	env.mounter.markUnhealthy(env.connector.devicePath)
+
+	// Pod teardown succeeds: the old bind is gone, the dead staged mount
+	// is all that remains — exactly what the live repro observed.
+	if _, err := env.srv.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+		VolumeId:   volumeID,
+		TargetPath: oldTarget,
+	}); err != nil {
+		t.Fatalf("NodeUnpublishVolume: %v", err)
+	}
+
+	// The replacement pod's publish repairs the staged filesystem itself.
+	newReq := &csi.NodePublishVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagingPath,
+		TargetPath:        newTarget,
+		VolumeCapability:  mountCap("xfs"),
+		VolumeContext:     volCtx,
+	}
+	if _, err := env.srv.NodePublishVolume(context.Background(), newReq); err != nil {
+		t.Fatalf("replacement pod NodePublishVolume: %v", err)
+	}
+
+	mounted, _ := env.mounter.IsMounted(newTarget) //nolint:errcheck // mock never errors
+	if !mounted {
+		t.Error("replacement bind not mounted after publish repair")
+	}
+	if err := env.mounter.CheckMountHealth(stagingPath); err != nil {
+		t.Errorf("re-mounted staged filesystem still unhealthy: %v", err)
+	}
+	if got := len(env.mounter.formatAndMountCalls); got != 2 {
+		t.Errorf("FormatAndMount calls = %d, want 2 (stage + repair re-mount)", got)
+	}
+}
+
+// TestNodePublishVolume_BindFailureRepairsDeadStage covers kernels that
+// reject a bind-mount of a shut-down superblock outright (mount exit 32 on
+// the live homelab, kernel 6.12): the failed bind triggers the same
+// staged-mount repair and the bind is retried once.
+func TestNodePublishVolume_BindFailureRepairsDeadStage(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	targetPath := t.TempDir()
+	const volumeID = "tank/pvc-bind-reject"
+	const nqn = "nqn.test:bind-reject"
+	stageForPublish(t, env, stagingPath, volumeID, nqn)
+
+	env.mounter.markUnhealthy(env.connector.devicePath)
+	env.mounter.mountErrOnce = errors.New(
+		"mount: wrong fs type, bad option, bad superblock on " + stagingPath)
+
+	_, err := env.srv.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagingPath,
+		TargetPath:        targetPath,
+		VolumeCapability:  mountCap("xfs"),
+		VolumeContext:     mountVolumeContext(nqn, testStorageAddr),
+	})
+	if err != nil {
+		t.Fatalf("NodePublishVolume did not recover after the rejected bind: %v", err)
+	}
+
+	if len(env.mounter.mountCalls) != 2 {
+		t.Errorf("Mount calls = %d, want 2 (rejected bind + retry)", len(env.mounter.mountCalls))
+	}
+	mounted, _ := env.mounter.IsMounted(targetPath) //nolint:errcheck // mock never errors
+	if !mounted {
+		t.Error("target path not bound after repair + retry")
+	}
+}
+
+// TestNodePublishVolume_DeadStagePinnedByBindFails verifies the pinned
+// branch: while another target's bind still references the dead
+// superblock the publish must not unmount the staged mount — the RPC
+// fails retryably until teardown removes the pinning bind.
+func TestNodePublishVolume_DeadStagePinnedByBindFails(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	targetA := t.TempDir()
+	targetB := t.TempDir()
+	const volumeID = "tank/pvc-pinned"
+	const nqn = "nqn.test:pinned"
+	stageForPublish(t, env, stagingPath, volumeID, nqn)
+
+	volCtx := mountVolumeContext(nqn, testStorageAddr)
+	if _, err := env.srv.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagingPath,
+		TargetPath:        targetA,
+		VolumeCapability:  mountCap("xfs"),
+		VolumeContext:     volCtx,
+	}); err != nil {
+		t.Fatalf("first publish: %v", err)
+	}
+
+	env.mounter.markUnhealthy(env.connector.devicePath)
+
+	_, err := env.srv.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagingPath,
+		TargetPath:        targetB,
+		VolumeCapability:  mountCap("xfs"),
+		VolumeContext:     volCtx,
+	})
+	requireGRPCCode(t, err, codes.Internal)
+
+	mounted, _ := env.mounter.IsMounted(stagingPath) //nolint:errcheck // mock never errors
+	if !mounted {
+		t.Error("dead staged mount unmounted while another bind still pins it")
+	}
+	mounted, _ = env.mounter.IsMounted(targetB) //nolint:errcheck // mock never errors
 	if mounted {
-		t.Error("dead read-only bind left mounted after the failed publish")
+		t.Error("target B mounted despite the repair being refused")
 	}
 }
 

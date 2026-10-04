@@ -152,3 +152,19 @@ func hasOtherMounts(entries []mountInfoEntry, target string) (bool, error) {
 	}
 	return false, nil
 }
+
+// MountSource returns the mountinfo source field of the mount at target —
+// the device path (or pseudo source) the filesystem was mounted from.
+// Stacked mounts resolve to the topmost entry, matching findMount.  An
+// error is inconclusive: callers must not treat it as "no device".
+func (*KubeMounter) MountSource(target string) (string, error) {
+	mounts, err := readMountInfoFile(procMountInfoPath)
+	if err != nil {
+		return "", err
+	}
+	me, ok := findMount(mounts, target)
+	if !ok {
+		return "", fmt.Errorf("%q is not a mount point", filepath.Clean(target))
+	}
+	return me.Source, nil
+}

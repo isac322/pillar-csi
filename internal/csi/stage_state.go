@@ -92,6 +92,14 @@ type nodeStageState struct {
 	// written before the field existed.
 	FsType string `json:"fs_type,omitempty"`
 
+	// DevicePath is the block device NodeStageVolume mounted at
+	// StagingPath (the protocol-attach device, or the device-mapper path of
+	// a local attach).  NodePublishVolume re-mounts it when a kernel-shutdown
+	// staged filesystem was dropped and must be repaired in place; records
+	// written before the field existed decode empty and fall back to the
+	// staged mount's mountinfo source.  Empty for NFS.
+	DevicePath string `json:"device_path,omitempty"`
+
 	// NVMeoF holds NVMe-oF TCP teardown state.  Non-nil when ProtocolType == "nvmeof-tcp"
 	// and the volume was staged through the protocol handler.
 	NVMeoF *NVMeoFStageState `json:"nvmeof,omitempty"`
