@@ -46,10 +46,10 @@ Only tunable fields are accepted above the base:
 | `backend` with `lvm` | `provisioningMode` (`linear` or `thin`) |
 | `protocol` with `nvmeofTcp` | `maxQueueSize`, `inCapsuleDataSize`, `maxDataTransferSize`, `ctrlLossTmo`, `reconnectDelay` |
 | `protocol` with `iscsi` | `loginTimeout`, `replacementTimeout`, `noopOutInterval`, `noopOutTimeout` |
-| `protocol` with `nfs` | no per-volume tunables; `mountOptions` belong to `filesystem` |
-| `filesystem` | block: `fsType`, `mkfsOptions`, `mountOptions`, `periodicTrim`; NFS: `mountOptions` only |
+| `protocol` with `nfs` | no per-volume protocol tunables; `nfs: {}` only selects and validates the protocol member; `mountOptions` belong to `filesystem` |
+| `filesystem` | block: `fsType`, `mkfsOptions`, `mountOptions`, `periodicTrim`; NFS: `fsType` omitted or `nfs`, and `mountOptions` only |
 
-The structural fields `zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port`, `nvmeofTcp.acl`, `iscsi.port`, `iscsi.acl`, `nfs.version`, `nfs.port`, `nfs.acl` and `nfs.squash` decide where a volume lives, which protocol it uses, and who can reach it. They are rejected with their path. NFS is fixed to version 4.2 and port 2049, defaults to root squash, and rejects fsType, mkfsOptions, periodic trim, localAttach and contradictory mount flags.
+The structural fields `zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port`, `nvmeofTcp.acl`, `iscsi.port`, `iscsi.acl`, `nfs.version`, `nfs.port`, `nfs.acl` and `nfs.squash` decide where a volume lives, which protocol it uses, and who can reach it. They are rejected with their path. NFS is fixed to version 4.2 and port 2049, defaults to root squash, and accepts only `fsType: nfs` (or an omitted fsType), `mountOptions`, and the supported access modes; it rejects `mkfsOptions`, enabled periodic trim, localAttach and contradictory mount flags.
 
 ```text
 pillar-csi.bhyoo.com/protocol: nvmeofTcp.acl is structural and cannot be set per volume

@@ -111,12 +111,12 @@ type DiscoveredPool struct {
 // AgentCapabilities describes what backends and protocols the remote agent supports.
 type AgentCapabilities struct {
 	// backends lists the backend driver types the agent can manage
-	// (zfs-zvol, lvm-lv).
+	// (zfs-zvol, zfs-dataset, lvm-lv).
 	// +optional
 	Backends []string `json:"backends,omitempty"`
 
 	// protocols lists the network protocols the agent can export storage over
-	// (nvmeof-tcp, iscsi).
+	// (nvmeof-tcp, iscsi, nfs).
 	// +optional
 	Protocols []string `json:"protocols,omitempty"`
 }

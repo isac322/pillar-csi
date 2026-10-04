@@ -93,7 +93,7 @@ The controller records which nodes a volume is published to. It refuses to publi
 | `Filesystem` | Yes | Block protocols use `ext4` (default) or `xfs`; NFS uses the mounted ZFS dataset and never formats it. |
 | `Block` | Yes, block protocols only | The raw NVMe namespace or SCSI disk is bound into the Pod. NFS rejects Block. |
 
-Filesystem settings (`fsType`, `mkfsOptions`, `mountOptions`) come from `PillarStorageClass.spec.filesystem` or the `pillar-csi.bhyoo.com/filesystem` PVC annotation. For NFS, `fsType` must be omitted, `mkfsOptions` must be empty, and `mountOptions` is the only supported filesystem setting.
+Filesystem settings (`fsType`, `mkfsOptions`, `mountOptions`) come from `PillarStorageClass.spec.filesystem` or the `pillar-csi.bhyoo.com/filesystem` PVC annotation. For NFS, `fsType` may be omitted or set to `nfs`; `mkfsOptions` and enabled periodic trim are rejected, and `mountOptions` is the only tunable filesystem setting.
 
 ### Filesystem compatibility
 

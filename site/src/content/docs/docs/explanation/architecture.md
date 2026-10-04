@@ -99,7 +99,7 @@ Configuration is split into three axes: the backend (`zfs` or `lvm`), the protoc
 2. `PillarStorageClass.spec.overrides` and `spec.filesystem` override them for one storage class.
 3. The PVC annotations `pillar-csi.bhyoo.com/backend`, `pillar-csi.bhyoo.com/protocol` and `pillar-csi.bhyoo.com/filesystem` override them for one volume.
 
-For NFS, the ZFS dataset backend and NFS protocol are structural. `version: "4.2"` and `port: 2049` are fixed, `squash` defaults to `root`, and NFS protocol settings are not per-volume overrides. Only `filesystem.mountOptions` supplies mount flags; support defaults such as hard, NFSv4.2 and TCP cannot be contradicted. `fsType`, `mkfsOptions`, periodic trim and `localAttach` are rejected for NFS.
+For NFS, the ZFS dataset backend and NFS protocol are structural. `version: "4.2"` and `port: 2049` are fixed, `squash` defaults to `root`, and NFS protocol settings are not per-volume overrides. Only `filesystem.mountOptions` supplies mount flags; support defaults such as hard, NFSv4.2 and TCP cannot be contradicted. `fsType` may be omitted or set to `nfs`; `mkfsOptions`, enabled periodic trim and `localAttach` are rejected for NFS.
 
 Each axis is a union with one member per implementation, and the controller, node plugin and agent dispatch on that member. The CRDs accept the `nvmeofTcp`, `iscsi`, and `nfs` protocols and the `zfs` and `lvm` backends. SMB and directory backends are not offered.
 

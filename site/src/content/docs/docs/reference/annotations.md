@@ -95,11 +95,12 @@ The controller writes these into `PersistentVolume.spec.csi.volumeAttributes` at
 
 | Key | Value |
 |---|---|
-| `target_id` | target identifier; for NVMe-oF/TCP, the subsystem NQN; for iSCSI, the target IQN |
+| `target_id` | target identifier; for NVMe-oF/TCP, the subsystem NQN; for iSCSI, the target IQN; for NFS, the server export path |
 | `address` | storage node address the export listens on, recorded at provisioning |
-| `port` | TCP port the export listens on, recorded at provisioning |
-| `pillar-csi.bhyoo.com/protocol-type` | `nvmeof-tcp` or `iscsi` |
-| `pillar-csi.bhyoo.com/volume-ref` | protocol-level reference of the volume (the NVMe subsystem name, or the iSCSI LUN number `0`) |
+| `port` | TCP port the export listens on, recorded at provisioning; NFS is fixed at `2049` |
+| `pillar-csi.bhyoo.com/protocol-type` | `nvmeof-tcp`, `iscsi` or `nfs` |
+| `pillar-csi.bhyoo.com/nfs-version` | resolved NFS version, currently `4.2` |
+| `pillar-csi.bhyoo.com/volume-ref` | protocol-level reference of the volume (the NVMe subsystem name, iSCSI LUN number `0`, or the NFS export path) |
 | `pillar-csi.bhyoo.com/nvmeof-max-queue-size` | resolved `maxQueueSize` |
 | `pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo` | resolved `ctrlLossTmo`, seconds |
 | `pillar-csi.bhyoo.com/nvmeof-reconnect-delay` | resolved `reconnectDelay`, seconds |

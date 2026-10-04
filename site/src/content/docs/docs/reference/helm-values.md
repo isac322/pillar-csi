@@ -694,7 +694,7 @@ Additional environment variables injected into the node container.
 
 Type: `bool`. Default: `true`
 
-Run the node Pod in the host network namespace. Required because `nvme connect` writes to /dev/nvme-fabrics issue TCP SYNs from the caller's netns; with hostNetwork: false the SYNs originate in the pod netns and cannot reach the host-network nvmet listener exposed by the agent. See PRD §2.4 for the kernel netns rationale.
+Run the node Pod in the host network namespace. Required because `nvme connect` writes to /dev/nvme-fabrics and NFS mounts reach the storage-node listener from the caller's netns; with hostNetwork: false those operations originate in the pod netns and cannot reach host-network targets reliably. See PRD §2.4 for the kernel netns rationale.
 
 ### <code>node.<wbr>image.<wbr>pullPolicy</code>
 

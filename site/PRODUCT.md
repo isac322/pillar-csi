@@ -16,23 +16,23 @@ Primary: homelab and self-hosting people who already run ZFS pools or LVM volume
 
 ## Product Purpose
 
-pillar-csi is a Kubernetes CSI driver that exports ZFS zvols and LVM logical volumes from storage nodes to pods over the kernel NVMe-oF/TCP target. One driver, one Helm release, one configuration model for every backend and protocol. Success: a pod mounts a PVC carved from a pool the user already runs, with no per-driver reinstall when backends or protocols multiply.
+pillar-csi is a Kubernetes CSI driver that exports ZFS zvols and LVM logical volumes from storage nodes to pods over NVMe-oF/TCP or iSCSI, and ZFS datasets over NFSv4.2. One driver, one Helm release, one configuration model for every backend and protocol. Success: a pod mounts a PVC carved from a pool the user already runs, with no per-driver reinstall when backends or protocols multiply.
 
 ## Positioning
 
-The mechanism a neighboring driver cannot copy: the data path is 100% kernel code. The storage node exports through in-kernel `nvmet`; the worker connects through the in-kernel NVMe/TCP initiator via `/dev/nvme-fabrics`. pillar-csi configures both ends, then leaves the I/O path — components can restart without touching connected volumes. One driver replaces the several-per-backend sprawl (one for ZFS, one for LVM, one per protocol) with a single install and a single YAML configuration model shared across backends, protocols, and filesystems.
+The mechanism a neighboring driver cannot copy: the data path stays in kernel-backed transports. Storage nodes export block volumes through in-kernel `nvmet` or LIO and serve ZFS datasets through the kernel NFS server; workers connect through the matching kernel initiator or NFS client. pillar-csi configures both ends, then leaves the I/O path — components can restart without touching connected volumes. One driver replaces the several-per-backend sprawl (one for ZFS, one for LVM, one per protocol) with a single install and a single YAML configuration model shared across backends, protocols, and filesystems.
 
 ## Operating Context
 
 - Install: Helm chart (`kubeVersion >= 1.24.0`, Helm 3.8+ for OCI). One release deploys three workloads: `pillar-controller` (Deployment), `pillar-agent` (DaemonSet on labeled storage nodes), `pillar-node` (DaemonSet on workers).
-- Host prep is kernel-side only: `nvmet`/`nvmet_tcp` on storage nodes, `nvme_fabrics`/`nvme_tcp` on workers, plus an existing ZFS pool or LVM VG (and `dm_thin_pool` for thin). Images carry every userspace tool (OpenZFS 2.4, lvm2, e2fsprogs, xfsprogs); no SSH, no `nvme-cli`/`nvmetcli`/`targetcli` needed anywhere.
+- Host prep is kernel-side only: `nvmet`/`nvmet_tcp` on storage nodes, `nvme_fabrics`/`nvme_tcp` on workers, iSCSI target/initiator modules for iSCSI, NFS server/client support for NFS, plus an existing ZFS pool or LVM VG (and `dm_thin_pool` for thin). Images carry every userspace tool (OpenZFS 2.4, lvm2, e2fsprogs, xfsprogs, NFS export supervision and mount helpers); no SSH, no `nvme-cli`/`nvmetcli`/`targetcli`/`iscsiadm`/`iscsid` or host NFS utilities needed anywhere.
 - Configuration: cluster-scoped CRDs `PillarAgent` → `PillarStore` → `PillarProtocol` → `PillarStorageClass`; per-volume overrides via PVC annotations. Docs follow Diátaxis (tutorials / how-to / reference / explanation) plus community.
-- Honest limits (must never be hidden): volumes are not replicated — a volume is unavailable while its storage node is down. Planned protocols (iSCSI, NFS, SMB) are not implemented; only `nvmeofTcp` protocol + `zfs`/`lvm` backends exist today. Controller→agent gRPC is plaintext unless mTLS is enabled.
+- Honest limits (must never be hidden): volumes are not replicated — a volume is unavailable while its storage node is down. NFS ReadWriteMany still serves from one storage node. SMB is planned and unavailable; controller→agent gRPC is plaintext unless mTLS is enabled.
 
 ## Capabilities and Constraints
 
-- Backends today: ZFS zvols, LVM logical volumes. Protocol today: NVMe-oF over TCP (port 4420 default, ACL optional). Planned, never claimable as shipped: iSCSI, NFS, SMB.
-- ext4 (default) or xfs; Filesystem and Block volume modes; expansion, fencing, durable state via `PillarVolumeState`.
+- Backends today: ZFS zvols, ZFS datasets, LVM logical volumes. Protocols today: NVMe-oF over TCP, iSCSI and NFSv4.2. NFS is ZFS-dataset-only; SMB remains planned and unavailable.
+- ext4 (default) or xfs for block volumes; ZFS datasets are mounted over NFS without formatting; Filesystem and Block volume modes follow protocol limits; expansion, fencing, durable state via `PillarVolumeState`.
 - Site: English only, GitHub Pages static, canonical domain https://pillar-csi.bhyoo.com.
 - Never state performance numbers. Never name boards/devices (kernel requirements only).
 

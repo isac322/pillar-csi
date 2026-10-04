@@ -59,6 +59,6 @@ The controller-to-agent gRPC channel can use mTLS, but it is off by default; see
 
 ## Which filesystems does it support?
 
-Block protocols format new volumes with ext4 (the default) or xfs and mount them. NFS uses an already-mounted ZFS dataset and never formats it. It accepts only `filesystem.mountOptions`; `fsType`, `mkfsOptions`, periodic trim, and explicit block volume mode are rejected for NFS. It never reformats a volume that already has a filesystem. With `volumeMode: Block`, the pod gets the raw NVMe or SCSI device and no filesystem is created.
+Block protocols format new volumes with ext4 (the default) or xfs and mount them. NFS uses an already-mounted ZFS dataset and never formats it. For NFS, `fsType` may be omitted or set to `nfs`; `mountOptions` is the only supported filesystem setting. `mkfsOptions`, enabled periodic trim, and explicit block volume mode are rejected. It never reformats a volume that already has a filesystem. With `volumeMode: Block`, the pod gets the raw NVMe or SCSI device and no filesystem is created.
 
 For NFS, `squash: root` is the conservative default. Select `squash: none` explicitly when a workload needs root or fsGroup initialization to reach the dataset; this is an authorization choice, not transport protection.
