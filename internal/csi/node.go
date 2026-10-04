@@ -1848,11 +1848,51 @@ func (n *NodeServer) NodeUnpublishVolume(
 	}
 
 	// ── Revert state machine to NodeStaged ──────────────────────────────────
-	if n.sm != nil {
+	// The state machine aggregates every publish target of the volume: it
+	// may demote to NodeStaged only when this unpublish removed the last
+	// mount sharing the staged filesystem.  While another target's bind
+	// still references it the volume stays NodePublished — demoting anyway
+	// would make the surviving bind's own NodeUnpublishVolume return early
+	// without unmounting it, pinning a dead staged superblock forever so
+	// the stage repair could never proceed (issue #168).
+	if n.sm != nil && n.lastPublishRemoved(volumeID) {
 		n.sm.ForceState(volumeID, StateNodeStaged)
 	}
 
 	return &csi.NodeUnpublishVolumeResponse{}, nil
+}
+
+// lastPublishRemoved reports whether the unpublish that just completed
+// removed the last mount sharing the volume's staged filesystem: with no
+// mounts left, the volume's per-volume aggregate state may revert from
+// NodePublished to NodeStaged.  A surviving bind of another publish target
+// keeps the answer false.
+//
+// The check mirrors dropUnusableStagedMount's pinning test against the
+// staged filesystem recorded in the stage state.  Whenever sharing cannot
+// be proven the answer is true — the pre-existing unconditional demotion:
+//   - no stage record (or one without a staging path) leaves no staged
+//     filesystem to compare against;
+//   - a Block-mode volume has no staged filesystem at all: its staging
+//     surface is a bind of a device node, whose mountinfo device number is
+//     that of the filesystem holding the node (devtmpfs), shared by /dev
+//     itself and every other device-node bind;
+//   - HasOtherMounts errs only when the staged mount is gone or the mount
+//     table is unreadable.
+//
+// Holding NodePublished on an unprovable bind would block
+// NodeUnstageVolume instead.
+func (n *NodeServer) lastPublishRemoved(volumeID string) bool {
+	state, stateErr := n.readStageState(volumeID)
+	if stateErr != nil || state == nil || state.StagingPath == "" ||
+		state.AccessType == AccessTypeBlock {
+		return true
+	}
+	others, mountsErr := n.mounter.HasOtherMounts(state.StagingPath)
+	if mountsErr != nil {
+		return true
+	}
+	return !others
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

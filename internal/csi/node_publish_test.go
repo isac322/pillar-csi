@@ -749,3 +749,124 @@ func TestNodeFullLifecycle(t *testing.T) {
 		t.Errorf("Disconnect called %d times, want 1", len(env.connector.disconnectCalls))
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NodePublishVolume/NodeUnpublishVolume — multiple publish targets (issue #168)
+// ─────────────────────────────────────────────────────────────────────────────.
+
+// newNodeTestEnvWithSM returns the mock-mounter test env wired to a real
+// VolumeStateMachine, for tests that assert the per-volume state across
+// several publish targets.
+func newNodeTestEnvWithSM(t *testing.T) (*nodeTestEnv, *VolumeStateMachine) {
+	t.Helper()
+	conn := &mockConnector{devicePath: "/dev/nvme0n1"}
+	mnt := newMockMounter()
+	sm := NewVolumeStateMachine()
+	stateDir := t.TempDir()
+	srv := NewNodeServerWithStateMachine("test-node", conn, mnt, stateDir, sm)
+	return &nodeTestEnv{srv: srv, connector: conn, mounter: mnt, stateDir: stateDir}, sm
+}
+
+// TestNodePublishVolume_MultiTargetRepairAfterBothUnpublish covers the
+// multi-target case of issue #168: one staged filesystem serving two
+// publish binds enters kernel shutdown.  While either bind survives the
+// state machine must stay NodePublished — the aggregate still has live
+// publishes — and the stage repair must stay refused.  Only after both
+// targets are unpublished may the state demote and the re-stage repair
+// proceed.
+func TestNodePublishVolume_MultiTargetRepairAfterBothUnpublish(t *testing.T) {
+	t.Parallel()
+
+	env, sm := newNodeTestEnvWithSM(t)
+	stagingPath := t.TempDir()
+	targetA := t.TempDir()
+	targetB := t.TempDir()
+	const volumeID = "tank/pvc-multi-target"
+	const nqn = "nqn.test:multi-target"
+	volCtx := mountVolumeContext(nqn, testStorageAddr)
+
+	sm.ForceState(volumeID, StateControllerPublished)
+	if _, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("xfs"),
+		VolumeContext:     volCtx,
+	}); err != nil {
+		t.Fatalf("NodeStageVolume: %v", err)
+	}
+	publishReq := func(target string) *csi.NodePublishVolumeRequest {
+		return &csi.NodePublishVolumeRequest{
+			VolumeId:          volumeID,
+			StagingTargetPath: stagingPath,
+			TargetPath:        target,
+			VolumeCapability:  mountCap("xfs"),
+			VolumeContext:     volCtx,
+		}
+	}
+	if _, err := env.srv.NodePublishVolume(context.Background(), publishReq(targetA)); err != nil {
+		t.Fatalf("NodePublishVolume target A: %v", err)
+	}
+	if _, err := env.srv.NodePublishVolume(context.Background(), publishReq(targetB)); err != nil {
+		t.Fatalf("NodePublishVolume target B: %v", err)
+	}
+
+	// The staged filesystem enters kernel shutdown under both binds.
+	env.mounter.markUnhealthy(env.connector.devicePath)
+
+	// While both binds pin the dead superblock the re-stage fails honestly
+	// and the aggregate state stays NodePublished.
+	stageReq := &csi.NodeStageVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("xfs"),
+		VolumeContext:     volCtx,
+	}
+	_, stageErr := env.srv.NodeStageVolume(context.Background(), stageReq)
+	requireGRPCCode(t, stageErr, codes.Internal)
+	if got := sm.GetState(volumeID); got != StateNodePublished {
+		t.Fatalf("state after refused repair = %v, want %v", got, StateNodePublished)
+	}
+
+	// Teardown of the first target: the second bind still pins the staged
+	// filesystem, so the volume must remain NodePublished and the repair
+	// must stay refused.
+	if _, err := env.srv.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+		VolumeId:   volumeID,
+		TargetPath: targetA,
+	}); err != nil {
+		t.Fatalf("NodeUnpublishVolume target A: %v", err)
+	}
+	if got := sm.GetState(volumeID); got != StateNodePublished {
+		t.Fatalf("state while target B still bound = %v, want %v", got, StateNodePublished)
+	}
+	_, stageErr = env.srv.NodeStageVolume(context.Background(), stageReq)
+	requireGRPCCode(t, stageErr, codes.Internal)
+
+	// Teardown of the second target removes the last mount sharing the
+	// staged filesystem: only now may the state demote and the next stage
+	// repair the dead mount.
+	if _, err := env.srv.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+		VolumeId:   volumeID,
+		TargetPath: targetB,
+	}); err != nil {
+		t.Fatalf("NodeUnpublishVolume target B: %v", err)
+	}
+	if env.mounter.mountedPaths[targetB] {
+		t.Error("target B still mounted after its NodeUnpublishVolume succeeded")
+	}
+	if got := sm.GetState(volumeID); got != StateNodeStaged {
+		t.Fatalf("state after last unpublish = %v, want %v", got, StateNodeStaged)
+	}
+
+	if _, err := env.srv.NodeStageVolume(context.Background(), stageReq); err != nil {
+		t.Fatalf("NodeStageVolume repair after teardown: %v", err)
+	}
+	if err := env.mounter.CheckMountHealth(stagingPath); err != nil {
+		t.Errorf("staged filesystem still unhealthy after repair: %v", err)
+	}
+
+	// A replacement pod can bind the healed filesystem again.
+	if _, err := env.srv.NodePublishVolume(context.Background(), publishReq(t.TempDir())); err != nil {
+		t.Fatalf("NodePublishVolume after repair: %v", err)
+	}
+}
