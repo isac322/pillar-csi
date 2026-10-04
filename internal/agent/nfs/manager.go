@@ -170,7 +170,13 @@ func (e Export) options() string {
 	case squashAll:
 		squash = "all_squash"
 	}
-	return mode + ",sync,no_subtree_check,secure,sec=sys,fsid=" + e.fsid() + "," + squash
+	traversal := ""
+	if e.VolumeID != rootVolumeID && e.SourceKey != "" && e.FenceUID != "" {
+		// Adopted datasets can be separate mounts beneath the pseudoroot.
+		// Admit traversal through their own exports, never global crossmnt.
+		traversal = ",nohide"
+	}
+	return mode + ",sync,no_subtree_check,secure,sec=sys,fsid=" + e.fsid() + "," + squash + traversal
 }
 
 type entry struct{ Path, Client, Options string }
@@ -808,9 +814,10 @@ func optionValue(options, key string) string {
 
 func optionsMatch(actual, wanted string) bool {
 	flags := strings.Split(actual, ",")
-	if slices.Contains(flags, "crossmnt") || slices.Contains(flags, "nohide") {
+	if slices.Contains(flags, "crossmnt") {
 		return false
 	}
+	wantNohide := false
 	for option := range strings.SplitSeq(wanted, ",") {
 		if !slices.Contains(flags, option) {
 			return false
@@ -833,12 +840,15 @@ func optionsMatch(actual, wanted string) bool {
 			opposite = "async"
 		case "no_subtree_check":
 			opposite = "subtree_check"
+		case "nohide":
+			wantNohide = true
+			opposite = "hide"
 		}
 		if opposite != "" && slices.Contains(flags, opposite) {
 			return false
 		}
 	}
-	return true
+	return slices.Contains(flags, "nohide") == wantNohide
 }
 
 // Put preserves grants on ordinary export retries; exact=true replaces the ACL.
