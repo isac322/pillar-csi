@@ -59,7 +59,7 @@ Keep these rules in mind:
 
 ```sh
 helm install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
-  --version 0.5.0 \
+  --version 0.5.1 \
   --namespace pillar-csi --create-namespace \
   --values values.yaml \
   --wait
@@ -105,7 +105,7 @@ Controller-to-agent gRPC is plaintext by default. To turn on mutual TLS with cer
 
 ```sh
 helm upgrade pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
-  --version 0.5.0 \
+  --version 0.5.1 \
   --namespace pillar-csi \
   --values values.yaml \
   --wait
