@@ -77,10 +77,10 @@ func (m *fakeMounter) Unmount(target string) error {
 	return nil
 }
 
-func (m *fakeMounter) IsMounted(target string) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.mounted[target], nil
+// CheckMountReadable reports every path as readable: the fake never
+// simulates a dead mount.
+func (m *fakeMounter) CheckMountReadable(_ string) error {
+	return nil
 }
 
 // CheckMountHealth reports every recorded mount as healthy: the fake never
@@ -115,6 +115,14 @@ func (m *fakeMounter) MountSource(target string) (string, error) {
 		return "", fmt.Errorf("%q is not a mount point", target)
 	}
 	return m.source[target], nil
+}
+
+// MountEntryExists mirrors the mountinfo table: the fake records one entry
+// per mount, so it equals the mounted map without any filesystem stat.
+func (m *fakeMounter) MountEntryExists(target string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.mounted[target], nil
 }
 
 // fakeResizer is a no-op Resizer for NodeExpandVolume.

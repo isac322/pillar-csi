@@ -310,3 +310,32 @@ func TestKubeMounter_HasOtherMounts_SubdirBindCountsAsPinning(t *testing.T) {
 		})
 	}
 }
+
+// TestKubeMounter_MountEntryExists_SymlinkedParent pins the mount-table
+// lookups against a kubelet root reached through a symlink: mountinfo
+// records resolved mount points, so /link/proc must still find the /proc
+// mount (a stat-based check follows symlinks; a literal mountinfo match
+// would report a live mount as absent and let NodeStageVolume mount twice).
+// /proc is a mount point on every Linux host, so no root is needed.
+func TestKubeMounter_MountEntryExists_SymlinkedParent(t *testing.T) {
+	t.Parallel()
+
+	link := filepath.Join(t.TempDir(), "root-link")
+	if err := os.Symlink("/", link); err != nil {
+		t.Fatal(err)
+	}
+	km := NewKubeMounter()
+
+	ok, err := km.MountEntryExists(filepath.Join(link, "proc"))
+	if err != nil || !ok {
+		t.Fatalf("MountEntryExists(<symlink to />/proc) = %v, %v; want true", ok, err)
+	}
+	source, err := km.MountSource(filepath.Join(link, "proc"))
+	if err != nil || source != "proc" {
+		t.Errorf("MountSource(<symlink to />/proc) = %q, %v; want \"proc\"", source, err)
+	}
+	ok, err = km.MountEntryExists(filepath.Join(link, "proc", "no-such-mount"))
+	if err != nil || ok {
+		t.Errorf("MountEntryExists of a non-mount under the link = %v, %v; want false", ok, err)
+	}
+}

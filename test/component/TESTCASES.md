@@ -711,7 +711,7 @@ are tested here.
 |---|--------------|-------------|-------|-----------------|
 | 14 | `TestCSINode_NodePublishVolume_Success` | Bind-mounts staging path to target path | Mock mounter: Mount→OK | Returns empty NodePublishVolumeResponse |
 | 15 | `TestCSINode_NodePublishVolume_ReadOnly` | Read-only publish uses ro mount option | ReadOnly=true in request | Mount called with "ro" option |
-| 16 | `TestCSINode_NodePublishVolume_Idempotent` | Already-published volume is a no-op | Mock mounter: IsMounted→true | Returns empty response; no error |
+| 16 | `TestCSINode_NodePublishVolume_Idempotent` | Already-published volume is a no-op | Mock mounter: MountEntryExists→true | Returns empty response; no error |
 | 17 | `TestCSINode_NodePublishVolume_MountFails` | Mount failure returns Internal | Mock mounter: Mount→error | Returns gRPC Internal |
 | 18 | `TestCSINode_NodeUnpublishVolume_Success` | Unmounts target path | Mock mounter: Unmount→OK | Returns empty NodeUnpublishVolumeResponse |
 | 19 | `TestCSINode_NodeUnpublishVolume_Idempotent` | Unpublishing not-published volume is a no-op | Target path not mounted | Returns empty response; no error |
@@ -784,8 +784,8 @@ These tests exercise failure paths around that persistence mechanism.
 |---|--------------|-------------|-------|-----------------|
 | 35 | `TestCSINode_NodeUnstage_CorruptStateFile` | Corrupt (non-JSON) state file during unstage is handled without panic | Pre-write arbitrary bytes to state file path; call NodeUnstageVolume | Returns non-OK gRPC status; no panic; no infinite loop |
 | 36 | `TestCSINode_NodeStage_StateDirUnwritable` | Unwritable stateDir causes NodeStageVolume to fail after mount succeeds | stateDir has mode 0555; connector and mounter succeed; call NodeStageVolume | Returns non-OK gRPC status; error mentions state file or stateDir; no panic |
-| 37 | `TestCSINode_NodeUnstage_StateFileMissingIsOK` | Missing state file is treated as "not staged" — NodeUnstage becomes a no-op | Volume staged, state file manually deleted, IsMounted→false; call NodeUnstageVolume | Returns empty response; no error; Disconnect may or may not be called |
-| 38 | `TestCSINode_NodeStage_Idempotent_StateFileExists` | Second NodeStageVolume when state file already exists and path is mounted is a no-op | First stage succeeded (state file written); second identical request; IsMounted→true | Returns empty NodeStageVolumeResponse; Connector.Connect called at most once |
+| 37 | `TestCSINode_NodeUnstage_StateFileMissingIsOK` | Missing state file is treated as "not staged" — NodeUnstage becomes a no-op | Volume staged, state file manually deleted, MountEntryExists→false; call NodeUnstageVolume | Returns empty response; no error; Disconnect may or may not be called |
+| 38 | `TestCSINode_NodeStage_Idempotent_StateFileExists` | Second NodeStageVolume when state file already exists and path is mounted is a no-op | First stage succeeded (state file written); second identical request; MountEntryExists→true | Returns empty NodeStageVolumeResponse; Connector.Connect called at most once |
 
 ---
 
@@ -832,11 +832,12 @@ interactions needed.
 
 ---
 
-### 5.13 IsMounted Error Paths (cross-cutting within CSI Node)
+### 5.13 Mount-Table Lookup Error Paths (cross-cutting within CSI Node)
 
-`Mounter.IsMounted` is called as an idempotency guard in `NodeStageVolume`
-(before `FormatAndMount`) and `NodePublishVolume` (before bind-mount).
-`NodeUnpublishVolume` and `NodeUnstageVolume` no longer gate on `IsMounted`:
+`Mounter.MountEntryExists` (a `/proc/self/mountinfo` lookup that never
+stats the mounted filesystem, issue #175) is called as an idempotency guard
+in `NodeStageVolume` (before `FormatAndMount`) and `NodePublishVolume`
+(before bind-mount). `NodeUnpublishVolume` and `NodeUnstageVolume` do not gate on it:
 they delegate to the idempotent `Mounter.Unmount`, which owns the
 not-mounted/corrupted-mount decision (corrupted probes such as stat `EIO`
 still result in an unmount attempt — see `internal/csi/mounter_test.go`).
@@ -845,8 +846,8 @@ correctly rather than leaving the node in an indeterminate mount state.
 
 | # | Test Function | Description | Setup | Expected Outcome |
 |---|--------------|-------------|-------|-----------------|
-| 50 | `TestCSIErrors_NodeStage_IsMountedError_MountAccess` | IsMounted failure during NodeStageVolume (mount access, after connect) returns Internal | Mock connector: Connect→OK, GetDevicePath→"/dev/nvme0n1"; mock mounter: IsMounted→error | Returns gRPC Internal; FormatAndMount not called |
-| 51 | `TestCSIErrors_NodePublish_IsMountedError` | IsMounted failure during NodePublishVolume returns Internal | Mock mounter: IsMounted→error | Returns gRPC Internal; Mount not called |
+| 50 | `TestCSIErrors_NodeStage_IsMountedError_MountAccess` | Mount-table lookup failure during NodeStageVolume (mount access, after connect) returns Internal | Mock connector: Connect→OK, GetDevicePath→"/dev/nvme0n1"; mock mounter: MountEntryExists→error (mountinfo unreadable) | Returns gRPC Internal; FormatAndMount not called |
+| 51 | `TestCSIErrors_NodePublish_IsMountedError` | Mount-table lookup failure during NodePublishVolume returns Internal | Mock mounter: MountEntryExists→error (mountinfo unreadable) | Returns gRPC Internal; Mount not called |
 | 52 | (removed — `NodeUnpublishVolume` calls `Mounter.Unmount` directly; unmount/probe failures are covered by case 25 and the `TestKubeMounter_Unmount_*` matrix) | — | — | — |
 
 ---
@@ -893,12 +894,14 @@ type mockConnector struct {
 }
 
 // mockMounter (csi_node_test.go, csi_errors_test.go)
-// Simplification: no real mount syscall; IsMounted uses in-memory state.
+// Simplification: no real mount syscall; the mount table is in-memory state.
+// markUnhealthy(source) models a kernel shutdown: entries stay listed
+// (MountEntryExists true) while the stat probe CheckMountReadable fails with EIO.
 type mockMounter struct {
-    formatAndMountFn func(src, tgt, fs string, opts []string) error
-    mountFn          func(src, tgt, fs string, opts []string) error
-    unmountFn        func(tgt string) error
-    isMountedFn      func(tgt string) (bool, error)
+    formatAndMountFn   func(src, tgt, fs string, opts []string) error
+    mountFn            func(src, tgt, fs string, opts []string) error
+    unmountFn          func(tgt string) error
+    mountEntryExistsFn func(tgt string) (bool, error)
 }
 ```
 

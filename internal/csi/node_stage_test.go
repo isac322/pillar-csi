@@ -127,20 +127,20 @@ type mockMounter struct {
 	mountRO map[string]bool
 
 	// errors to return per method (nil = success).
-	formatAndMountErr error
-	mountErr          error
-	mountErrOnce      error
-	unmountErr        error
-	isMountedErr      error
-	checkHealthErr    error
-	hasOtherMountsErr error
+	formatAndMountErr   error
+	mountErr            error
+	mountErrOnce        error
+	unmountErr          error
+	mountEntryExistsErr error
+	checkHealthErr      error
+	hasOtherMountsErr   error
 
 	// Recorded calls.
-	formatAndMountCalls []formatAndMountCall
-	mountCalls          []mountCall
-	unmountCalls        []string
-	isMountedCalls      []string
-	checkHealthCalls    []string
+	formatAndMountCalls   []formatAndMountCall
+	mountCalls            []mountCall
+	unmountCalls          []string
+	mountEntryExistsCalls []string
+	checkHealthCalls      []string
 }
 
 type formatAndMountCall struct {
@@ -242,10 +242,21 @@ func (m *mockMounter) Unmount(target string) error {
 	return nil
 }
 
-func (m *mockMounter) IsMounted(target string) (bool, error) {
-	m.isMountedCalls = append(m.isMountedCalls, target)
-	if m.isMountedErr != nil {
-		return false, m.isMountedErr
+// CheckMountReadable mirrors KubeMounter's stat probe: a mounted filesystem
+// in kernel shutdown keeps its mount table entry but answers stat(2) with
+// EIO (issue #175); an unmounted directory stats fine.
+func (m *mockMounter) CheckMountReadable(target string) error {
+	if m.mountedPaths[target] && m.unhealthy[m.resolveSource(target)] {
+		return fmt.Errorf("stat %s: %w: %w", target, ErrMountUnhealthy, syscall.EIO)
+	}
+	return nil
+}
+
+// MountEntryExists mirrors mountinfo: a dead mount keeps its entry.
+func (m *mockMounter) MountEntryExists(target string) (bool, error) {
+	m.mountEntryExistsCalls = append(m.mountEntryExistsCalls, target)
+	if m.mountEntryExistsErr != nil {
+		return false, m.mountEntryExistsErr
 	}
 	return m.mountedPaths[target], nil
 }
@@ -416,7 +427,7 @@ func TestNodeStageVolume_MountAccess(t *testing.T) { //nolint:gocyclo // multipl
 	}
 
 	// Staging path must be mounted.
-	mounted, _ := env.mounter.IsMounted(stagingPath) //nolint:errcheck // mock never returns an error
+	mounted, _ := env.mounter.MountEntryExists(stagingPath) //nolint:errcheck // mock never returns an error
 	if !mounted {
 		t.Error("staging path not mounted after NodeStageVolume")
 	}
@@ -477,7 +488,7 @@ func TestNodeStageVolume_MalformedNVMeoFTuning_NoConnect(t *testing.T) {
 	if len(env.connector.connectCalls) != 0 {
 		t.Fatalf("Connect must not be called for malformed tuning, got %d calls", len(env.connector.connectCalls))
 	}
-	if mounted, _ := env.mounter.IsMounted(stagingPath); mounted { //nolint:errcheck // mock never errors
+	if mounted, _ := env.mounter.MountEntryExists(stagingPath); mounted { //nolint:errcheck // mock never errors
 		t.Fatal("staging path must not be mounted after rejected NodeStageVolume")
 	}
 }
@@ -653,7 +664,7 @@ func TestNodeStageVolume_StagedFilesystemShutdown_ReStages(t *testing.T) {
 	}
 
 	// The filesystem enters kernel shutdown while every mount table entry
-	// stays in place — the signature IsMounted cannot see.
+	// stays in place — the signature a mount-table check alone cannot see.
 	env.mounter.markUnhealthy(env.connector.devicePath)
 
 	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
@@ -731,7 +742,7 @@ func TestNodeStageVolume_StagedFilesystemShutdown_PinnedByBind(t *testing.T) {
 	if got := len(env.mounter.formatAndMountCalls); got != 1 {
 		t.Errorf("FormatAndMount called %d times, want 1 (no re-mount while pinned)", got)
 	}
-	mounted, _ := env.mounter.IsMounted(stagingPath) //nolint:errcheck // mock never errors
+	mounted, _ := env.mounter.MountEntryExists(stagingPath) //nolint:errcheck // mock never errors here
 	if !mounted {
 		t.Error("staging mount was removed although the filesystem is still pinned")
 	}
@@ -780,7 +791,7 @@ func TestNodeStageVolume_StagedFilesystemShutdown_ProbeError(t *testing.T) {
 	if len(env.mounter.unmountCalls) != 0 {
 		t.Errorf("Unmount called %d times on an inconclusive probe, want 0", len(env.mounter.unmountCalls))
 	}
-	mounted, _ := env.mounter.IsMounted(stagingPath) //nolint:errcheck // mock never errors
+	mounted, _ := env.mounter.MountEntryExists(stagingPath) //nolint:errcheck // mock never errors
 	if !mounted {
 		t.Error("staging mount was dropped on an inconclusive probe")
 	}
@@ -880,6 +891,37 @@ func TestNodeStageVolume_ReadonlyMountSkipsProbe(t *testing.T) {
 	}
 }
 
+// TestNodeStageVolume_ReadonlyDeadStageFails covers the read-only side of
+// issue #175: a filesystem staged "ro" skips the write probe, but when it
+// enters kernel shutdown (mount entry kept, stat EIO) the idempotent retry
+// must still fail rather than report the dead mount staged — the
+// non-writing stat probe catches it — and nothing may be unmounted.
+func TestNodeStageVolume_ReadonlyDeadStageFails(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	req := &csi.NodeStageVolumeRequest{
+		VolumeId:          "tank/pvc-stage-ro-dead",
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCapRO("xfs"),
+		VolumeContext:     mountVolumeContext("nqn.test:stage-ro-dead", testStorageAddr),
+	}
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("read-only NodeStageVolume: %v", err)
+	}
+	env.mounter.markUnhealthy(env.connector.devicePath)
+
+	_, err := env.srv.NodeStageVolume(context.Background(), req)
+	requireGRPCCode(t, err, codes.Internal)
+	if len(env.mounter.checkHealthCalls) != 0 {
+		t.Errorf("write probe ran on a read-only stage: %v", env.mounter.checkHealthCalls)
+	}
+	if got := len(env.mounter.unmountCalls); got != 0 {
+		t.Errorf("Unmount called %d times, want 0", got)
+	}
+}
+
 // TestNodeStageVolume_IdempotentAfterUnmount verifies that if the state file
 // exists but the staging path is no longer mounted (e.g. after a node reboot),
 // NodeStageVolume re-mounts without error.
@@ -910,7 +952,7 @@ func TestNodeStageVolume_IdempotentAfterUnmount(t *testing.T) {
 	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
 		t.Fatalf("re-stage: %v", err)
 	}
-	mounted, _ := env.mounter.IsMounted(stagingPath) //nolint:errcheck // mock never returns an error
+	mounted, _ := env.mounter.MountEntryExists(stagingPath) //nolint:errcheck // mock never returns an error
 	if !mounted {
 		t.Error("staging path not mounted after re-stage")
 	}
@@ -1086,15 +1128,15 @@ func TestNodeStageVolume_FormatAndMountError(t *testing.T) {
 }
 
 // TestNodeStageVolume_MountProbeError pins the strict-probe contract:
-// NodeStageVolume must keep failing when the staging-path mount probe
-// errors (e.g. EIO from stat on a filesystem in kernel shutdown).  A
-// corrupted mount must never look like a healthy staged volume
-// (false-healthy) — the fix for teardown lives in Mounter.Unmount, not in
-// weakening the probes that guard staging.
+// NodeStageVolume must keep failing when the mount-table lookup for the
+// staging path errors (e.g. an unreadable mountinfo).  A failed lookup must
+// never look like a healthy staged volume (false-healthy) — a dead mount
+// still listed in the table is handled by the health probe and repair,
+// not by treating the mount as absent.
 func TestNodeStageVolume_MountProbeError(t *testing.T) {
 	t.Parallel()
 	env := newNodeTestEnv(t)
-	env.mounter.isMountedErr = errors.New("stat: input/output error")
+	env.mounter.mountEntryExistsErr = errors.New("mountinfo unreadable")
 
 	stagingPath := t.TempDir()
 	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
@@ -1149,7 +1191,7 @@ func TestNodeUnstageVolume_RoundTrip(t *testing.T) {
 	}
 
 	// Staging path must be unmounted.
-	mounted, _ := env.mounter.IsMounted(stagingPath) //nolint:errcheck // mock never returns an error
+	mounted, _ := env.mounter.MountEntryExists(stagingPath) //nolint:errcheck // mock never returns an error
 	if mounted {
 		t.Error("staging path still mounted after NodeUnstageVolume")
 	}
@@ -1201,7 +1243,7 @@ func TestNodeUnstageVolume_FilesystemMode_SingleUnmountTarget(t *testing.T) {
 	}
 
 	// Reset the call logs so we only count NodeUnstageVolume's operations.
-	env.mounter.isMountedCalls = nil
+	env.mounter.mountEntryExistsCalls = nil
 	env.mounter.unmountCalls = nil
 
 	_, err = env.srv.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
@@ -1213,10 +1255,10 @@ func TestNodeUnstageVolume_FilesystemMode_SingleUnmountTarget(t *testing.T) {
 	}
 
 	blockSentinel := blockStagingDevicePath(stagingPath)
-	for _, probed := range env.mounter.isMountedCalls {
+	for _, probed := range env.mounter.mountEntryExistsCalls {
 		if probed == blockSentinel {
 			t.Errorf("NodeUnstageVolume probed block sentinel %q in Filesystem mode; calls=%v",
-				blockSentinel, env.mounter.isMountedCalls)
+				blockSentinel, env.mounter.mountEntryExistsCalls)
 		}
 	}
 	// Unmount is invoked unconditionally (the mounter owns idempotency and

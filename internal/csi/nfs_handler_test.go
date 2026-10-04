@@ -254,9 +254,9 @@ func (f *nfsStageFixture) cleanup(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("NodeUnstageVolume after handler restart: %v", err)
 	}
-	mounted, mountErr := f.mounter.IsMounted(f.stagingPath)
+	mounted, mountErr := f.mounter.MountEntryExists(f.stagingPath)
 	if mountErr != nil {
-		t.Fatalf("IsMounted(%q): %v", f.stagingPath, mountErr)
+		t.Fatalf("MountEntryExists(%q): %v", f.stagingPath, mountErr)
 	}
 	if mounted {
 		t.Fatal("NFS staging path remained mounted after restart cleanup")

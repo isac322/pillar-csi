@@ -210,7 +210,7 @@ func TestNodeUnstageVolume_Dispatch_NVMeoF(t *testing.T) {
 	}
 
 	// Staging path must be unmounted.
-	mounted, _ := env.mounter.IsMounted(stagingPath) //nolint:errcheck // mock never errors
+	mounted, _ := env.mounter.MountEntryExists(stagingPath) //nolint:errcheck // mock never errors
 	if mounted {
 		t.Error("staging path still mounted after NodeUnstageVolume")
 	}

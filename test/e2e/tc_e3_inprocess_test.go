@@ -381,7 +381,7 @@ func assertE3_NodePublishVolume_Idempotency(tc documentedCase) {
 	_, err = env.node.NodePublishVolume(env.ctx, req)
 	Expect(err).NotTo(HaveOccurred(), "%s: second publish (idempotent)", tc.tcNodeLabel())
 
-	// Mount should only be called once (second is no-op due to IsMounted check)
+	// Mount should only be called once (second is a no-op: the mount-table check finds the bind)
 	Expect(env.mounter.mountCalls).To(HaveLen(1),
 		"%s: mount called exactly once", tc.tcNodeLabel())
 }
