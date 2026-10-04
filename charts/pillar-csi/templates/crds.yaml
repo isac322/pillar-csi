@@ -126,14 +126,14 @@ spec:
                   backends:
                     description: |-
                       backends lists the backend driver types the agent can manage
-                      (zfs-zvol, lvm-lv).
+                      (zfs-zvol, zfs-dataset, lvm-lv).
                     items:
                       type: string
                     type: array
                   protocols:
                     description: |-
                       protocols lists the network protocols the agent can export storage over
-                      (nvmeof-tcp, iscsi).
+                      (nvmeof-tcp, iscsi, nfs).
                     items:
                       type: string
                     type: array
