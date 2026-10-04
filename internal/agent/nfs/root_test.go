@@ -141,44 +141,61 @@ func TestAdoptedChildTraversalPolicy(t *testing.T) {
 		wantNohide bool
 	}{
 		{name: "legacy child", export: Export{VolumeID: "pool/legacy"}},
-		{name: "adopted child", export: Export{VolumeID: "pool/adopted", SourceKey: "zfs/native-key", FenceUID: "fence-uid"}, wantNohide: true},
+		{
+			name:       "adopted child",
+			export:     Export{VolumeID: "pool/adopted", SourceKey: "zfs/native-key", FenceUID: "fence-uid"},
+			wantNohide: true,
+		},
 		{name: "source hint only", export: Export{VolumeID: "pool/incomplete", SourceKey: "zfs/native-key"}},
 		{name: "fence hint only", export: Export{VolumeID: "pool/incomplete", FenceUID: "fence-uid"}},
 		{name: "pseudoroot", export: Export{VolumeID: rootVolumeID, ReadOnly: true}},
-		{name: "pseudoroot with hints", export: Export{VolumeID: rootVolumeID, ReadOnly: true, SourceKey: "zfs/native-key", FenceUID: "fence-uid"}},
+		{
+			name:   "pseudoroot with hints",
+			export: Export{VolumeID: rootVolumeID, ReadOnly: true, SourceKey: "zfs/native-key", FenceUID: "fence-uid"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			wanted := tc.export.options()
-			flags := strings.Split(wanted, ",")
-			if slices.Contains(flags, "nohide") != tc.wantNohide || slices.Contains(flags, "crossmnt") {
-				t.Fatalf("unexpected child traversal policy %q", wanted)
-			}
-			if tc.export.VolumeID == rootVolumeID {
-				assertRootPolicy(t, wanted)
-			}
-			defaults := ",wdelay,nocrossmnt"
-			if !tc.wantNohide {
-				defaults += ",hide"
-			}
-			if !optionsMatch(wanted+defaults, wanted) {
-				t.Fatalf("equivalent kernel policy rejected: %q", wanted+defaults)
-			}
-			if optionsMatch(wanted+",crossmnt", wanted) {
-				t.Fatal("global mount traversal accepted")
-			}
-			if tc.wantNohide {
-				for _, actual := range []string{
-					strings.Replace(wanted, ",nohide", "", 1),
-					strings.Replace(wanted, ",nohide", ",hide", 1),
-					wanted + ",hide",
-				} {
-					if optionsMatch(actual, wanted) {
-						t.Fatalf("hidden adopted mount admitted: %q", actual)
-					}
-				}
-			} else if optionsMatch(wanted+",nohide", wanted) {
-				t.Fatal("unrequested mount traversal accepted")
-			}
+			assertChildTraversalPolicy(t, tc.export, tc.wantNohide)
 		})
+	}
+}
+
+func assertChildTraversalPolicy(t *testing.T, e Export, wantNohide bool) {
+	t.Helper()
+	wanted := e.options()
+	flags := strings.Split(wanted, ",")
+	if slices.Contains(flags, "nohide") != wantNohide || slices.Contains(flags, "crossmnt") {
+		t.Fatalf("unexpected child traversal policy %q", wanted)
+	}
+	if e.VolumeID == rootVolumeID {
+		assertRootPolicy(t, wanted)
+	}
+	assertChildTraversalReadback(t, wanted, wantNohide)
+}
+
+func assertChildTraversalReadback(t *testing.T, wanted string, wantNohide bool) {
+	t.Helper()
+	defaults := ",wdelay,nocrossmnt"
+	if !wantNohide {
+		defaults += ",hide"
+	}
+	if !optionsMatch(wanted+defaults, wanted) {
+		t.Fatalf("equivalent kernel policy rejected: %q", wanted+defaults)
+	}
+	if optionsMatch(wanted+",crossmnt", wanted) {
+		t.Fatal("global mount traversal accepted")
+	}
+	if wantNohide {
+		for _, actual := range []string{
+			strings.Replace(wanted, ",nohide", "", 1),
+			strings.Replace(wanted, ",nohide", ",hide", 1),
+			wanted + ",hide",
+		} {
+			if optionsMatch(actual, wanted) {
+				t.Fatalf("hidden adopted mount admitted: %q", actual)
+			}
+		}
+	} else if optionsMatch(wanted+",nohide", wanted) {
+		t.Fatal("unrequested mount traversal accepted")
 	}
 }
