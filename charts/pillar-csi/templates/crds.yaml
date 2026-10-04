@@ -126,14 +126,14 @@ spec:
                   backends:
                     description: |-
                       backends lists the backend driver types the agent can manage
-                      (zfs-zvol, lvm-lv).
+                      (zfs-zvol, zfs-dataset, lvm-lv).
                     items:
                       type: string
                     type: array
                   protocols:
                     description: |-
                       protocols lists the network protocols the agent can export storage over
-                      (nvmeof-tcp, iscsi).
+                      (nvmeof-tcp, iscsi, nfs).
                     items:
                       type: string
                     type: array
@@ -425,6 +425,39 @@ spec:
                       rule: '!has(self.auth) || self.auth.method == ''None'' || has(self.auth.secretRef)'
                     - message: 'auth.method CHAP and MutualCHAP require acl: true'
                       rule: '!has(self.auth) || self.auth.method == ''None'' || self.acl'
+                  nfs:
+                    description: nfs holds NFS configuration.
+                    properties:
+                      acl:
+                        default: false
+                        description: |-
+                          acl enables client-IP access control.
+                          Defaults to false.
+                        type: boolean
+                      port:
+                        default: 2049
+                        description: port is the fixed NFS listener port.
+                        format: int32
+                        maximum: 2049
+                        minimum: 2049
+                        type: integer
+                      squash:
+                        default: root
+                        description: |-
+                          squash selects the NFS identity squashing policy.
+                          Defaults to root.
+                        enum:
+                        - root
+                        - none
+                        - all
+                        type: string
+                      version:
+                        default: "4.2"
+                        description: version is the NFS protocol version.
+                        enum:
+                        - "4.2"
+                        type: string
+                    type: object
                   nvmeofTcp:
                     description: nvmeofTcp holds NVMe-oF/TCP configuration.
                     properties:
@@ -534,9 +567,9 @@ spec:
                 type: object
                 x-kubernetes-validations:
                 - message: 'exactly one protocol member must be set (supported: nvmeofTcp,
-                    iscsi)'
+                    iscsi, nfs)'
                   rule: '(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1 : 0)
-                    == 1'
+                    + (has(self.nfs) ? 1 : 0) == 1'
             required:
             - protocol
             type: object
@@ -697,13 +730,14 @@ spec:
                   which filesystem the node formats and which mount options it applies.
                 properties:
                   fsType:
-                    default: ext4
                     description: |-
-                      fsType is the filesystem the node formats a new volume with when
-                      volumeMode is Filesystem.
+                      fsType is the filesystem type the node uses for a block volume in
+                      Filesystem mode.  The controller defaults omitted values to ext4;
+                      file protocols such as NFS use their protocol filesystem instead.
                     enum:
                     - ext4
                     - xfs
+                    - nfs
                     type: string
                   mkfsOptions:
                     description: |-
@@ -829,6 +863,11 @@ spec:
                             minimum: 0
                             type: integer
                         type: object
+                      nfs:
+                        description: |-
+                          nfs is an empty override member; NFS settings are structural and fixed
+                          by the referenced PillarProtocol.
+                        type: object
                       nvmeofTcp:
                         description: |-
                           nvmeofTcp overrides NVMe-oF/TCP tunables; valid only when the
@@ -896,9 +935,9 @@ spec:
                     type: object
                     x-kubernetes-validations:
                     - message: 'exactly one protocol member must be set (supported:
-                        nvmeofTcp, iscsi)'
+                        nvmeofTcp, iscsi, nfs)'
                       rule: '(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1
-                        : 0) == 1'
+                        : 0) + (has(self.nfs) ? 1 : 0) == 1'
                 type: object
               protocolRef:
                 description: protocolRef is the name of the PillarProtocol used to
@@ -1141,11 +1180,8 @@ spec:
                       parentDataset:
                         description: |-
                           parentDataset is the ZFS dataset path under which pillar-csi will
-                          create per-volume zvols (e.g. "k8s").  It must equal the parentDataset
-                          of the agent's backend configuration for this pool (chart
-                          agent.backends[].zfs.parentDataset; empty = pool root): on a mismatch
-                          the store is not Ready (PoolDiscovered=False, BackendLayoutMismatch)
-                          and CreateVolume fails instead of placing volumes elsewhere.
+                          create per-volume zvols or datasets (e.g. "k8s").  It must equal the
+                          parentDataset of the agent's backend configuration for this pool.
                         type: string
                       pool:
                         description: pool is the ZFS pool name (e.g. "hot-data").
@@ -1160,10 +1196,10 @@ spec:
                         type: object
                       volumeType:
                         default: zvol
-                        description: volumeType selects the ZFS volume kind.  Only
-                          "zvol" is implemented.
+                        description: volumeType selects the ZFS volume kind.
                         enum:
                         - zvol
+                        - dataset
                         type: string
                     required:
                     - pool
@@ -1595,11 +1631,8 @@ spec:
                           parentDataset:
                             description: |-
                               parentDataset is the ZFS dataset path under which pillar-csi will
-                              create per-volume zvols (e.g. "k8s").  It must equal the parentDataset
-                              of the agent's backend configuration for this pool (chart
-                              agent.backends[].zfs.parentDataset; empty = pool root): on a mismatch
-                              the store is not Ready (PoolDiscovered=False, BackendLayoutMismatch)
-                              and CreateVolume fails instead of placing volumes elsewhere.
+                              create per-volume zvols or datasets (e.g. "k8s").  It must equal the
+                              parentDataset of the agent's backend configuration for this pool.
                             type: string
                           pool:
                             description: pool is the ZFS pool name (e.g. "hot-data").
@@ -1614,10 +1647,10 @@ spec:
                             type: object
                           volumeType:
                             default: zvol
-                            description: volumeType selects the ZFS volume kind.  Only
-                              "zvol" is implemented.
+                            description: volumeType selects the ZFS volume kind.
                             enum:
                             - zvol
+                            - dataset
                             type: string
                         required:
                         - pool
@@ -1633,13 +1666,14 @@ spec:
                       when the volume is a Filesystem-mode mount.
                     properties:
                       fsType:
-                        default: ext4
                         description: |-
-                          fsType is the filesystem the node formats a new volume with when
-                          volumeMode is Filesystem.
+                          fsType is the filesystem type the node uses for a block volume in
+                          Filesystem mode.  The controller defaults omitted values to ext4;
+                          file protocols such as NFS use their protocol filesystem instead.
                         enum:
                         - ext4
                         - xfs
+                        - nfs
                         type: string
                       mkfsOptions:
                         description: |-
@@ -1773,6 +1807,39 @@ spec:
                         - message: 'auth.method CHAP and MutualCHAP require acl: true'
                           rule: '!has(self.auth) || self.auth.method == ''None'' ||
                             self.acl'
+                      nfs:
+                        description: nfs holds NFS configuration.
+                        properties:
+                          acl:
+                            default: false
+                            description: |-
+                              acl enables client-IP access control.
+                              Defaults to false.
+                            type: boolean
+                          port:
+                            default: 2049
+                            description: port is the fixed NFS listener port.
+                            format: int32
+                            maximum: 2049
+                            minimum: 2049
+                            type: integer
+                          squash:
+                            default: root
+                            description: |-
+                              squash selects the NFS identity squashing policy.
+                              Defaults to root.
+                            enum:
+                            - root
+                            - none
+                            - all
+                            type: string
+                          version:
+                            default: "4.2"
+                            description: version is the NFS protocol version.
+                            enum:
+                            - "4.2"
+                            type: string
+                        type: object
                       nvmeofTcp:
                         description: nvmeofTcp holds NVMe-oF/TCP configuration.
                         properties:
@@ -1882,9 +1949,9 @@ spec:
                     type: object
                     x-kubernetes-validations:
                     - message: 'exactly one protocol member must be set (supported:
-                        nvmeofTcp, iscsi)'
+                        nvmeofTcp, iscsi, nfs)'
                       rule: '(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1
-                        : 0) == 1'
+                        : 0) + (has(self.nfs) ? 1 : 0) == 1'
                 required:
                 - backend
                 - protocol
@@ -2001,18 +2068,19 @@ spec:
                       PillarAgent.Status.ResolvedAddress with the port stripped).
                     type: string
                   port:
-                    description: port is the TCP port on which the NVMe-oF target
-                      listens.
+                    description: |-
+                      port is the TCP port on which the protocol target listens.
+                      NFS uses its fixed port 2049.
                     format: int32
                     type: integer
                   targetID:
-                    description: targetID is the NVMe Qualified Name (NQN) of the
-                      NVMe-oF subsystem.
+                    description: |-
+                      targetID is the protocol-specific export identifier: NQN for NVMe-oF,
+                      IQN for iSCSI, or the server export path for NFS.
                     type: string
                   volumeRef:
-                    description: |-
-                      volumeRef is the protocol-level reference for this volume (the NVMe-oF
-                      subsystem name).
+                    description: volumeRef is the protocol-level reference for this
+                      volume.
                     type: string
                 type: object
               exportSpec:
@@ -2069,6 +2137,30 @@ spec:
                     - 1073741824
                     format: int32
                     type: integer
+                  nfs:
+                    description: nfs contains the durable NFS-specific export configuration.
+                    properties:
+                      readonly:
+                        description: readonly makes the export read-only for every
+                          client.
+                        type: boolean
+                      squash:
+                        description: squash is the NFS identity squashing policy.
+                        enum:
+                        - root
+                        - none
+                        - all
+                        type: string
+                      version:
+                        description: version is the NFS protocol version.
+                        enum:
+                        - "4.2"
+                        type: string
+                    required:
+                    - readonly
+                    - squash
+                    - version
+                    type: object
                   port:
                     description: |-
                       port is the TCP port the target listens on; 0 selects the protocol's

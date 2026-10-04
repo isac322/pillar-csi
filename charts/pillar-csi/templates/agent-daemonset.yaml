@@ -1,3 +1,18 @@
+{{- $agentConfig := include "pillar-csi.agent.config" . -}}
+{{- $nfsEnabled := false -}}
+{{- range (fromYaml $agentConfig).backends -}}
+  {{- with .zfs -}}
+    {{- if eq (.volumeType | default "zvol") "dataset" -}}
+      {{- $nfsEnabled = true -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- if and $nfsEnabled (not .Values.agent.hostNetwork) -}}
+  {{- fail "agent.hostNetwork must be true for dataset/NFS backends" -}}
+{{- end -}}
+{{- if and $nfsEnabled (not .Values.agent.privileged) -}}
+  {{- fail "agent.privileged must be true for dataset/NFS backends" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -23,18 +38,19 @@ spec:
       annotations:
         # Roll the agent pods when the rendered backend config changes: the
         # agent reads its config file only at startup.
-        checksum/agent-config: {{ include "pillar-csi.agent.config" . | sha256sum }}
+        checksum/agent-config: {{ $agentConfig | sha256sum }}
         {{- with .Values.agent.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      # hostNetwork: true is required for the NVMe-oF and iSCSI data planes.
-      # The kernel binds nvmet_tcp (and LIO iscsi_target_mod network portal)
-      # listening sockets in the netns of the process that writes configfs
-      # (the agent).  With hostNetwork: false those listeners live in the pod
-      # netns and are unreachable from the host network where initiators
-      # connect.  See PRD §2.4 for the full rationale and operator override.
+      # hostNetwork keeps NVMe-oF, iSCSI and kernel nfsd listeners in the
+      # storage node's network namespace, reachable by the worker initiators.
       hostNetwork: {{ .Values.agent.hostNetwork }}
+      {{- if $nfsEnabled }}
+      # A v4-only foreign rpc.mountd can service shared kernel upcall channels
+      # without a listener. hostPID lets ownership checks detect and refuse it.
+      hostPID: true
+      {{- end }}
       {{- if .Values.agent.hostNetwork }}
       # When hostNetwork is true the pod uses the host's DNS resolver by
       # default, which can break in-cluster service lookups (kube-dns).
@@ -96,6 +112,11 @@ spec:
               hostPort: {{ .Values.agent.hostPort }}
               {{- end }}
               protocol: TCP
+            {{- if $nfsEnabled }}
+            - name: nfs
+              containerPort: 2049
+              protocol: TCP
+            {{- end }}
             {{- if .Values.metrics.enabled }}
             - name: metrics
               containerPort: {{ .Values.metrics.agent.port }}
@@ -145,6 +166,14 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- if $nfsEnabled }}
+            # NFS advertises a numeric storage-node address even when telemetry
+            # is disabled; gRPC's wildcard listen address is not an endpoint.
+            - name: PILLAR_AGENT_BIND_ADDRESS
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            {{- end }}
             {{- if or .Values.metrics.enabled .Values.tracing.enabled }}
             {{- include "pillar-csi.telemetryPodEnv" . | trim | nindent 12 }}
             {{- end }}
@@ -209,12 +238,20 @@ spec:
             # /dev — required for block device operations (target backstores).
             - name: dev
               mountPath: /dev
-            # Agent state dir — durable per-volume fencing generations and the
-            # Drain marker.  Must survive pod restarts and node reboots, so it
-            # is a hostPath on the storage node's own disk (never a PVC: the
-            # agent must not depend on volumes it serves).
+            # Persistent fencing/export recovery state and ZFS dataset mounts.
+            # Bidirectional propagation preserves server dataset mounts across
+            # pod restarts and makes them visible in the storage host namespace.
+            # Never use a PVC here: the agent cannot depend on volumes it serves.
             - name: agent-state
               mountPath: /var/lib/pillar-csi/agent
+              {{- if $nfsEnabled }}
+              mountPropagation: Bidirectional
+            # nfs-utils owns etab and NFSv4 recovery beneath this private
+            # persistent tree. Do not bind the host's foreign /var/lib/nfs.
+            - name: agent-state
+              mountPath: /var/lib/nfs
+              subPath: nfs/lib
+              {{- end }}
             # Backend placement config rendered from agent.backends.
             - name: agent-config
               mountPath: {{ include "pillar-csi.agent.configDir" . }}

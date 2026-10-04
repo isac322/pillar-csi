@@ -65,6 +65,11 @@ const (
 const (
 	memberNVMeOFTCP = "nvmeofTcp"
 	memberISCSI     = "iscsi"
+	memberNFS       = "nfs"
+)
+const (
+	fieldPort = "port"
+	fieldACL  = "acl"
 )
 
 // fieldKind classifies how a document field may be used.
@@ -105,7 +110,7 @@ var backendMembers = map[string]memberSpec{
 	memberZFS: {
 		name: memberZFS,
 		fields: map[string]fieldSpec{
-			"volumeType":    {kind: fieldStructural, validate: enumValue("zvol")},
+			"volumeType":    {kind: fieldStructural, validate: enumValue("zvol", "dataset")},
 			"pool":          {kind: fieldStructural, validate: nonEmptyString, required: true},
 			"parentDataset": {kind: fieldStructural, validate: stringValue},
 			"properties":    {kind: fieldTunable, validate: stringMap},
@@ -127,8 +132,8 @@ var protocolMembers = map[string]memberSpec{
 	memberNVMeOFTCP: {
 		name: memberNVMeOFTCP,
 		fields: map[string]fieldSpec{
-			"port":                {kind: fieldStructural, validate: intRange(1, 65535)},
-			"acl":                 {kind: fieldStructural, validate: boolValue},
+			fieldPort:             {kind: fieldStructural, validate: intRange(1, 65535)},
+			fieldACL:              {kind: fieldStructural, validate: boolValue},
 			"maxQueueSize":        {kind: fieldTunable, validate: intRange(16, 1024)},
 			"inCapsuleDataSize":   {kind: fieldTunable, validate: intRange(1024, math.MaxInt32)},
 			"maxDataTransferSize": {kind: fieldTunable, validate: maxDataTransferSize},
@@ -136,11 +141,20 @@ var protocolMembers = map[string]memberSpec{
 			"reconnectDelay":      {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
 		},
 	},
+	memberNFS: {
+		name: memberNFS,
+		fields: map[string]fieldSpec{
+			"version": {kind: fieldStructural, validate: enumValue("4.2")},
+			fieldPort: {kind: fieldStructural, validate: intRange(2049, 2049)},
+			fieldACL:  {kind: fieldStructural, validate: boolValue},
+			"squash":  {kind: fieldStructural, validate: enumValue("root", "none", "all")},
+		},
+	},
 	memberISCSI: {
 		name: memberISCSI,
 		fields: map[string]fieldSpec{
-			"port":               {kind: fieldStructural, validate: intRange(1, 65535)},
-			"acl":                {kind: fieldStructural, validate: boolValue},
+			fieldPort:            {kind: fieldStructural, validate: intRange(1, 65535)},
+			fieldACL:             {kind: fieldStructural, validate: boolValue},
 			"loginTimeout":       {kind: fieldTunable, validate: intRange(1, math.MaxInt32)},
 			"replacementTimeout": {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
 			"noopOutInterval":    {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
@@ -156,7 +170,7 @@ var protocolMembers = map[string]memberSpec{
 // (PillarStorageClass.spec.filesystem and the per-volume filesystem
 // document).  Every filesystem field is per-volume tunable.
 var filesystemFields = map[string]fieldSpec{
-	"fsType":       {kind: fieldTunable, validate: enumValue("ext4", "xfs")},
+	"fsType":       {kind: fieldTunable, validate: enumValue("ext4", "xfs", "nfs")},
 	"mkfsOptions":  {kind: fieldTunable, validate: stringList},
 	"mountOptions": {kind: fieldTunable, validate: stringList},
 	"periodicTrim": {kind: fieldTunable, validate: boolValue},
@@ -222,6 +236,13 @@ func DecodeProtocolOverride(source, raw string) (*pillarv1alpha1.ProtocolOverrid
 			return nil, err
 		}
 		out.ISCSI = cfg
+	case memberNFS:
+		cfg := &pillarv1alpha1.NFSOverrides{}
+		err := unmarshalMember(source, doc.member, doc.body, cfg)
+		if err != nil {
+			return nil, err
+		}
+		out.NFS = cfg
 	}
 	return out, nil
 }

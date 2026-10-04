@@ -58,7 +58,9 @@ type KubeMounter struct {
 }
 
 // NewKubeMounter returns a KubeMounter that delegates all privileged
-// operations to the host kernel via k8s.io/utils/mount.
+// operations to k8s.io/utils/mount. The node image supplies mount.nfs;
+// mount.New("") resolves the bundled mount utility and helper inside the
+// pillar-node container, so hosts do not need nfs-utils installed.
 func NewKubeMounter() *KubeMounter {
 	return &KubeMounter{
 		inner: mount.SafeFormatAndMount{

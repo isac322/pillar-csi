@@ -251,13 +251,12 @@ func parseDocumentedCases() ([]documentedCase, error) {
 		}
 
 		rawDocID := strings.TrimSpace(matches[1])
-		// Rows in cluster / full-E2E sections use plain ordinal numbers as the
-		// first column (e.g. 285, 318) instead of E-prefixed identifiers.
+		// Rows in cluster / full-E2E sections use section-local numeric IDs,
+		// optionally with a lowercase letter suffix (e.g. 285, 217a, 263k).
 		// Prefix them with the group key so the TC node name starts with
-		// [TC-E33.285], [TC-F27.1], etc. — required by AC 7 which checks
-		// that every spec node name contains [TC-<EorF><digit>].
+		// [TC-E33.285] or [TC-E27.217a] — required by strict TC coverage.
 		docID := rawDocID
-		if isAllDigits(rawDocID) && groupKey != "" {
+		if isSectionLocalID(rawDocID) && groupKey != "" {
 			docID = groupKey + "." + rawDocID
 		}
 
@@ -403,17 +402,64 @@ func mustBuildDefaultProfile() []documentedCase {
 	return cases
 }
 
-// isAllDigits returns true when s is a non-empty string composed entirely of
-// ASCII decimal digits.  Used to detect purely numeric row IDs in cluster /
-// full-E2E spec table rows so they can be prefixed with the section group key.
-func isAllDigits(s string) bool {
+// TCExecutionProfile is the source-of-truth inventory used by strict TC
+// coverage checks.  The default profile is generated from buildDefaultProfile;
+// dedicated backend and NFS lanes append their explicitly registered IDs.
+type TCExecutionProfile struct {
+	Name string
+	IDs  []string
+}
+
+var dedicatedDefaultProfileTCIDs = []string{
+	"E33.311", "E33.312", "E33.313", "E33.314", "E33.315", "E33.316", "E33.317",
+	"E34.1", "E34.2", "E34.3", "E34.4", "E34.5", "E34.6",
+	"E35.1", "E35.2", "E35.3", "E35.4", "E35.5", "E35.6",
+	"E35.7", "E35.8", "E35.9", "E35.10", "E35.11", "E35.12",
+}
+
+var nfsTCIDs = []string{
+	"E37.1", "E37.2", "E37.3", "E37.4", "E37.5", "E37.6", "E37.7",
+	"E37.8", "E37.9", "E37.10", "E37.11", "E37.12", "E37.13",
+}
+
+// CurrentTCExecutionProfiles returns the registered TC-ID profiles without
+// executing any Ginkgo node or fixture.  Catalog-driven IDs come directly
+// from buildDefaultProfile, so strict coverage and registration share the
+// same selector rather than duplicating row quotas.
+func CurrentTCExecutionProfiles() ([]TCExecutionProfile, error) {
+	cases, err := buildDefaultProfile()
+	if err != nil {
+		return nil, err
+	}
+	defaultIDs := make([]string, 0, len(cases)+len(dedicatedDefaultProfileTCIDs))
+	for _, tc := range cases {
+		defaultIDs = append(defaultIDs, tc.DocID)
+	}
+	defaultIDs = append(defaultIDs, dedicatedDefaultProfileTCIDs...)
+	return []TCExecutionProfile{
+		{Name: "default-profile", IDs: defaultIDs},
+		{Name: "nfs", IDs: append([]string(nil), nfsTCIDs...)},
+	}, nil
+}
+
+// isSectionLocalID returns true when s is a non-empty numeric row ID, with an
+// optional lowercase alphabetic suffix used by grouped catalog tables.
+func isSectionLocalID(s string) bool {
 	if s == "" {
 		return false
 	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return false
+	}
+	for i < len(s) {
+		if s[i] < 'a' || s[i] > 'z' {
 			return false
 		}
+		i++
 	}
 	return true
 }

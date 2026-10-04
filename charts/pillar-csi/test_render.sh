@@ -139,6 +139,61 @@ assert_pod_ports_unambiguous() {
   fi
 }
 
+# Resolve the agent's mounts to their backing volumes. Checking unrelated
+# occurrences of "hostPath" or "Bidirectional" cannot prove that dataset
+# mounts survive a restart or that nfs-utils avoids foreign host exports.
+assert_agent_nfs_storage() {
+  local body="$1" description="$2" problems
+  problems="$(awk '
+    /^      containers:/ { section = "containers"; next }
+    /^      volumes:/ { section = "volumes"; container = ""; next }
+    /^      [a-zA-Z]+:/ { section = ""; container = ""; next }
+    section == "containers" && /^        - name: / { container = $3; mounts = 0; env_section = 0; next }
+    container == "agent" && /^          [a-zA-Z]+:/ {
+      mounts = ($0 ~ /^          volumeMounts:/);
+      env_section = ($0 ~ /^          env:/); next
+    }
+    env_section && /^            - name: / { env_name = $3; next }
+    env_section && env_name == "PILLAR_AGENT_BIND_ADDRESS" && /^                  fieldPath:/ {
+      bind_source = $2; next
+    }
+    mounts && /^            - name: / { nmount++; volume[nmount] = $3; next }
+    mounts && /^              mountPath:/ { path[nmount] = $2; next }
+    mounts && /^              mountPropagation:/ { propagation[nmount] = $2; next }
+    mounts && /^              subPath:/ { subpath[nmount] = $2; next }
+    mounts && /^              readOnly:/ { readonly[nmount] = $2; next }
+    section == "volumes" && /^        - name: / { backing = $3; next }
+    section == "volumes" && /^            path:/ { hostpath[backing] = $2; next }
+    section == "volumes" && /^            type:/ { type[backing] = $2; next }
+    END {
+      if (bind_source != "status.hostIP") {
+        print "NFS bind address must come from the numeric node host IP independently of telemetry";
+      }
+      for (i = 1; i <= nmount; i++) {
+        if (path[i] == "/var/lib/pillar-csi/agent") root = i;
+        if (path[i] == "/var/lib/nfs") recovery = i;
+      }
+      if (!root || propagation[root] != "Bidirectional" || readonly[root] == "true" ||
+          hostpath[volume[root]] != "/var/lib/pillar-csi/agent" ||
+          type[volume[root]] !~ /^Directory(OrCreate)?$/) {
+        print "dataset mount root must be writable, host-persistent and Bidirectional";
+      }
+      if (!recovery || volume[recovery] != volume[root] ||
+          subpath[recovery] != "nfs/lib" || readonly[recovery] == "true") {
+        print "nfs-utils state must use private writable nfs/lib under the persistent agent volume";
+      }
+      for (v in hostpath) {
+        if (hostpath[v] == "/var/lib/nfs") print "foreign host NFS state must not be mounted";
+        if (hostpath[v] ~ /^\/(usr\/)?s?bin(\/|$)/) print "NFS helpers must be image-bundled, not host-mounted";
+      }
+    }
+  ' <<< "${body}")"
+  if [[ -n "${problems}" ]]; then
+    mark_fail "${description}"
+    printf '      %s\n' "${problems}"
+  fi
+}
+
 # ──────────────────────────────────────────────────────────────────────────
 # Mode 1: default render
 # ──────────────────────────────────────────────────────────────────────────
@@ -174,6 +229,10 @@ assert_contains "${AGENT_DS_DEFAULT}" "command: [\"/bin/busybox\", \"sleep\", \"
   "default agent DaemonSet must emit preStop busybox sleep 5 (runtime image has no /bin/sh)"
 assert_min_count "${AGENT_DS_DEFAULT}" "grpc:" 2 \
   "default agent DaemonSet must expose grpc: liveness AND readiness probes (kubelet >=1.24)"
+assert_not_contains "${AGENT_DS_DEFAULT}" "hostPID: true" \
+  "block-only agent must not share the host PID namespace"
+assert_not_contains "${AGENT_DS_DEFAULT}" "mountPath: /var/lib/nfs" \
+  "block-only agent must not mount NFS server state"
 
 # Agent device access contract — the agent container must be privileged by
 # default: otherwise the runtime's default device cgroup allowlist makes
@@ -243,12 +302,38 @@ assert_agent_config "${BACKENDS_OK_OUT}" "backends:
 BACKENDS_OK_DS="$(extract_doc "${BACKENDS_OK_OUT}" "agent-daemonset.yaml")"
 assert_not_contains "${BACKENDS_OK_DS}" "--backend" \
   "agent DaemonSet with backends must not render the removed --backend flag"
+assert_not_contains "${BACKENDS_OK_DS}" "hostPID: true" \
+  "configured block-only agent must not share host PIDs"
+assert_not_contains "${BACKENDS_OK_DS}" "mountPath: /var/lib/nfs" \
+  "configured block-only agent must not acquire server NFS state"
 # The agent reads its config file only at startup, so the pod template must
 # change whenever the rendered config changes.
 checksum_of() { grep -o 'checksum/agent-config: [0-9a-f]*' <<< "$1" || true; }
 if [[ -z "$(checksum_of "${AGENT_DS_DEFAULT}")" || "$(checksum_of "${AGENT_DS_DEFAULT}")" == "$(checksum_of "${BACKENDS_OK_DS}")" ]]; then
   mark_fail "agent pod template must carry a checksum/agent-config annotation that changes with agent.backends"
 fi
+
+# Dataset placement is a supported agent config, not a directory-backend
+# substitute. Its server mount and recovery contract also holds with mTLS.
+NFS_OUT="$(render \
+  --set 'agent.backends[0].zfs.volumeType=dataset' \
+  --set 'agent.backends[0].zfs.pool=tank')"
+NFS_AGENT="$(extract_doc "${NFS_OUT}" "agent-daemonset.yaml")"
+assert_agent_nfs_storage "${NFS_AGENT}" \
+  "dataset-configured agent must preserve dataset mounts and private NFS recovery"
+assert_contains "${NFS_AGENT}" "hostPID: true" \
+  "NFS agent must see foreign listenerless mountd processes to refuse shared kernel upcalls"
+NFS_MTLS_OUT="$(render --set mtls.enabled=true \
+  --set 'agent.backends[0].zfs.volumeType=dataset' \
+  --set 'agent.backends[0].zfs.pool=tank')"
+assert_agent_nfs_storage "$(extract_doc "${NFS_MTLS_OUT}" "agent-daemonset.yaml")" \
+  "dataset-configured mTLS agent must preserve dataset mounts and private NFS recovery"
+for denied in agent.hostNetwork=false agent.privileged=false; do
+  if render --set "${denied}" --set 'agent.backends[0].zfs.volumeType=dataset' \
+    --set 'agent.backends[0].zfs.pool=tank' >/dev/null 2>&1; then
+    mark_fail "dataset/NFS backend must reject ${denied}: host kernel serving and Bidirectional mounts require it"
+  fi
+done
 
 # Union contract: each entry sets exactly one of zfs or lvm; the old flat
 # {type,pool,vg,...} entry shape and unimplemented variants fail the render.
@@ -270,15 +355,14 @@ NO_VG_ERR="$(render --set 'agent.backends[0].lvm.thinPool=thin0' 2>&1 >/dev/null
 assert_contains "${NO_VG_ERR}" 'agent.backends[0].lvm.volumeGroup is required' \
   "an lvm entry without volumeGroup must fail the render"
 
-# Backend registry key contract (issue #100). The agent routes volumes by
-# pool/VG name alone and refuses to start when two agent.backends entries share
-# one, so the chart must reject such values at render time instead of shipping
-# a crash-looping DaemonSet.
+# Backend registry key contract (issue #100): exact (pool, backend type)
+# duplicates remain ambiguous. A zvol and a dataset placement on one ZFS pool
+# are distinct, while an LVM VG cannot collide with either ZFS backend type.
 if render \
   --set 'agent.backends[0].zfs.pool=tank' --set 'agent.backends[0].zfs.parentDataset=a' \
   --set 'agent.backends[1].zfs.pool=tank' --set 'agent.backends[1].zfs.parentDataset=b' \
   >/dev/null 2>&1; then
-  mark_fail "two agent.backends entries on one ZFS pool must fail the render"
+  mark_fail "two zvol placements on one ZFS pool must fail the render"
 fi
 if render \
   --set 'agent.backends[0].lvm.volumeGroup=vg0' \
@@ -286,11 +370,11 @@ if render \
   >/dev/null 2>&1; then
   mark_fail "two agent.backends entries on one LVM VG must fail the render"
 fi
-DUP_MIXED_ERR="$(render \
+if render \
   --set 'agent.backends[0].zfs.pool=shared' \
-  --set 'agent.backends[1].lvm.volumeGroup=shared' 2>&1 >/dev/null || true)"
-assert_contains "${DUP_MIXED_ERR}" 'pool/VG "shared" appears in more than one entry' \
-  "a ZFS pool and an LVM VG sharing one name must fail the render with a clear error"
+  --set 'agent.backends[1].lvm.volumeGroup=shared' >/dev/null 2>&1; then
+  mark_fail "a ZFS pool and an LVM VG sharing one name must fail the render"
+fi
 # Keys are compared trimmed, so " tank " and "tank" collide at render time.
 if render \
   --set 'agent.backends[0].zfs.pool=tank' \
@@ -298,6 +382,17 @@ if render \
   >/dev/null 2>&1; then
   mark_fail "agent.backends pool names differing only in whitespace must fail the render"
 fi
+if render \
+  --set 'agent.backends[0].zfs.pool=tank' --set 'agent.backends[0].zfs.volumeType=dataset' \
+  --set 'agent.backends[1].zfs.pool=tank' --set 'agent.backends[1].zfs.volumeType=dataset' \
+  >/dev/null 2>&1; then
+  mark_fail "two dataset placements on one ZFS pool must fail the render"
+fi
+MIXED_ZFS_OUT="$(render \
+  --set 'agent.backends[0].zfs.pool=tank' --set 'agent.backends[0].zfs.volumeType=zvol' \
+  --set 'agent.backends[1].zfs.pool=tank' --set 'agent.backends[1].zfs.volumeType=dataset')"
+assert_agent_nfs_storage "$(extract_doc "${MIXED_ZFS_OUT}" "agent-daemonset.yaml")" \
+  "same-pool zvol and dataset placements must coexist and retain NFS mount/recovery requirements"
 
 assert_contains "${NODE_DS}" "terminationGracePeriodSeconds: 60" \
   "default node DaemonSet must set terminationGracePeriodSeconds=60"

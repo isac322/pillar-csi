@@ -41,6 +41,9 @@ const (
 // mockBackend is a test double for the VolumeBackend interface.
 // Each method records whether it was called and returns the configured outputs.
 type mockBackend struct {
+	// Backend identity/state
+	backendType            agentv1.BackendType
+	backingResourcePresent bool
 	// Create
 	createDevicePath string
 	createAllocated  int64
@@ -82,6 +85,9 @@ func (m *mockBackend) Create(
 
 func (m *mockBackend) Delete(_ context.Context, volumeID string) error {
 	m.deleteCalledWith = append(m.deleteCalledWith, volumeID)
+	if m.deleteErr == nil {
+		m.backingResourcePresent = false
+	}
 	return m.deleteErr
 }
 
@@ -101,10 +107,12 @@ func (m *mockBackend) DevicePath(_ string) string {
 	return m.devicePathResult
 }
 
-// Type returns BACKEND_TYPE_ZFS_ZVOL so that the mock satisfies the
-// VolumeBackend interface and makes GetCapabilities / collectPoolInfo tests
-// pass without hardcoding a backend type in production code.
-func (*mockBackend) Type() agentv1.BackendType {
+// Type returns the configured backend type, defaulting to BACKEND_TYPE_ZFS_ZVOL
+// for the existing volume tests.
+func (m *mockBackend) Type() agentv1.BackendType {
+	if m.backendType != agentv1.BackendType_BACKEND_TYPE_UNSPECIFIED {
+		return m.backendType
+	}
 	return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
 }
 
@@ -288,7 +296,7 @@ func TestCreateVolume_BackendTypeRejected(t *testing.T) {
 		want        codes.Code
 	}{
 		{"unspecified", agentv1.BackendType_BACKEND_TYPE_UNSPECIFIED, codes.InvalidArgument},
-		{"zfs dataset", agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET, codes.Unimplemented},
+		{"zfs dataset on a zvol pool", agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET, codes.InvalidArgument},
 		{"directory", agentv1.BackendType_BACKEND_TYPE_DIRECTORY, codes.Unimplemented},
 		{"lvm on a zfs pool", agentv1.BackendType_BACKEND_TYPE_LVM, codes.InvalidArgument},
 	}
@@ -321,8 +329,9 @@ func TestDeleteVolume_Success(t *testing.T) {
 	srv := newTestServer(t, mb)
 
 	resp, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
-		VolumeId: testVolumeID,
-		Fence:    testFence(t),
+		VolumeId:    testVolumeID,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		Fence:       testFence(t),
 	})
 	if err != nil {
 		t.Fatalf("DeleteVolume unexpected error: %v", err)
@@ -335,14 +344,50 @@ func TestDeleteVolume_Success(t *testing.T) {
 	}
 }
 
+func TestDeleteVolume_DatasetRequiresNFSManager(t *testing.T) {
+	t.Parallel()
+	mb := &mockBackend{
+		backendType:            agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET,
+		backingResourcePresent: true,
+	}
+	srv := newTestServer(t, mb)
+	req := &agentv1.DeleteVolumeRequest{
+		VolumeId:    testVolumeID,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET,
+		Fence:       testFence(t),
+	}
+
+	_, err := srv.DeleteVolume(context.Background(), req)
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("DeleteVolume error = %v, want Unavailable", err)
+	}
+	st, _ := status.FromError(err)
+	if !strings.Contains(st.Message(), testVolumeID) {
+		t.Errorf("DeleteVolume error %q does not name volume %q", st.Message(), testVolumeID)
+	}
+	if !mb.backingResourcePresent {
+		t.Fatal("DeleteVolume destroyed dataset backing resource without an NFS manager")
+	}
+
+	_, err = srv.CreateVolume(context.Background(), &agentv1.CreateVolumeRequest{
+		VolumeId:    testVolumeID,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET,
+		Fence:       testFence(t),
+	})
+	if err != nil {
+		t.Fatalf("CreateVolume after unavailable DeleteVolume = %v, want lifecycle still open", err)
+	}
+}
+
 func TestDeleteVolume_BackendError(t *testing.T) {
 	t.Parallel()
 	mb := &mockBackend{deleteErr: errors.New("device busy")}
 	srv := newTestServer(t, mb)
 
 	_, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
-		VolumeId: testVolumeID,
-		Fence:    testFence(t),
+		VolumeId:    testVolumeID,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		Fence:       testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected error from backend, got nil")
@@ -358,8 +403,9 @@ func TestDeleteVolume_InvalidVolumeID(t *testing.T) {
 	srv := newTestServer(t, &mockBackend{})
 
 	_, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
-		VolumeId: "nopool",
-		Fence:    testFence(t),
+		VolumeId:    "nopool",
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		Fence:       testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected error for invalid volumeID")
@@ -378,6 +424,7 @@ func TestExpandVolume_Success(t *testing.T) {
 
 	resp, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       testVolumeID,
+		BackendType:    agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:          testFence(t),
 		RequestedBytes: 2 << 30,
 	})
@@ -415,6 +462,7 @@ func TestExpandVolume_ActiveNVMeNamespaceRevalidationFailure(t *testing.T) {
 
 	_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       testVolumeID,
+		BackendType:    agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:          testFence(t),
 		RequestedBytes: 2 << 30,
 	})
@@ -437,6 +485,7 @@ func TestExpandVolume_BackendError(t *testing.T) {
 
 	_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       testVolumeID,
+		BackendType:    agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:          testFence(t),
 		RequestedBytes: 512,
 	})
@@ -477,6 +526,7 @@ func TestVolumeRPCs_InsufficientCapacity(t *testing.T) {
 			srv := newTestServer(t, &mockBackend{expandErr: capErr()})
 			_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 				VolumeId:       testVolumeID,
+				BackendType:    agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 				Fence:          testFence(t),
 				RequestedBytes: 5 << 30,
 			})
@@ -508,7 +558,8 @@ func TestGetCapacity_Success(t *testing.T) {
 	srv := newTestServer(t, mb)
 
 	resp, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
-		PoolName: testPool,
+		PoolName:    testPool,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err != nil {
 		t.Fatalf("GetCapacity unexpected error: %v", err)
@@ -529,7 +580,8 @@ func TestGetCapacity_UnknownPool(t *testing.T) {
 	srv := newTestServer(t, &mockBackend{})
 
 	_, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
-		PoolName: "nonexistent",
+		PoolName:    "nonexistent",
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err == nil {
 		t.Fatal("expected error for unknown pool, got nil")
@@ -546,7 +598,8 @@ func TestGetCapacity_BackendError(t *testing.T) {
 	srv := newTestServer(t, mb)
 
 	_, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
-		PoolName: testPool,
+		PoolName:    testPool,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err == nil {
 		t.Fatal("expected error from backend, got nil")
@@ -568,7 +621,8 @@ func TestListVolumes_Success(t *testing.T) {
 	srv := newTestServer(t, mb)
 
 	resp, err := srv.ListVolumes(context.Background(), &agentv1.ListVolumesRequest{
-		PoolName: testPool,
+		PoolName:    testPool,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err != nil {
 		t.Fatalf("ListVolumes unexpected error: %v", err)
@@ -588,7 +642,8 @@ func TestListVolumes_Empty(t *testing.T) {
 	srv := newTestServer(t, mb)
 
 	resp, err := srv.ListVolumes(context.Background(), &agentv1.ListVolumesRequest{
-		PoolName: testPool,
+		PoolName:    testPool,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err != nil {
 		t.Fatalf("ListVolumes unexpected error: %v", err)
@@ -603,7 +658,8 @@ func TestListVolumes_UnknownPool(t *testing.T) {
 	srv := newTestServer(t, &mockBackend{})
 
 	_, err := srv.ListVolumes(context.Background(), &agentv1.ListVolumesRequest{
-		PoolName: "no-such-pool",
+		PoolName:    "no-such-pool",
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err == nil {
 		t.Fatal("expected error for unknown pool, got nil")
@@ -620,7 +676,8 @@ func TestListVolumes_BackendError(t *testing.T) {
 	srv := newTestServer(t, mb)
 
 	_, err := srv.ListVolumes(context.Background(), &agentv1.ListVolumesRequest{
-		PoolName: testPool,
+		PoolName:    testPool,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err == nil {
 		t.Fatal("expected error from backend, got nil")

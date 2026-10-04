@@ -402,8 +402,9 @@ func TestAgentServer_DeleteVolume_Success(t *testing.T) {
 	srv, _ := newAgentServer(t, &mockVolumeBackend{})
 
 	resp, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
-		VolumeId: compTestVolumeID,
-		Fence:    testFence(t),
+		VolumeId:    compTestVolumeID,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		Fence:       testFence(t),
 	})
 	if err != nil {
 		t.Fatalf("DeleteVolume unexpected error: %v", err)
@@ -421,8 +422,9 @@ func TestAgentServer_DeleteVolume_Idempotent(t *testing.T) {
 	srv, _ := newAgentServer(t, &mockVolumeBackend{})
 
 	_, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
-		VolumeId: compTestVolumeID,
-		Fence:    testFence(t),
+		VolumeId:    compTestVolumeID,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		Fence:       testFence(t),
 	})
 	if err != nil {
 		t.Fatalf("DeleteVolume idempotent unexpected error: %v", err)
@@ -436,8 +438,9 @@ func TestAgentServer_DeleteVolume_InvalidPool(t *testing.T) {
 	srv, _ := newAgentServer(t, &mockVolumeBackend{})
 
 	_, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
-		VolumeId: "other-pool/pvc-abc",
-		Fence:    testFence(t),
+		VolumeId:    "other-pool/pvc-abc",
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		Fence:       testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected NotFound, got nil")
@@ -458,8 +461,9 @@ func TestAgentServer_DeleteVolume_DeviceBusy(t *testing.T) {
 	srv, _ := newAgentServer(t, mb)
 
 	_, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
-		VolumeId: compTestVolumeID,
-		Fence:    testFence(t),
+		VolumeId:    compTestVolumeID,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		Fence:       testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected Internal error, got nil")
@@ -480,8 +484,9 @@ func TestAgentServer_DeleteVolume_BackendError(t *testing.T) {
 	srv, _ := newAgentServer(t, mb)
 
 	_, err := srv.DeleteVolume(context.Background(), &agentv1.DeleteVolumeRequest{
-		VolumeId: compTestVolumeID,
-		Fence:    testFence(t),
+		VolumeId:    compTestVolumeID,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		Fence:       testFence(t),
 	})
 	if err == nil {
 		t.Fatal("expected Internal error, got nil")
@@ -504,6 +509,7 @@ func TestAgentServer_ExpandVolume_Success(t *testing.T) {
 
 	resp, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       compTestVolumeID,
+		BackendType:    agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:          testFence(t),
 		RequestedBytes: 20 * 1024 * 1024 * 1024,
 	})
@@ -526,6 +532,7 @@ func TestAgentServer_ExpandVolume_ShrinkRejected(t *testing.T) {
 
 	_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       compTestVolumeID,
+		BackendType:    agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:          testFence(t),
 		RequestedBytes: 1 * 1024 * 1024 * 1024,
 	})
@@ -549,6 +556,7 @@ func TestAgentServer_ExpandVolume_NotFound(t *testing.T) {
 
 	_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       compTestVolumeID,
+		BackendType:    agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:          testFence(t),
 		RequestedBytes: 20 * 1024 * 1024 * 1024,
 	})
@@ -564,6 +572,7 @@ func TestAgentServer_ExpandVolume_InvalidPool(t *testing.T) {
 
 	_, err := srv.ExpandVolume(context.Background(), &agentv1.ExpandVolumeRequest{
 		VolumeId:       "other-pool/pvc-abc",
+		BackendType:    agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 		Fence:          testFence(t),
 		RequestedBytes: 20 * 1024 * 1024 * 1024,
 	})
@@ -643,7 +652,7 @@ func TestAgentServer_ExportVolume_InvalidProtocol(t *testing.T) {
 	_, err := srv.ExportVolume(context.Background(), &agentv1.ExportVolumeRequest{
 		VolumeId:     compTestVolumeID,
 		Fence:        testFence(t),
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_SMB,
 	})
 	if err == nil {
 		t.Fatal("expected Unimplemented, got nil")
@@ -816,7 +825,7 @@ func TestAgentServer_UnexportVolume_InvalidProtocol(t *testing.T) {
 	_, err := srv.UnexportVolume(context.Background(), &agentv1.UnexportVolumeRequest{
 		VolumeId:     compTestVolumeID,
 		Fence:        testFence(t),
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_SMB,
 	})
 	if err == nil {
 		t.Fatal("expected Unimplemented, got nil")
@@ -893,7 +902,7 @@ func TestAgentServer_AllowInitiator_InvalidProtocol(t *testing.T) {
 	_, err := srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
 		VolumeId:     compTestVolumeID,
 		Fence:        testFence(t),
-		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NFS,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_SMB,
 		InitiatorId:  compTestHostNQN,
 	})
 	if err == nil {
@@ -1032,7 +1041,8 @@ func TestAgentServer_GetCapacity_Success(t *testing.T) {
 	srv, _ := newAgentServer(t, mb)
 
 	resp, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
-		PoolName: compTestPool,
+		PoolName:    compTestPool,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err != nil {
 		t.Fatalf("GetCapacity unexpected error: %v", err)
@@ -1058,7 +1068,8 @@ func TestAgentServer_GetCapacity_PoolOffline(t *testing.T) {
 	srv, _ := newAgentServer(t, mb)
 
 	_, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
-		PoolName: compTestPool,
+		PoolName:    compTestPool,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err == nil {
 		t.Fatal("expected Internal error, got nil")
@@ -1076,7 +1087,8 @@ func TestAgentServer_GetCapacity_UnknownPool(t *testing.T) {
 	srv, _ := newAgentServer(t, &mockVolumeBackend{})
 
 	_, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
-		PoolName: "no-such-pool",
+		PoolName:    "no-such-pool",
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err == nil {
 		t.Fatal("expected NotFound, got nil")
@@ -1100,7 +1112,8 @@ func TestAgentServer_ListVolumes_Success(t *testing.T) {
 	srv, _ := newAgentServer(t, mb)
 
 	resp, err := srv.ListVolumes(context.Background(), &agentv1.ListVolumesRequest{
-		PoolName: compTestPool,
+		PoolName:    compTestPool,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err != nil {
 		t.Fatalf("ListVolumes unexpected error: %v", err)
@@ -1118,7 +1131,8 @@ func TestAgentServer_ListVolumes_Empty(t *testing.T) {
 	srv, _ := newAgentServer(t, mb)
 
 	resp, err := srv.ListVolumes(context.Background(), &agentv1.ListVolumesRequest{
-		PoolName: compTestPool,
+		PoolName:    compTestPool,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err != nil {
 		t.Fatalf("ListVolumes unexpected error: %v", err)
@@ -1136,7 +1150,8 @@ func TestAgentServer_ListVolumes_BackendError(t *testing.T) {
 	srv, _ := newAgentServer(t, mb)
 
 	_, err := srv.ListVolumes(context.Background(), &agentv1.ListVolumesRequest{
-		PoolName: compTestPool,
+		PoolName:    compTestPool,
+		BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
 	})
 	if err == nil {
 		t.Fatal("expected Internal error, got nil")
@@ -1318,9 +1333,10 @@ func TestAgentServer_ReconcileState_ReExportsAfterRestart(t *testing.T) {
 	resp, err := srv.ReconcileState(context.Background(), &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
-				VolumeId:   compTestVolumeID,
-				Fence:      testFence(t),
-				DevicePath: "/dev/zvol/tank/pvc-abc",
+				VolumeId:    compTestVolumeID,
+				BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+				Fence:       testFence(t),
+				DevicePath:  "/dev/zvol/tank/pvc-abc",
 				Exports: []*agentv1.ExportDesiredState{
 					{
 						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
@@ -1356,9 +1372,10 @@ func TestAgentServer_ReconcileState_Idempotent(t *testing.T) {
 	req := &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
-				VolumeId:   compTestVolumeID,
-				Fence:      testFence(t),
-				DevicePath: "/dev/zvol/tank/pvc-abc",
+				VolumeId:    compTestVolumeID,
+				BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+				Fence:       testFence(t),
+				DevicePath:  "/dev/zvol/tank/pvc-abc",
 				Exports: []*agentv1.ExportDesiredState{
 					{
 						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
@@ -1393,9 +1410,10 @@ func TestAgentServer_ReconcileState_MultipleVolumes(t *testing.T) {
 	resp, err := srv.ReconcileState(context.Background(), &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{
 			{
-				VolumeId:   compTestVolumeID,
-				Fence:      testFence(t),
-				DevicePath: "/dev/zvol/tank/pvc-abc",
+				VolumeId:    compTestVolumeID,
+				BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+				Fence:       testFence(t),
+				DevicePath:  "/dev/zvol/tank/pvc-abc",
 				Exports: []*agentv1.ExportDesiredState{
 					{
 						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
@@ -1404,9 +1422,10 @@ func TestAgentServer_ReconcileState_MultipleVolumes(t *testing.T) {
 				},
 			},
 			{
-				VolumeId:   secondVolumeID,
-				Fence:      testFence(t),
-				DevicePath: "/dev/zvol/tank/pvc-def",
+				VolumeId:    secondVolumeID,
+				BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+				Fence:       testFence(t),
+				DevicePath:  "/dev/zvol/tank/pvc-def",
 				Exports: []*agentv1.ExportDesiredState{
 					{
 						ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,

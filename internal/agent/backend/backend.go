@@ -103,13 +103,14 @@ type Layout struct {
 // All methods MUST be idempotent so that the controller can safely retry.
 //
 // Implementations:
-//   - zfs.ZfsBackend  — ZFS zvol backed by os/exec calls to zfs(8)
-//   - lvm.Backend     — LVM logical volume backed by os/exec calls to lvm(8)
+//   - zfs.DatasetBackend — ZFS filesystem dataset backed by os/exec calls to zfs(8)
+//   - zfs.Backend  — ZFS zvol backed by os/exec calls to zfs(8)
+//   - lvm.Backend  — LVM logical volume backed by os/exec calls to lvm(8)
 type VolumeBackend interface {
-	// Create provisions a new block volume (zvol, LV, …) with at least
-	// capacityBytes of usable storage.  On success it returns the host path to
-	// the block device and the actual allocated size (which may exceed
-	// capacityBytes due to backend rounding).
+	// Create provisions a new storage volume (filesystem dataset, zvol, LV,
+	// …) with at least capacityBytes of usable storage. On success it returns
+	// the host path to the mounted directory or block device and the actual
+	// capacity (which may exceed capacityBytes due to backend rounding).
 	//
 	// params is the backend-specific oneof wrapper from the gRPC request.
 	// Each backend implementation extracts the relevant sub-message
@@ -119,6 +120,10 @@ type VolumeBackend interface {
 	// Idempotent: if a volume with volumeID already exists and has compatible
 	// parameters, Create MUST return the existing device path and size without
 	// returning an error.
+	//
+	// Filesystem datasets protect the empty, root-owned backing directory
+	// before mounting. Recovery MUST NOT chmod an already-mounted filesystem
+	// root, whose permissions and contents belong to the volume.
 	Create(
 		ctx context.Context,
 		volumeID string,
@@ -145,11 +150,11 @@ type VolumeBackend interface {
 	// ListVolumes returns metadata for all volumes currently present in the pool.
 	ListVolumes(ctx context.Context) ([]*agentv1.VolumeInfo, error)
 
-	// DevicePath returns the host filesystem path to the block device for
-	// the given volumeID without touching the kernel or running any process.
-	// The path follows the backend-specific convention:
-	//   ZFS zvol  → /dev/zvol/<pool>[/<parentDataset>]/<name>
-	//   LVM LV    → /dev/<vg>/<lv>
+	// DevicePath returns the host filesystem path to the storage resource for
+	// the given volumeID without touching the kernel or running a process.
+	//   ZFS dataset → persistent mounted filesystem path
+	//   ZFS zvol    → /dev/zvol/<pool>[/<parentDataset>]/<name>
+	//   LVM LV      → /dev/<vg>/<lv>
 	DevicePath(volumeID string) string
 
 	// Type returns the agentv1.BackendType enum value that identifies this

@@ -69,6 +69,9 @@ const (
 	// The Makefile forwards E2E_HELM_NAMESPACE (default: "pillar-csi-system").
 	helmNamespaceEnvVar = "E2E_HELM_NAMESPACE"
 
+	// defaultHelmNamespace is the chart's namespace when no override is set.
+	defaultHelmNamespace = "pillar-csi-system"
+
 	// helmInstallTimeout is the maximum duration allowed for `helm install --wait`
 	// inside bootstrapSuiteHelm. 5 minutes for chart deployment plus 2 minutes
 	// headroom for slow Kind nodes.
@@ -78,6 +81,16 @@ const (
 	// inside teardownSuiteHelm.
 	helmTeardownTimeout = 3 * time.Minute
 )
+
+// resolveHelmNamespace returns the configured Helm release namespace, using
+// the same environment/default contract for bootstrap and E2E component lookups.
+func resolveHelmNamespace() string {
+	namespace := strings.TrimSpace(os.Getenv(helmNamespaceEnvVar))
+	if namespace == "" {
+		return defaultHelmNamespace
+	}
+	return namespace
+}
 
 // helmBootstrapState holds the state of the suite-level Helm release that was
 // pre-installed by SynchronizedBeforeSuite node-1. It is serialised to JSON
@@ -166,10 +179,7 @@ func bootstrapSuiteHelm(
 	if release == "" {
 		release = "pillar-csi"
 	}
-	namespace := strings.TrimSpace(os.Getenv(helmNamespaceEnvVar))
-	if namespace == "" {
-		namespace = "pillar-csi-system"
-	}
+	namespace := resolveHelmNamespace()
 
 	repoRoot, err := findRepoRoot()
 	if err != nil {
@@ -185,14 +195,40 @@ func bootstrapSuiteHelm(
 		release, namespace, chartPath)
 
 	var stdoutBuf, stderrBuf bytes.Buffer
-	cmd := exec.CommandContext(ctx, "helm", //nolint:gosec
-		"--kubeconfig="+clusterState.KubeconfigPath,
+	helmArgs := []string{
+		"--kubeconfig=" + clusterState.KubeconfigPath,
 		"install", release, chartPath,
 		"--namespace", namespace,
 		"--create-namespace",
 		"--wait",
 		"--timeout", "5m",
-	)
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("E2E_NFS_E2E")), "true") {
+		pool := strings.TrimSpace(os.Getenv(suiteZFSPoolEnvVar))
+		parent := strings.TrimSpace(os.Getenv(suiteNFSParentDatasetEnvVar))
+		if pool == "" || parent == "" {
+			return nil, fmt.Errorf("[helm-bootstrap] E2E_NFS_E2E requires %s and %s",
+				suiteZFSPoolEnvVar, suiteNFSParentDatasetEnvVar)
+		}
+		tag := envOrDefault(imageTagEnvVar, defaultE2EImageTag)
+		for _, component := range []string{"controller", "agent", "node"} {
+			helmArgs = append(helmArgs,
+				"--set", component+".image.repository=pillar-csi/"+component,
+				"--set", component+".image.tag="+tag,
+				"--set", component+".image.pullPolicy=Never")
+		}
+		helmArgs = append(helmArgs,
+			"--set", "agent.backends[0].zfs.pool="+pool,
+			"--set", "agent.backends[0].zfs.volumeType=zvol",
+			"--set", "agent.backends[0].zfs.parentDataset="+parent,
+			"--set", "agent.backends[1].zfs.pool="+pool,
+			"--set", "agent.backends[1].zfs.volumeType=dataset",
+			"--set", "agent.backends[1].zfs.parentDataset="+parent,
+			"--set", "agent.tolerations[0].operator=Exists",
+			"--set", "node.tolerations[0].operator=Exists",
+		)
+	}
+	cmd := exec.CommandContext(ctx, "helm", helmArgs...)
 	cmd.Stdout = io.MultiWriter(output, &stdoutBuf)
 	cmd.Stderr = io.MultiWriter(output, &stderrBuf)
 

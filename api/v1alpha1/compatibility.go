@@ -27,6 +27,9 @@ const (
 
 	// BackendCategoryBlock represents raw block-device backends.
 	BackendCategoryBlock BackendCategory = "block"
+
+	// BackendCategoryFilesystem represents filesystem backends.
+	BackendCategoryFilesystem BackendCategory = "filesystem"
 )
 
 // CategoryOf returns the compatibility category for a backend kind.
@@ -34,6 +37,8 @@ func CategoryOf(b BackendID) BackendCategory {
 	switch b {
 	case BackendIDZFSZvol, BackendIDLVMLV:
 		return BackendCategoryBlock
+	case BackendIDZFSDataset:
+		return BackendCategoryFilesystem
 	default:
 		return BackendCategoryUnknown
 	}
@@ -48,6 +53,9 @@ const (
 
 	// ProtocolCategoryBlock represents block-storage protocols.
 	ProtocolCategoryBlock ProtocolCategory = "block"
+
+	// ProtocolCategoryFilesystem represents filesystem protocols.
+	ProtocolCategoryFilesystem ProtocolCategory = "filesystem"
 )
 
 // ProtocolCategoryOf returns the compatibility category for a protocol kind.
@@ -55,6 +63,8 @@ func ProtocolCategoryOf(p ProtocolID) ProtocolCategory {
 	switch p {
 	case ProtocolIDNVMeOFTCP, ProtocolIDISCSI:
 		return ProtocolCategoryBlock
+	case ProtocolIDNFS:
+		return ProtocolCategoryFilesystem
 	default:
 		return ProtocolCategoryUnknown
 	}

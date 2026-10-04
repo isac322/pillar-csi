@@ -212,11 +212,11 @@ func (h *ISCSIAgentHandler) SetLocalAttach(
 			if devicePath == "" {
 				// Already locally attached: the backstore that recorded the
 				// device is gone, so the backend names it.
-				devicePath, opErr = h.server.resolveExportDevicePath(volumeID, "")
+				devicePath, opErr = h.server.resolveISCSILocalDevicePath(volumeID)
 			}
 			return opErr
 		}
-		dev, resolveErr := h.server.resolveExportDevicePath(volumeID, "")
+		dev, resolveErr := h.server.resolveISCSILocalDevicePath(volumeID)
 		if resolveErr != nil {
 			return resolveErr
 		}
@@ -225,6 +225,44 @@ func (h *ISCSIAgentHandler) SetLocalAttach(
 	})
 	if err != nil {
 		return "", err
+	}
+	return devicePath, nil
+}
+
+// resolveISCSILocalDevicePath resolves the path iSCSI must use when changing
+// local-attach state without a request-supplied device path.  A single-backend
+// pool retains the existing resolver behavior.  A mixed pool must explicitly
+// select the zvol backend so a dataset cannot be chosen from the pool's
+// default backend.
+func (s *Server) resolveISCSILocalDevicePath(volumeID string) (string, error) {
+	pool, err := poolFromVolumeID(volumeID)
+	if err != nil {
+		return "", err
+	}
+	if len(s.backendVariants[pool]) <= 1 {
+		return s.resolveExportDevicePath(volumeID, "")
+	}
+
+	b, err := s.backendForType(volumeID, agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL)
+	if err != nil {
+		return "", err
+	}
+	checkErr := checkBackendType(
+		"SetLocalAttach",
+		agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+		b.Type(),
+		volumeID,
+	)
+	if checkErr != nil {
+		return "", checkErr
+	}
+	devicePath := b.DevicePath(volumeID)
+	if devicePath == "" {
+		return "", status.Errorf(
+			codes.FailedPrecondition,
+			"SetLocalAttach: backend device path unavailable for volume %q",
+			volumeID,
+		)
 	}
 	return devicePath, nil
 }

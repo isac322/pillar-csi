@@ -1,5 +1,5 @@
 {{- /*
-Node DaemonSet — CSI Node service + NVMe-oF/TCP and iSCSI initiators.
+Node DaemonSet — CSI Node service + NVMe-oF/TCP, iSCSI and NFS initiators.
 Runs on every worker node. Uses privileged security context for mount operations.
 hostNetwork: true is required for the NVMe-oF data plane: the kernel
 issues `nvme connect` TCP SYNs in the netns of the process that writes
@@ -61,7 +61,7 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       {{- end }}
       # ── Init containers ──────────────────────────────────────────────────────
-      # Loads NVMe-oF and iSCSI initiator kernel modules.
+      # Loads NVMe-oF, iSCSI and NFS initiator kernel modules.
       # Each modprobe is run with "|| true" so the init container always exits 0.
       # The pod does NOT fail to start if a module cannot be loaded.
       initContainers:

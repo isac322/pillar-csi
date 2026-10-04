@@ -86,8 +86,8 @@ status:
   resolvedAddress: 192.168.219.6
   agentVersion: "0.1.0"
   capabilities:
-    backends: [zfs-zvol, lvm-lv]
-    protocols: [nvmeof-tcp]
+    backends: [zfs-zvol, zfs-dataset, lvm-lv]
+    protocols: [nvmeof-tcp, iscsi, nfs]
   discoveredPools:
     - name: hot-data
       type: zfs
@@ -182,7 +182,7 @@ status:
 
 `backend` 멤버 이름은 agent 설정 파일(`--config`)의 `backends` 항목과 같은 키·같은 구조를 쓴다. `zfs.pool`, `zfs.parentDataset`, `lvm.volumeGroup`, `lvm.thinPool`은 구조적 필드이며 PillarStorageClass 오버라이드·PVC annotation에서 설정할 수 없다.
 
-> **미구현 backend (설계 노트):** `zfs-dataset`(파일시스템 backend)과 `dir`(디렉토리 backend)은 설계만 존재하며 구현되지 않았다. served CRD schema에는 해당 멤버가 없고, 수동 StorageClass·PVC 문서·agent 설정·gRPC 경로 모두 명시적으로 거부한다.
+> **구현된 backend와 미구현 backend:** `zfs-dataset`은 NFS 파일시스템용으로 구현되었다. `dir`(디렉토리 backend)은 설계만 존재하며 구현되지 않았고 served CRD schema에서 거부한다.
 
 **PillarStore conditions:**
 | Condition | 의미 |
@@ -194,7 +194,7 @@ status:
 
 #### PillarProtocol
 
-네트워크 공유 프로토콜과 그 기본 설정. **transport 축만** 담는다: `spec.protocol`은 정확히 하나의 멤버를 갖는 union이며 `type` 필드는 없다. 현재 구현된 멤버는 `nvmeofTcp` 하나다. 파일시스템 설정(`fsType`, `mkfsOptions`)은 여기에 두지 않는다 — PillarStorageClass `spec.filesystem`과 PVC `filesystem` 문서에서 설정한다. **노드와 무관하게 재사용 가능하다.** Target bind IP는 포함하지 않는다 — controller가 런타임에 PillarAgent에서 resolve하여 agent에 전달한다.
+네트워크 공유 프로토콜과 그 기본 설정. **transport 축만** 담는다: `spec.protocol`은 정확히 하나의 멤버를 갖는 union이며 `type` 필드는 없다. 현재 구현된 멤버는 `nvmeofTcp`, `iscsi`, `nfs`다. NFS는 버전 4.2와 포트 2049만 허용하며 ACL은 기본값 false, squash는 기본값 `root`다. 파일시스템 설정은 여전히 PillarStorageClass `spec.filesystem`과 PVC `filesystem` 문서에서 설정한다. **노드와 무관하게 재사용 가능하다.**
 
 status에는 이 프로토콜을 참조하는 바인딩의 역참조 메타 정보를 포함한다 (`storageClassCount`, `activeAgents`). Reconciler가 자동으로 계산한다.
 
@@ -277,25 +277,27 @@ spec:
 
 `port`·`acl`·`auth`는 구조적 필드라 `PillarStorageClass.spec.overrides.protocol.iscsi`와 PVC annotation `pillar-csi.bhyoo.com/protocol`(예: `iscsi: {loginTimeout: 30}`)에서는 네 타임아웃만 허용된다. `auth.method`가 `None`이 아니면 생성된 StorageClass에 `csi.storage.k8s.io/node-stage-secret-name`/`-namespace`가 붙어 kubelet이 같은 Secret을 NodeStage에 넘긴다. CHAP Secret 규칙, 교체 의미와 보안 주의는 [`PRD-iscsi.md`](./PRD-iscsi.md) §8.6.1을 따른다.
 
-> **미구현 프로토콜 (설계 노트):** 아래 NFS 예시는 설계 참고용이며 **구현되지 않았다.** served CRD schema에는 `nfs`·`smb` 멤버가 없으므로 이 YAML은 현재 API server가 거부한다.
+NFS는 구현되었고 SMB는 아직 구현되지 않았다. NFS는 ZFS dataset backend와만 호환되며 NFSv4.2/2049를 사용한다. 아래는 동작하는 NFS protocol 예시다.
 
 ```yaml
-# NFS 예시 — 미구현 설계 노트
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarProtocol
 metadata:
-  name: nfs
+  name: nfs42
 spec:
   protocol:
     nfs:
       version: "4.2"
+      port: 2049
+      acl: true
+      squash: root
 ```
 
 #### PillarStorageClass
 
 PillarStore과 PillarProtocol을 조합하여 Kubernetes StorageClass를 자동 생성한다. **filesystem 축**(`spec.filesystem`)과 바인딩별 backend·protocol 오버라이드(`spec.overrides`)를 담는다. **사용자가 생성한다.**
 
-호환되지 않는 조합(Block backend + File protocol)은 validation webhook이 거부한다. 현재 구현된 조합(`zfs`/`lvm` × `nvmeofTcp`/`iscsi`)은 모두 Block이므로 항상 호환된다.
+호환되지 않는 조합(Block backend + File protocol, 또는 Filesystem backend + Block protocol)은 validation webhook이 거부한다. 현재 구현된 조합은 `zfs` zvol/`lvm` × `nvmeofTcp`/`iscsi`, 그리고 `zfs` dataset × `nfs`다.
 
 ```yaml
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
@@ -377,30 +379,28 @@ status:
 - `volumeMode: Filesystem` → 블록 디바이스에 mkfs + mount
 - `volumeMode: Block` → raw 블록 디바이스를 Pod에 직접 제공
 
-#### 파일시스템 프로토콜 (미구현 설계 노트)
+#### 파일시스템 프로토콜
 
-NFS·SMB는 설계만 존재하며 구현되지 않았다. served CRD schema에 해당 멤버가 없다.
+NFS는 구현된 파일 프로토콜이며 SMB는 설계 노트로만 남아 있다.
 
 | 프로토콜 | 클라이언트 마운트 | AccessMode | volumeMode |
 |----------|---------------|------------|------------|
-| NFS | 마운트된 디렉토리 | RWX, RWO, ROX | Filesystem만 |
-| SMB | 마운트된 디렉토리 | RWX, RWO, ROX | Filesystem만 |
+| NFS | NFSv4.2 mounted dataset | RWX, RWO, RWOP, ROX | Filesystem만 |
+| SMB | 마운트된 디렉토리 (미구현) | 설계상 RWX, RWO, ROX | Filesystem만 |
 
-RWX는 Phase 3 (NFS)에서 지원한다.
+NFS는 `filesystem.mountOptions`만 허용한다. `fsType`, `mkfsOptions`, periodicTrim, localAttach, Block volume mode와 support defaults를 뒤집는 `nfsvers`/`proto`/`soft` 옵션은 거부한다. `squash` 기본값은 `root`; root/fsGroup 초기화가 필요한 workload는 `squash: none`을 명시해야 한다. RPC TLS는 제공하지 않는다.
 
 #### Backend-Protocol 호환성 매트릭스
 
 |  | NVMe-oF TCP | iSCSI | NFS | SMB |
 |--|:---:|:---:|:---:|:---:|
 | **zfs-zvol** (Block) | O | O | - | - |
-| **zfs-dataset** (FS) | - | - | O | O |
+| **zfs-dataset** (FS) | - | - | O | - |
 | **lvm** (Block) | O | O | - | - |
-| **block-device** (Block) | O | O | - | - |
-| **directory** (FS) | - | - | O | O |
+| **block-device** (Block, 미구현) | - | - | - | - |
+| **directory** (FS, 미구현) | - | - | - | - |
 
-규칙: **Block backend ↔ Block protocol, Filesystem backend ↔ Filesystem protocol.**
-
-현재 구현되어 served schema에 있는 조합은 **zfs-zvol·lvm × NVMe-oF TCP·iSCSI**다. 나머지 행·열(zfs-dataset, block-device, directory, NFS, SMB)은 미구현 설계 노트다.
+현재 구현되어 served schema에 있는 조합은 **zfs-zvol·lvm × NVMe-oF TCP·iSCSI**와 **zfs-dataset × NFS**다. SMB, block-device, directory는 미구현이며 API에서 제공하지 않는다.
 
 ### 2.3 파라미터 오버라이드 계층
 
@@ -434,17 +434,17 @@ PVC annotation 문서 pillar-csi.bhyoo.com/{backend,protocol,filesystem}   (볼�
 | filesystem | `periodicTrim` (bool, 생략 = 활성) | 마지막 계층의 값 |
 | filesystem | `mkfsOptions`, `mountOptions` | 생략 = 상속, 명시적 `[]` = 비움, 값 = 교체 (모든 계층 동일) |
 
-backend·protocol 문서는 exactly-one union이다: 정확히 하나의 멤버만 쓸 수 있고, 그 멤버는 store의 backend(`zfs`/`lvm`)·protocol(`nvmeofTcp`/`iscsi`)과 같아야 한다. 같은 수치 범위와 기본값(ACL 기본값 false, LVM provisioningMode 기본값 linear)이 모든 계층에 적용된다.
+backend·protocol 문서는 exactly-one union이다: 정확히 하나의 멤버만 쓸 수 있고, 그 멤버는 store의 backend(`zfs`/`lvm`)·protocol(`nvmeofTcp`/`iscsi`/`nfs`)과 같아야 한다. NFS는 `zfs.volumeType: dataset` backend에서만 허용되며 version/port/ACL/squash는 structural fields다. 같은 수치 범위와 기본값(ACL 기본값 false, NFS version 4.2/port 2049/squash root, LVM provisioningMode 기본값 linear)이 모든 계층에 적용된다.
 
-**구조적 필드·알 수 없는 키 거부:** PVC annotation·수동 SC 문서에서는 튜닝 부분집합만 허용한다. 구조적 필드(`zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port`, `nvmeofTcp.acl`, `iscsi.port`, `iscsi.acl`, `iscsi.auth`)와 알 수 없는 키는 하나의 공유 decoder가 전체 경로와 함께 거부한다 (예: `pillar-csi.bhyoo.com/protocol: nvmeofTcp.acl is structural and cannot be set per volume`). PVC의 그 밖의 `pillar-csi.bhyoo.com/` annotation도 알 수 없는 키로 거부된다.
+**구조적 필드·알 수 없는 키 거부:** PVC annotation·수동 SC 문서에서는 튜닝 부분집합만 허용한다. 구조적 필드(`zfs.pool`, `zfs.parentDataset`, `zfs.volumeType`, `lvm.volumeGroup`, `lvm.thinPool`, `nvmeofTcp.port`, `nvmeofTcp.acl`, `iscsi.port`, `iscsi.acl`, `iscsi.auth`, `nfs.version`, `nfs.port`, `nfs.acl`, `nfs.squash`)와 알 수 없는 키는 하나의 공유 decoder가 전체 경로와 함께 거부한다.
 
 fsType/mkfsOptions 전달 규칙:
 - CreateVolume은 resolve된 fsType을 PV VolumeContext `pillar-csi.bhyoo.com/fs-type`에, mkfsOptions를 `pillar-csi.bhyoo.com/mkfs-options`(JSON 문자열 배열)에 기록한다. PVC `filesystem` 문서가 클래스의 mountOptions를 바꾼 경우에만 `pillar-csi.bhyoo.com/mount-options`(JSON 문자열 배열)를 기록한다.
 - NodeStageVolume은 디바이스에 파일시스템이 없을 때만(blkid 기준) mkfs를 실행하며, 이미 포맷된 볼륨은 절대 재포맷하지 않는다. mkfs 인자는 셸 없이 argv 요소 그대로 전달된다. 기본 인자(ext4: `-F -m0`) 뒤에 붙으므로 같은 옵션을 지정하면 사용자 값이 우선한다. mkfs 종료 후 blkid로 요청한 파일시스템이 생성되었는지 확인하고, 아니면 (옵션 없이 다시 포맷하지 않고) 실패한다.
 - 포맷 타입 우선순위: PVC `filesystem` 문서 fsType > 수동 SC `filesystem` 문서 fsType > PillarStorageClass `spec.filesystem.fsType` > ext4. 생성된 StorageClass는 바인딩의 fsType(기본값 ext4)을 `csi.storage.k8s.io/fstype`으로 싣는다. 수동 SC가 `csi.storage.k8s.io/fstype`과 fsType이 있는 `filesystem` 문서를 함께 쓰면 두 값이 같아야 한다 (다르면 `InvalidArgument`). external-provisioner는 PV fsType을 StorageClass에서만 채우므로 PVC fsType을 쓰면 PV의 `spec.csi.fsType`은 클래스 값으로 남는다. 노드는 포맷한 타입을 스테이지 상태 파일에 기록하고, VolumeContext를 받지 않는 NodeExpandVolume은 이 값으로 resize 도구를 고른다.
 - mkfsOptions는 파일시스템별 허용 목록(allowlist)만 받는다. ext4: `-b -C -D -e -E(허용 서브옵션) -F -g -G -i -I -j -J(size,fast_commit_size,location) -L -m -M -N -o -O(journal_dev 제외) -q -r -T -U -v`, xfs: `-b -d -i -l -m -n -s`(각각 허용 서브옵션) `-f -K -L -q`. 다른 파일/디바이스를 여는 옵션(`-J device=`(LABEL=/UUID= 포함), `-l logdev=`, `-r rtdev=`, `-d name=/file=`, ext4 `-d`/`-l`/`-z`, xfs `-p`/`-c`), 파일시스템을 만들지 않거나 다른 결과를 내는 옵션(ext4 `-n`/`-S`/`-V`/`-t`/`-E offset=`, xfs `-N`), 위치 인자·긴 옵션·묶인 플래그(`-Fq`)는 거부된다.
-- 적용될 수 없는 설정은 CreateVolume이 `InvalidArgument`로 거부한다: 잘못된 YAML 문서, 알 수 없는 키·구조적 필드, 허용 목록 밖 mkfs 옵션(포맷할 fsType 기준), ext4/xfs 이외의 fsType, `volumeMode: Block` PVC의 PVC `filesystem` 문서 fsType/mkfsOptions. 클래스 수준 mkfsOptions는 Block 볼륨에서 `csi.storage.k8s.io/fstype`처럼 무시된다.
-- `periodicTrim`이 어느 계층에든 설정되면 CreateVolume은 resolve된 값을 VolumeContext `pillar-csi.bhyoo.com/periodic-trim`(`"true"`\|`"false"`)에 기록한다. 설정이 없으면 키를 싣지 않으며 노드 설정(활성)을 따른다. 노드는 이 값을 스테이지 상태에 저장한다 (§5.5).
+적용될 수 없는 설정은 CreateVolume이 `InvalidArgument`로 거부한다: 잘못된 YAML 문서, 알 수 없는 키·구조적 필드, 허용 목록 밖 mkfs 옵션, ext4/xfs 이외의 fsType, NFS의 fsType/mkfsOptions/periodicTrim/localAttach, NFS와 Block mode, 또는 support defaults를 뒤집는 NFS mountOptions. 클래스 수준 mkfsOptions는 Block 볼륨에서 `csi.storage.k8s.io/fstype`처럼 무시된다.
+`periodicTrim`은 block filesystem에서만 의미가 있다. NFS volume은 periodic trim을 명시하면 거부한다.
 
 **해석 방식 (단일 resolve 지점):** 유효 설정은 CreateVolume에서 한 번만, live CR로부터 resolve한다.
 
@@ -521,11 +521,12 @@ spec:
 
 #### 로컬 attach (`localAttach`)
 
-`localAttach`는 CreateVolume에서 resolve되어 `PillarVolumeState.spec.resolved.localAttach`에 고정된다. 생성된 StorageClass에는 들어가지 않고 컨트롤러가 바인딩의 `spec.localAttach`를 읽는다. ControllerPublishVolume은 다음을 모두 만족할 때만 로컬 attach를 고른다. 그 외에는 플래그가 없을 때와 똑같이 프로토콜로 attach한다.
+`localAttach`는 CreateVolume에서 resolve되어 `PillarVolumeState.spec.resolved.localAttach`에 고정된다. NFS에서는 항상 거부된다. 생성된 StorageClass에는 들어가지 않고 컨트롤러가 바인딩의 `spec.localAttach`를 읽는다. Block volume의 ControllerPublishVolume은 다음을 모두 만족할 때만 로컬 attach를 고른다.
 
 - 대상 노드가 볼륨 PillarAgent의 `spec.nodeRef.name`이다 (`spec.external` 에이전트는 해당 없음).
 - access mode가 `SINGLE_NODE_*`이다 (multi-node 모드는 항상 프로토콜).
 
+NFS는 storage node에서도 network NFS mount를 사용한다.
 로컬 publish는 PublishContext에 `pillar-csi.bhyoo.com/attach-mode: local`, `pillar-csi.bhyoo.com/local-node`, `pillar-csi.bhyoo.com/local-device-path`를 싣는다. NodeStageVolume은 프로토콜 connector를 호출하지 않고 백엔드 디바이스 위에 device-mapper linear 디바이스 `pillar-local-<sha256(volumeID) 앞 16 hex>`를 만들어 그 위에 마운트한다 (block 볼륨은 dm 디바이스를 bind). 파드는 스토리지 노드와 다른 노드 사이를 자유롭게 옮겨 다닐 수 있고, publish마다 경로가 다시 정해진다.
 
 안전 불변식: 데이터는 Kubernetes force-detach(한 노드의 kubelet이 죽었는데 컨테이너는 계속 쓰는 경우)를 포함해 어떤 경우에도 두 노드에서 동시에 쓰이지 않는다.
@@ -566,8 +567,8 @@ namespace가 꺼진 동안에도 ControllerExpandVolume은 백엔드를 키운�
 │  │    - NVMe-oF: nvme connect/disconnect                 │ │
 │  │    - iSCSI: in-process Go initiator (login PDU +      │ │
 │  │      NETLINK_ISCSI로 커널 iscsi_tcp에 연결 인계)          │ │
-│  │    - NFS: mount.nfs / umount                          │ │
-│  │    - SMB: mount.cifs / umount                         │ │
+│  │    - NFS: bundled mount helper / umount                      │ │
+│  │    - SMB: mount.cifs / umount (미구현)                      │ │
 │  │  • 유저스페이스 도구 컨테이너 번들                         │ │
 │  │  • Init container: 커널 모듈 modprobe (best-effort)     │ │
 │  │  • periodic filesystem trim (FITRIM)                  │ │
@@ -577,13 +578,12 @@ namespace가 꺼진 동안에도 ControllerExpandVolume은 백엔드를 키운�
 │  ┌─ pillar-agent (DaemonSet, 스토리지 노드만) ───────────┐  │
 │  │  • nodeSelector: pillar-csi.bhyoo.com/agent-node    │ │
 │  │  • gRPC server (Phase 1: 평문, TLS 옵션 준비)          │ │
-│  │  • 완전 stateless — 복구 시 controller에서 상태 수신     │ │
-│  │  • Backend 플러그인: ZFS, LVM, directory 등            │ │
+│  │  • controller-pushed desired state plus durable fencing/NFS recovery records │ │
+│  │  • Backend 플러그인: ZFS zvol/dataset, LVM; directory는 미구현 │ │
 │  │  • Protocol target 플러그인:                           │ │
 │  │    - NVMe-oF: nvmet configfs 직접 조작                 │ │
 │  │    - iSCSI: LIO configfs 직접 조작                     │ │
-│  │    - NFS: kernel nfsd 설정                             │ │
-│  │    - SMB: Samba 설정                                   │ │
+│  │    - NFS: kernel nfsd + owned export state             │ │
 │  │  • K8s API 의존성 없음 — 순수 gRPC 서버                  │ │
 │  │  • hostNetwork: true (nvmet/LIO listener를 호스트 netns에)│ │
 │  │  • Init container: target 커널 모듈 modprobe            │ │
@@ -592,7 +592,7 @@ namespace가 꺼진 동안에도 ControllerExpandVolume은 백엔드를 키운�
 └───────────────────────────────────────────────────────────┘
 ```
 
-위 그림의 NFS·SMB 경로와 directory backend는 미구현 설계 노트다. 현재 구현은 ZFS zvol·LVM backend와 NVMe-oF TCP·iSCSI다.
+위 그림의 SMB 경로와 directory backend는 미구현 설계 노트다. 현재 구현은 ZFS zvol·ZFS dataset·LVM backend와 NVMe-oF TCP·iSCSI·NFS다.
 
 **democratic-csi와의 배포 차이:**
 - democratic-csi: backend마다 controller StatefulSet + node DaemonSet = N개 배포
@@ -604,7 +604,7 @@ namespace가 꺼진 동안에도 ControllerExpandVolume은 백엔드를 키운�
 
 스토리지 노드에서 실행되는 경량 Go 바이너리. **K8s API에 의존하지 않는 순수 gRPC 서버**로, K8s DaemonSet과 외부 standalone 배포에서 **동일한 바이너리**를 사용한다.
 
-Agent는 **완전 stateless**이다. 로컬에 상태를 저장하지 않으며, controller가 gRPC로 전달하는 지시에 따라 동작한다.
+Agent는 controller가 원하는 export 상태를 reconcile하는 서버다. configfs와 kernel NFS export state는 재부팅 시 사라지지만, agent는 fencing marks와 NFS recovery state를 기존 hostPath에 보존한다. controller가 authoritative volume/export snapshot을 다시 전달하면 agent가 이를 적용하고, foreign NFS export는 건드리지 않는다.
 
 CLI 도구 없이 **configfs 직접 조작**으로 target을 설정한다:
 
@@ -612,11 +612,11 @@ CLI 도구 없이 **configfs 직접 조작**으로 target을 설정한다:
 |----------|-------------|------------|
 | NVMe-oF TCP | `/sys/kernel/config/nvmet/` | `github.com/0xfd4d/nvmet-config` (~150줄) |
 | iSCSI LIO | `/sys/kernel/config/target/iscsi/` | 직접 작성 (`internal/agent/lio`: 볼륨당 target 1개, TPG 1, iblock backstore의 LUN 0, network portal 1개) |
-| NFS (미구현) | `/etc/exports` + `exportfs` | 직접 작성 |
+| NFS | kernel nfsd + supervised rpc.mountd/exportfs | agent가 소유한 export만 직접 작성·복구 |
 
 #### Agent 설정 파일
 
-Agent가 볼륨을 만들 위치(backend 배치)는 `--config <path>` YAML 파일에서 읽는다. 차트는 `agent.backends` 값을 ConfigMap으로 렌더링해 마운트한다. 각 항목은 `PillarStore.spec.backend`와 같은 키·같은 구조의 union 멤버 하나다 (항목마다 공유 decoder로 검증, 알 수 없는 키·미구현 backend 거부).
+Agent가 볼륨을 만들 위치(backend 배치)는 `--config <path>` YAML 파일에서 읽는다. 차트는 `agent.backends` 값을 ConfigMap으로 렌더링해 마운트한다. 각 항목은 `PillarStore.spec.backend`와 같은 키·같은 구조의 union 멤버 하나다 (항목마다 공유 decoder로 검증, 알 수 없는 키·미구현 backend 거부). NFS는 `zfs.volumeType: dataset`인 backend에서만 사용한다.
 
 ```yaml
 # pillar-agent --config 파일 (차트: agent.backends)
@@ -625,12 +625,16 @@ backends:
       volumeType: zvol                 # 선택 (기본값: zvol)
       pool: hot-data
       parentDataset: k8s               # 선택
+  - zfs:
+      volumeType: dataset
+      pool: hot-data
+      parentDataset: k8s
   - lvm:
       volumeGroup: data-vg
       thinPool: thin0                  # 선택
 ```
 
-- 라우팅 키: zfs → `pool`, lvm → `volumeGroup`. 같은 이름이 두 항목에 나오면 agent가 시작을 거부한다.
+- 라우팅 키는 zfs → `pool`과 `volumeType`, lvm → `volumeGroup`이다. 같은 `(pool, volumeType)` 또는 pool/VG 이름 충돌은 agent가 시작을 거부하지만 같은 ZFS pool에 zvol·dataset 항목을 함께 둘 수 있다.
 - 같은 pool/VG를 쓰는 PillarStore는 `zfs.parentDataset`/`lvm.thinPool`을 agent 항목과 같게 선언해야 한다 (불일치 시 `PoolDiscovered=False`/`BackendLayoutMismatch`).
 - gRPC listen 주소 기본값은 `:9500`이며 PillarAgent `nodeRef.port`/`external.port`와 차트 `agent.grpcPort` 기본값과 같다.
 
@@ -645,7 +649,7 @@ PillarAgent CR 생성 시 controller가 해당 노드에 `pillar-csi.bhyoo.com/a
 
 #### Agent 크래시/리부트 복구
 
-Agent는 **완전히 stateless**하다. 로컬 상태를 저장하지 않는다. configfs는 리부트 시 소멸되므로, agent 재시작이나 노드 리부트 후 controller가 해당 target의 모든 볼륨 + export 상태를 gRPC로 push한다. Agent는 받은 상태를 configfs(nvmet 또는 LIO)에 다시 적용(reconcile)한다. reconcile은 목록에 있는 볼륨의 export만 수정하며, 목록에 없는 export(nvmet subsystem·LIO target)는 fencing이 적용된 UnexportVolume/DeleteVolume으로만 제거된다. 늦게 도착한 controller snapshot이 새로 export된 볼륨을 빠뜨려도 그 export를 지우지 않기 위해서다.
+Agent 재시작이나 노드 리부트 후 configfs와 NFS export state는 비어 있으므로 controller가 해당 target의 모든 볼륨 + export 상태를 gRPC로 push한다. Agent는 받은 상태를 configfs(nvmet/LIO)와 owned NFS export manager에 다시 적용(reconcile)한다. reconcile은 목록에 있는 볼륨의 export만 수정하며, 목록에 없는 export는 fencing이 적용된 UnexportVolume/DeleteVolume으로만 제거된다. NFS ownership을 확립할 수 없으면 availability를 보고하지 않는다.
 
 #### Agent가 필요한 호스트 권한
 
@@ -694,14 +698,14 @@ Phase 1에서는 평문 gRPC를 사용한다. TLS 지원은 아키텍처에 포�
 | **유저스페이스 도구** | | |
 | nvme-cli | 불필요 | pillar-node가 `/dev/nvme-fabrics`에 직접 connect 문자열을 쓴다 |
 | open-iscsi (iscsiadm, iscsid) | 불필요 | pillar-node 안의 pure-Go initiator가 login PDU를 직접 주고받고 연결을 `NETLINK_ISCSI`로 커널 `iscsi_tcp`에 넘긴다. 세션 복구(재로그인)도 pillar-node가 한다. 유저스페이스 도구·데몬 번들 없음 |
-| nfs-common (mount.nfs) | O | pillar-node 컨테이너에 포함 (미구현) |
-| cifs-utils (mount.cifs) | O | 동일 (미구현) |
+| nfs-common (mount.nfs) | O | pillar-node 컨테이너에 포함 |
+| cifs-utils (mount.cifs) | O | 미구현 |
 | mkfs/리사이즈 도구 (e2fsprogs, xfsprogs, xfsprogs-extra) | O | pillar-node 컨테이너에 포함 |
 | **커널 모듈 (initiator)** | | |
 | nvme_tcp, nvme_fabrics | X | init container modprobe |
 | iscsi_tcp (libiscsi, libiscsi_tcp, scsi_transport_iscsi를 끌어옴) | X | 동일 |
-| nfs (거의 항상 built-in) | - | 대부분 이미 있음 |
-| cifs | X | init container modprobe |
+| nfs, nfsv4 | X | init container modprobe 또는 kernel built-in |
+| cifs | X | 미구현 |
 | **커널 모듈 (target)** | | |
 | nvmet, nvmet_tcp | X | agent init container modprobe |
 | target_core_mod, target_core_iblock, iscsi_target_mod | X | 동일 |
@@ -724,9 +728,9 @@ CSI `ControllerPublishVolume`/`ControllerUnpublishVolume` RPC를 구현하여 �
 |----------|------------|-----------|------------|
 | NVMe-oF TCP | `allowed_hosts` symlink | host NQN 추가/제거 | `attr_allow_any_host=1` |
 | iSCSI | LIO node ACL (`tpgt_1/acls/<IQN>`, LUN 0 매핑; CHAP이면 ACL `auth/`에 자격 증명) | initiator IQN 추가/제거 | `generate_node_acls=1` (demo mode) |
-| NFS (미구현) | export client list | 클라이언트 IP 추가/제거 | 전체 허용 |
+| NFS | export client list | client IP 추가/제거 | reachable clients 허용 |
 
-`acl: false`이면 ControllerPublish/Unpublish는 no-op이다.
+`acl: false`이면 ControllerPublish/Unpublish는 block protocols에서 no-op이며 NFS에서는 export client restriction을 생략한다. ACL은 암호화가 아니며 NFS RPC TLS는 제공하지 않는다.
 
 ## 3. Backend 플러그인
 
@@ -754,7 +758,7 @@ type Backend interface {
 | Backend | VolumeType | 생성 방식 | 볼륨 경로 | 스냅샷 | 리사이즈 | 클론 |
 |---------|-----------|----------|----------|:---:|:---:|:---:|
 | **zfs-zvol** | Block | `zfs create -V` | `/dev/zvol/pool/name` | O | O | O |
-| **zfs-dataset** (미구현) | Filesystem | `zfs create` | ZFS 마운트포인트 | O | O (quota) | O |
+| **zfs-dataset** | Filesystem | `zfs create` + quota | ZFS dataset mountpoint | X (snapshot/clone not yet) | O (quota) | X (snapshot/clone not yet) |
 | **lvm** | Block | `lvcreate` | `/dev/vg/lv` | O (thin) | O | O (thin) |
 | **block-device** (미구현) | Block | 기존 디바이스 사용 | `/dev/sdX` | X | X | X |
 | **directory** (미구현) | Filesystem | `mkdir` | `/path/to/dir` | X | X | X |
@@ -782,17 +786,17 @@ type ProtocolInitiator interface {
 
 ### Protocol 구현 세부사항
 
-| | NVMe-oF TCP | iSCSI | NFS (미구현) | SMB (미구현) |
+| | NVMe-oF TCP | iSCSI | NFS | SMB (미구현) |
 |--|--|--|--|--|
-| **Target 구현** | nvmet configfs | LIO configfs (`/sys/kernel/config/target/iscsi`, targetcli 없음) | /etc/exports + exportfs | Samba |
-| **Initiator 구현** | `/dev/nvme-fabrics` 직접 쓰기 (nvme-cli 없음) | pillar-node 내장 pure-Go initiator (login PDU + `NETLINK_ISCSI` 인계, iscsiadm/iscsid 없음) | mount.nfs | mount.cifs |
-| **Initiator ID** | NQN (`/etc/nvme/hostnqn`) | IQN (`/etc/iscsi/initiatorname.iscsi`, 없으면 생성) | Client IP | Client IP |
-| **Target ID** | `nqn.2026-01.com.bhyoo.pillar-csi:<pool>.<name>` | `iqn.2026-01.com.bhyoo.pillar-csi:<pool>.<name>` (TPG 1, LUN 0) | - | - |
-| **기본 포트** | 4420 | 3260 | 2049 | 445 |
+| **Target 구현** | nvmet configfs | LIO configfs (`/sys/kernel/config/target/iscsi`, targetcli 없음) | kernel nfsd + supervised rpc.mountd/exportfs; agent-owned exports only | Samba |
+| **Initiator 구현** | `/dev/nvme-fabrics` 직접 쓰기 (nvme-cli 없음) | pillar-node 내장 pure-Go initiator (login PDU + `NETLINK_ISCSI` 인계, iscsiadm/iscsid 없음) | bundled mount helper | mount.cifs |
+| **Initiator ID** | NQN (`/etc/nvme/hostnqn`) | IQN (`/etc/iscsi/initiatorname.iscsi`, 없으면 생성) | client InternalIP | Client IP |
+| **Target ID** | NQN | IQN | server export path (public fsid 없음) | - |
+| **기본 포트** | 4420 | 3260 | 2049 (fixed) | 445 |
 | **커널 모듈 (target)** | nvmet, nvmet_tcp | target_core_mod, target_core_iblock, iscsi_target_mod | nfsd | (user-space) |
-| **커널 모듈 (initiator)** | nvme_tcp, nvme_fabrics | iscsi_tcp (libiscsi, libiscsi_tcp, scsi_transport_iscsi) | nfs (built-in) | cifs |
-| **인증** | - | CHAP·MutualCHAP (Secret 참조, MD5) | - | - |
-| **미지원** | - | multipath(다중 portal) | - | - |
+| **커널 모듈 (initiator)** | nvme_tcp, nvme_fabrics | iscsi_tcp | nfs client | cifs |
+| **인증/접근제어** | host NQN ACL | IQN ACL + CHAP | node IP ACL, squash root/none/all | - |
+| **미지원** | - | multipath(다중 portal) | RPC TLS, localAttach, Block, mkfs, dir backend | Entire protocol |
 
 ## 5. 볼륨 생명주기
 
@@ -822,15 +826,15 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
    b. 유효 설정 resolve (store/protocol → 바인딩 → 수동 SC 문서 → PVC 문서, §2.3)
       - PVC 문서는 튜닝 부분집합만 허용, 구조적 필드·알 수 없는 키 거부
       - 결과를 PillarVolumeState.spec.resolved에 저장 (재시도는 저장된 값 재사용)
-   c. Backend-Protocol 호환성 검증
+   c. Backend-Protocol 호환성 검증 (NFS는 zfs dataset만)
    d. PillarStore → PillarAgent → Node IP resolve
    e. gRPC로 agent에 CreateVolume + ExportVolume 요청
-      (target bind IP도 함께 전달)
+      (NFS는 owned root/child export state와 fixed port/version 포함)
    f. 중간 실패 시 롤백 (예: export 실패 → 생성된 볼륨 삭제)
 4. pillar-agent:
-   a. Backend: 볼륨 생성 (예: zfs create -V 50G hot-data/k8s/pvc-xxx)
-   b. Protocol: 볼륨 export (예: nvmet configfs에 subsystem/namespace/port 생성)
-   c. ExportInfo 반환 (NQN, namespace ID 등)
+   a. Backend: 볼륨 생성 (NFS는 `zfs create` dataset + quota)
+   b. Protocol: 볼륨 export (block configfs 또는 NFS owned export state)
+   c. ExportInfo 반환 (block target 또는 NFS server export path)
 5. pillar-controller:
    a. Volume ID 생성: {target}/{pool}/{volume-name}
    b. PV 생성, volumeContext에 ExportInfo 저장
@@ -842,11 +846,10 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 1. external-attacher → CSI ControllerPublishVolume
 2. pillar-controller:
    a. Volume ID에서 target/pool 파싱하여 라우팅 대상 결정
-   b. 대상 노드의 initiator ID 조회 (NodeGetInfo에서 등록된 NQN/IQN)
+   b. 대상 노드의 protocol identity 조회 (block NQN/IQN, NFS InternalIP)
    c. PillarProtocol의 acl 설정 확인
-   d. acl=true: gRPC로 agent에 AllowInitiator 요청
-      (NVMe-oF: allowed_hosts에 NQN symlink / iSCSI: LIO node ACL에 IQN, CSINode annotation `pillar-csi.bhyoo.com/iscsi-initiator-iqn`에서 조회)
-   e. acl=false: no-op
+   d. acl=true: gRPC로 agent에 AllowInitiator 요청 (NFS는 numeric client IP)
+   e. acl=false: block no-op; NFS unrestricted export policy
 3. publish_context 반환
 ```
 
@@ -857,16 +860,14 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
 2. pillar-node:
    a. volumeContext + publish_context에서 ExportInfo 추출
    b. Protocol initiator 연결:
-      NVMe-oF: nvme connect -t tcp -a <ip> -s <port> -n <nqn>
-              (PillarProtocol 타임아웃 파라미터 적용:
-               --ctrl-loss-tmo, --reconnect-delay, --keep-alive-tmo)
-      iSCSI: in-process initiator가 portal에 TCP 연결 + login PDU 교환 후 NETLINK_ISCSI로 커널 iscsi_tcp에 연결 인계,
-             LUN 0의 /dev/sdX 대기 (loginTimeout/replacementTimeout/noopOutInterval/noopOutTimeout 적용)
-      NFS: mount.nfs <ip>:<path> <staging>
+      NVMe-oF: kernel fabrics connect
+      iSCSI: in-process initiator가 login PDU 교환 후 NETLINK_ISCSI로 커널 iscsi_tcp에 연결 인계
+      NFS: bundled mount helper로 NFSv4.2/TCP/hard 기본값을 staging에 mount
    c. Block protocol + volumeMode=Filesystem:
       mkfs (디바이스에 파일시스템이 없을 때만, fsType/mkfsOptions 적용) + mount
-   d. Block protocol + volumeMode=Block: 디바이스 경로 기록
-   e. 커널 모듈 미로드 시 명확한 에러 반환
+   d. NFS: dataset은 이미 filesystem이므로 mkfs하지 않고 `filesystem.mountOptions`만 적용
+   e. Block protocol + volumeMode=Block: 디바이스 경로 기록
+   f. 커널 모듈 미로드 시 명확한 에러 반환
 ```
 
 ### 5.4 NodePublishVolume
@@ -911,7 +912,7 @@ Longhorn filesystem-trim, Portworx auto-fstrim과 같은 역할).
 - CRD status conditions (K8s 표준 패턴)
 - Finalizer 기반 의존성 삭제 보호
 - pillar-agent: ZFS zvol backend + NVMe-oF TCP target (configfs)
-- pillar-agent: stateless 설계, controller push 복구
+- pillar-agent: controller-pushed desired state + durable fencing/NFS recovery records
 - pillar-node: NVMe-oF TCP initiator + init container modprobe (best-effort) + 도구 번들
 - pillar-controller: CSI Controller (CreateVolume, DeleteVolume, ExpandVolume, ControllerPublishVolume/UnpublishVolume, ValidateVolumeCapabilities, GetCapacity)
 - pillar-controller: CSI 작업 재시도/롤백 (exponential backoff)
@@ -936,8 +937,10 @@ Longhorn filesystem-trim, Portworx auto-fstrim과 같은 역할).
 - LIO configfs 직접 조작 (target, `internal/agent/lio`) + pillar-node 내장 pure-Go initiator (`internal/iscsi`: login PDU, `NETLINK_ISCSI`로 커널 `iscsi_tcp`에 연결 인계, 세션 복구). targetcli·iscsiadm·iscsid 불필요
 - 노드 사전 설치는 커널 모듈뿐이라는 zero-install 요구 때문에 호스트 iscsiadm, 이미지 번들 open-iscsi+iscsid, cgo libiscsi, u-root iscsinl을 검토 후 기각했다. 근거는 [`PRD-iscsi.md`](./PRD-iscsi.md) 참조
 
-### Phase 3: ZFS Dataset + NFS
-- ZFS dataset backend + NFS export + RWX 지원
+### Phase 3: ZFS Dataset + NFS — 구현됨
+- ZFS dataset backend + NFSv4.2 export + RWX 지원
+- fixed port 2049, root squash default, explicit squash none/all, node-IP ACL, server-side quota expansion
+- Filesystem only; `filesystem.mountOptions` is the only mount flag axis; localAttach, mkfs, Block and RPC TLS are not offered
 
 ### Phase 4: 스냅샷/클론
 - CSI Snapshot + ZFS snapshot/clone 통합
@@ -1032,7 +1035,7 @@ Controller는 사전 용량 검증을 하지 않는다. Agent에 요청을 보�
 - Agent 연결 끊김 시 gRPC 자동 재연결 (keepalive)
 - 볼륨 생성 중간 실패 시 자동 롤백 (orphan 방지)
 - 멱등성: 모든 CSI 오퍼레이션은 멱등적으로 구현
-- Agent 크래시/리부트 복구: controller가 전체 상태를 push (agent stateless)
+- Agent 크래시/리부트 복구: controller가 전체 상태를 push하고 agent가 durable fencing/NFS recovery state를 사용
 - Controller 자체 재시도 로직: exponential backoff, 설정 가능한 최대 횟수/타임아웃
 - Leader election 구현 완료 (`--leader-election` 플래그); Phase 1 Helm chart 기본값 replicas=1, 필요 시 스케일아웃 가능
 
@@ -1078,5 +1081,5 @@ Controller는 사전 용량 검증을 하지 않는다. Agent에 요청을 보�
 | **PillarStorageClass** | PillarStore + PillarProtocol 조합. StorageClass를 자동 생성 |
 | **Target** | 스토리지를 네트워크로 내보내는 측 (스토리지 노드, agent가 configfs로 관리) |
 | **Initiator** | 네트워크 스토리지에 연결하는 측 (워커 노드, CSI node plugin이 관리) |
-| **Agent** | 스토리지 노드의 gRPC 서버. Backend/Protocol target 플러그인. K8s 의존성 없음. Stateless |
+| **Agent** | 스토리지 노드의 gRPC 서버. Backend/Protocol target 플러그인. K8s 의존성 없음. fencing/NFS recovery state를 hostPath에 보존 |
 | **configfs** | 리눅스 커널 설정 파일시스템. NVMe-oF/iSCSI target을 CLI 없이 직접 제어 |

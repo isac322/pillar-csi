@@ -1,11 +1,13 @@
 ---
 title: Attach volumes locally on the storage node
-description: Let pods on the storage node use a pillar-csi zvol or logical volume directly instead of through an NVMe-oF/TCP or iSCSI loopback, and how the network export is fenced while they do.
+description: Let pods on the storage node use a pillar-csi block zvol or logical volume directly instead of through an NVMe-oF/TCP or iSCSI loopback, and how the network export is fenced while they do. NFS volumes never use localAttach.
 sidebar:
   order: 7
 ---
 
-By default every consumer reaches a volume over its network protocol, NVMe-oF/TCP or iSCSI, including a pod scheduled on the storage node itself: that pod goes through a loopback connection to the kernel target on the same host. With `localAttach` enabled, a pod on the storage node uses the backend zvol or logical volume directly. Pods on every other node still use the network protocol, and a volume can move between the two paths each time it is published.
+By default every block consumer reaches a volume over its network protocol, NVMe-oF/TCP or iSCSI, including a pod scheduled on the storage node itself: that pod goes through a loopback connection to the kernel target on the same host. With `localAttach` enabled, a pod on the storage node uses the backend zvol or logical volume directly. Pods on every other node still use the network protocol, and a volume can move between the two paths each time it is published.
+
+NFS is a file protocol and does not support `localAttach`, even when the pod runs on the storage node. NFS always uses its NFSv4.2 network mount so the dataset has one publication and recovery path. Provisioning an NFS volume with `localAttach: true` or the manual StorageClass parameter fails validation.
 
 ## When a publish is local
 
@@ -15,7 +17,7 @@ By default every consumer reaches a volume over its network protocol, NVMe-oF/TC
 - the node being published to is the `spec.nodeRef.name` of the volume's `PillarAgent`. An agent defined with `spec.external` never qualifies, because it runs outside the cluster;
 - the access mode is a single-node mode: `ReadWriteOnce`, `ReadWriteOncePod`, or single-node read-only. Multi-node modes such as `ReadOnlyMany` always use the protocol.
 
-Otherwise the volume attaches over its network protocol exactly as it does without the flag. A local publish needs no NVMe host NQN or iSCSI initiator IQN on the `CSINode` and grants no initiator on the target.
+NFS never qualifies for this path. Otherwise a block volume attaches over its network protocol exactly as it does without the flag. A local publish needs no NVMe host NQN or iSCSI initiator IQN on the `CSINode` and grants no initiator on the target.
 
 ## Requirements
 

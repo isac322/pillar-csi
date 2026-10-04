@@ -272,6 +272,7 @@ func handlersFromConnector(conn Connector) map[string]ProtocolHandler {
 // strings extracted from volumeID path components (which could be any string).
 var knownProtocolTypes = map[string]struct{}{
 	ProtocolNVMeoFTCP: {},
+	ProtocolNFS:       {},
 }
 
 // resolveProtocolType derives the storage protocol type for the given volume.
@@ -722,7 +723,16 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	targetID := volCtx[VolumeContextKeyTargetID]
 	address := volCtx[VolumeContextKeyAddress]
 	port := volCtx[VolumeContextKeyPort]
+	parsedServerAddr := ""
 
+	if protocolType == ProtocolNFS && local {
+		return nil, status.Error(codes.FailedPrecondition, //nolint:wrapcheck
+			"NodeStageVolume: localAttach is not supported for NFS; use the NFS client path")
+	}
+	if protocolType == ProtocolNFS && volCap.GetBlock() != nil {
+		return nil, status.Error(codes.InvalidArgument, //nolint:wrapcheck
+			"NodeStageVolume: NFS volumes do not support block access")
+	}
 	attachParams := AttachParams{
 		ProtocolType: protocolType,
 		ConnectionID: targetID,
@@ -746,7 +756,6 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 				protocolType, missingHandlerHint(protocolType))
 		}
 
-		// ── Step 4: Protocol-specific VolumeContext validation ──────────────
 		// NVMe-oF TCP and iSCSI require target_id (NQN / IQN), address, and port.
 		if protocolType == ProtocolNVMeoFTCP || protocolType == ProtocolISCSI {
 			if targetID == "" {
@@ -761,6 +770,27 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 				return nil, status.Errorf(codes.InvalidArgument,
 					"NodeStageVolume: volume_context missing required key %q", VolumeContextKeyPort)
 			}
+		}
+		if protocolType == ProtocolNFS {
+			if local {
+				return nil, status.Error(codes.FailedPrecondition, //nolint:wrapcheck
+					"NodeStageVolume: localAttach is not supported for NFS; use the NFS client path")
+			}
+			if volCap.GetBlock() != nil {
+				return nil, status.Error(codes.InvalidArgument, //nolint:wrapcheck
+					"NodeStageVolume: NFS volumes do not support block access")
+			}
+			fsErr := validateNFSStageFilesystem(volCtx, volCap.GetMount())
+			if fsErr != nil {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"NodeStageVolume: volume %q: %v", volumeID, fsErr)
+			}
+			nfsState, stateErr := nfsStateFromParams(attachParams)
+			if stateErr != nil {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"NodeStageVolume: volume %q: %v", volumeID, stateErr)
+			}
+			parsedServerAddr = nfsState.Address
 		}
 		// The NVMe-oF max data transfer size is validated before any attach
 		// side effect, including the page-size floor of max_sectors_kb.
@@ -831,6 +861,20 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 			"NodeStageVolume: read stage state for %q: %v", volumeID, stateErr)
 	}
 	if existingState != nil {
+		if protocolType == ProtocolNFS {
+			expected, expectedErr := nfsStateFromParams(attachParams)
+			if expectedErr != nil {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"NodeStageVolume: volume %q: %v", volumeID, expectedErr)
+			}
+			if existingState.ProtocolType != ProtocolNFS || existingState.NFS == nil ||
+				(existingState.StagingPath != "" && existingState.StagingPath != stagingPath) ||
+				existingState.NFS.MountSource != expected.MountSource {
+				return nil, status.Errorf(codes.FailedPrecondition,
+					"NodeStageVolume: existing NFS stage state for %q does not match the requested source or staging path",
+					volumeID)
+			}
+		}
 		bindTarget := stageBindTarget(stagingPath, volCap)
 		mounted, mountCheckErr := n.mounter.IsMounted(bindTarget)
 		if mountCheckErr != nil {
@@ -877,13 +921,28 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	var mkfsOpts, mountFlags []string
 	var periodicTrim *bool
 	if volCap.GetMount() != nil {
-		staged, fsErr := stageFilesystem(volCtx, volCap)
-		if fsErr != nil {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"NodeStageVolume: volume %q: %v", volumeID, fsErr)
+		if protocolType == ProtocolNFS {
+			fsErr := validateNFSStageFilesystem(volCtx, volCap.GetMount())
+			if fsErr != nil {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"NodeStageVolume: volume %q: %v", volumeID, fsErr)
+			}
+			var flagsErr error
+			mountFlags, flagsErr = nfsMountFlags(volCtx, volCap.GetMount(), parsedServerAddr)
+			if flagsErr != nil {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"NodeStageVolume: volume %q: %v", volumeID, flagsErr)
+			}
+			fsType = "nfs"
+		} else {
+			staged, fsErr := stageFilesystem(volCtx, volCap)
+			if fsErr != nil {
+				return nil, status.Errorf(codes.InvalidArgument,
+					"NodeStageVolume: volume %q: %v", volumeID, fsErr)
+			}
+			fsType, mkfsOpts, mountFlags = staged.fsType, staged.mkfsOptions, staged.mountFlags
+			periodicTrim = staged.PeriodicTrim
 		}
-		fsType, mkfsOpts, mountFlags = staged.fsType, staged.mkfsOptions, staged.mountFlags
-		periodicTrim = staged.PeriodicTrim
 		trace.SpanFromContext(ctx).SetAttributes(telemetry.KeyFSType.String(fsType))
 	}
 
@@ -916,17 +975,32 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 			return nil, status.Errorf(codes.Internal,
 				"NodeStageVolume: attach volume %q (protocol %q): %v", volumeID, protocolType, attachErr)
 		}
+		if attachResult == nil {
+			return nil, status.Errorf(codes.Internal,
+				"NodeStageVolume: protocol handler returned no attach result for volume %q", volumeID)
+		}
+		if protocolType == ProtocolNFS && attachResult.MountSource == "" {
+			return nil, status.Errorf(codes.Internal,
+				"NodeStageVolume: NFS handler returned an empty mount source for volume %q", volumeID)
+		}
 		devicePath = attachResult.DevicePath
 	}
 
 	// failStaged returns err for a failure after the attach.  A local stage
-	// is rolled back (see abortLocal): its staged surface is unmounted, then
-	// its device-mapper claim is removed and any stage state file written by
-	// this attempt deleted, so neither a claim without the state that lets
-	// NodeUnstageVolume release it nor a mount on a removed dm device remains.
+	// is rolled back (see abortLocal). NFS has no persistent transport session,
+	// but its mount must still be removed before the error is returned.
 	failStaged := func(err error) error {
 		if local {
 			return n.abortLocal(ctx, volumeID, stagingPath, volCap, err)
+		}
+		if protocolType == ProtocolNFS {
+			cleanupErr := n.mounter.Unmount(stagingPath)
+			if attachResult != nil && attachResult.State != nil {
+				cleanupErr = errors.Join(cleanupErr, handler.Detach(ctx, attachResult.State))
+			}
+			if cleanupErr != nil {
+				return errors.Join(err, fmt.Errorf("NFS stage cleanup: %w", cleanupErr))
+			}
 		}
 		return err
 	}
@@ -943,23 +1017,26 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	// ── Step 6: Mount or bind-mount depending on access type ───────────────
 	switch {
 	case volCap.GetMount() != nil:
-		// MOUNT access: format (only if the device carries no filesystem)
-		// and mount to staging path with the resolved mount options.
-
-		// Check IsMounted before FormatAndMount to provide an additional
-		// idempotency guard (e.g., after a partial failure where the state
-		// file write failed but the mount succeeded).
 		alreadyMounted, mountCheckErr := n.mounter.IsMounted(stagingPath)
 		if mountCheckErr != nil {
 			return nil, failStaged(status.Errorf(codes.Internal,
 				"NodeStageVolume: check if %q is mounted: %v", stagingPath, mountCheckErr))
 		}
 		if !alreadyMounted {
-			formatErr := n.formatAndMount(ctx, devicePath, stagingPath, fsType, mountFlags, mkfsOpts)
-			if formatErr != nil {
-				return nil, failStaged(status.Errorf(codes.Internal,
-					"NodeStageVolume: format-and-mount %q → %q (fs=%s): %v",
-					devicePath, stagingPath, fsType, formatErr))
+			if protocolType == ProtocolNFS {
+				mountErr := n.mounter.Mount(attachResult.MountSource, stagingPath, fsType, mountFlags)
+				if mountErr != nil {
+					return nil, failStaged(status.Errorf(codes.Internal,
+						"NodeStageVolume: mount NFS %q → %q: %v",
+						attachResult.MountSource, stagingPath, mountErr))
+				}
+			} else {
+				formatErr := n.formatAndMount(ctx, devicePath, stagingPath, fsType, mountFlags, mkfsOpts)
+				if formatErr != nil {
+					return nil, failStaged(status.Errorf(codes.Internal,
+						"NodeStageVolume: format-and-mount %q → %q (fs=%s): %v",
+						devicePath, stagingPath, fsType, formatErr))
+				}
 			}
 		}
 
@@ -1140,6 +1217,11 @@ func (n *NodeServer) NodeUnstageVolume(
 		}
 		return &csi.NodeUnstageVolumeResponse{}, nil
 	}
+	if state.ProtocolType == ProtocolNFS && state.StagingPath != "" && state.StagingPath != stagingPath {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"NodeUnstageVolume: NFS stage state for %q records staging path %q, got %q",
+			volumeID, state.StagingPath, stagingPath)
+	}
 
 	// ── Step 2: Unmount the staged target ───────────────────────────────────
 	// Filesystem-mode mounts the formatted device at stagingPath itself;
@@ -1187,20 +1269,26 @@ func (n *NodeServer) NodeUnstageVolume(
 	} else if n.handlers != nil {
 		handler, ok := n.handlers[state.ProtocolType]
 		if !ok {
-			return nil, status.Errorf(codes.Internal,
-				"NodeUnstageVolume: no handler registered for protocol %q%s",
-				state.ProtocolType, missingHandlerHint(state.ProtocolType))
-		}
-		protoState, protoErr := state.ToProtocolState()
-		if protoErr != nil {
-			return nil, status.Errorf(codes.Internal,
-				"NodeUnstageVolume: convert stage state for %q: %v", volumeID, protoErr)
-		}
-		detachErr := handler.Detach(ctx, protoState)
-		if detachErr != nil {
-			return nil, status.Errorf(codes.Internal,
-				"NodeUnstageVolume: detach (protocol %q): %v",
-				state.ProtocolType, detachErr)
+			if state.ProtocolType != ProtocolNFS {
+				return nil, status.Errorf(codes.Internal,
+					"NodeUnstageVolume: no handler registered for protocol %q%s",
+					state.ProtocolType, missingHandlerHint(state.ProtocolType))
+			}
+			// NFS has no client session to disconnect; unmounting the
+			// persisted staging path is complete teardown even if the
+			// optional handler is unavailable after a process restart.
+		} else {
+			protoState, protoErr := state.ToProtocolState()
+			if protoErr != nil {
+				return nil, status.Errorf(codes.Internal,
+					"NodeUnstageVolume: convert stage state for %q: %v", volumeID, protoErr)
+			}
+			detachErr := handler.Detach(ctx, protoState)
+			if detachErr != nil {
+				return nil, status.Errorf(codes.Internal,
+					"NodeUnstageVolume: detach (protocol %q): %v",
+					state.ProtocolType, detachErr)
+			}
 		}
 	}
 
@@ -1256,6 +1344,88 @@ func (n *NodeServer) checkUnstagedWithoutState(volumeID, stagingPath string) err
 // NodePublishVolume
 // ─────────────────────────────────────────────────────────────────────────────.
 
+func validateNodePublishRequest(req *csi.NodePublishVolumeRequest) error {
+	if req.GetVolumeId() == "" {
+		return status.Error(codes.InvalidArgument, "NodePublishVolume: volume_id is required") //nolint:wrapcheck
+	}
+	if req.GetStagingTargetPath() == "" {
+		err := status.Error(codes.InvalidArgument, "NodePublishVolume: staging_target_path is required")
+		return err //nolint:wrapcheck // gRPC status; must not be wrapped
+	}
+	if req.GetTargetPath() == "" {
+		return status.Error(codes.InvalidArgument, "NodePublishVolume: target_path is required") //nolint:wrapcheck
+	}
+	if req.GetVolumeCapability() == nil {
+		return status.Error(codes.InvalidArgument, "NodePublishVolume: volume_capability is required") //nolint:wrapcheck
+	}
+	return nil
+}
+
+func validateNodePublishNFS(req *csi.NodePublishVolumeRequest) error {
+	if resolveProtocolType(req.GetVolumeId(), req.GetVolumeContext()) != ProtocolNFS {
+		return nil
+	}
+	if req.GetVolumeCapability().GetBlock() != nil {
+		return status.Error(codes.InvalidArgument, //nolint:wrapcheck // gRPC status must not be wrapped
+			"NodePublishVolume: NFS volumes do not support block access")
+	}
+	err := validateNFSStageFilesystem(req.GetVolumeContext(), req.GetVolumeCapability().GetMount())
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument,
+			"NodePublishVolume: volume %q: %v", req.GetVolumeId(), err)
+	}
+	return nil
+}
+
+func (n *NodeServer) validateNodePublishState(volumeID string) error {
+	if n.sm == nil {
+		return nil
+	}
+	switch smState := n.sm.GetState(volumeID); smState {
+	case StateNodeStaged, StateNodePublished:
+		return nil
+	default:
+		return status.Errorf(codes.FailedPrecondition,
+			"volume %q: NodePublishVolume is not valid in state %s; "+
+				"NodeStageVolume must be called before NodePublishVolume",
+			volumeID, smState)
+	}
+}
+
+func resolveNodePublishMount(req *csi.NodePublishVolumeRequest) (fsType string, mountOptions []string, err error) {
+	mount := req.GetVolumeCapability().GetMount()
+	if mount == nil {
+		return "", []string{"bind"}, nil
+	}
+	flags, err := resolveMountFlags(req.GetVolumeContext(), req.GetVolumeCapability())
+	if err != nil {
+		return "", nil, err
+	}
+	mountOptions = make([]string, 1, 1+len(flags))
+	mountOptions[0] = "bind"
+	mountOptions = append(mountOptions, flags...)
+	return mount.GetFsType(), mountOptions, nil
+}
+
+func (n *NodeServer) mountNodePublish(
+	stagingPath, targetPath, fsType string, volCap *csi.VolumeCapability, mountOptions []string,
+) error {
+	switch {
+	case volCap.GetMount() != nil, volCap.GetBlock() != nil:
+		bindSource := stageBindTarget(stagingPath, volCap)
+		err := n.mounter.Mount(bindSource, targetPath, fsType, mountOptions)
+		if err != nil {
+			return status.Errorf(codes.Internal,
+				"NodePublishVolume: bind-mount %q → %q: %v",
+				bindSource, targetPath, err)
+		}
+		return nil
+	default:
+		return status.Error(codes.InvalidArgument, //nolint:wrapcheck
+			"NodePublishVolume: volume_capability must specify mount or block access type")
+	}
+}
+
 // NodePublishVolume bind-mounts the staged volume from the staging path to the
 // pod-specific target path.
 //
@@ -1269,59 +1439,35 @@ func (n *NodeServer) checkUnstagedWithoutState(volumeID, stagingPath string) err
 //  2. Check idempotency: if target_path is already mounted, return success.
 //  3. For MOUNT access type: bind-mount from staging_target_path to target_path,
 //     adding any mount flags from the VolumeCapability plus "bind".
-//  4. For BLOCK access type: bind-mount the staging_target_path (which holds the
-//     raw block device bind) to target_path.
+//  4. For BLOCK access type: bind-mount the staging_target_path (which holds
+//     the raw block device bind) to target_path.
 //
 // Per CSI spec §4.7 the target_path is pre-created by the CO before this call.
-func (n *NodeServer) NodePublishVolume( //nolint:gocyclo // SM guard + capability switch + readonly handling
+func (n *NodeServer) NodePublishVolume(
 	ctx context.Context,
 	req *csi.NodePublishVolumeRequest,
 ) (*csi.NodePublishVolumeResponse, error) {
 	setPublishSpanAttributes(ctx, req)
 
-	// ── Input validation ────────────────────────────────────────────────────
-	if req.GetVolumeId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodePublishVolume: volume_id is required") //nolint:wrapcheck
+	err := validateNodePublishRequest(req)
+	if err != nil {
+		return nil, err
 	}
-	if req.GetStagingTargetPath() == "" {
-		stagingPathErr := status.Error(codes.InvalidArgument,
-			"NodePublishVolume: staging_target_path is required")
-		return nil, stagingPathErr //nolint:wrapcheck // gRPC status; must not be wrapped
-	}
-	if req.GetTargetPath() == "" {
-		return nil, status.Error(codes.InvalidArgument, "NodePublishVolume: target_path is required") //nolint:wrapcheck
-	}
-	if req.GetVolumeCapability() == nil {
-		return nil, status.Error(codes.InvalidArgument, "NodePublishVolume: volume_capability is required") //nolint:wrapcheck
+	err = validateNodePublishNFS(req)
+	if err != nil {
+		return nil, err
 	}
 
 	stagingPath := req.GetStagingTargetPath()
 	targetPath := req.GetTargetPath()
 	volumeID := req.GetVolumeId()
 	volCap := req.GetVolumeCapability()
-	readonly := req.GetReadonly()
 
-	// ── State machine ordering guard ────────────────────────────────────────
-	if n.sm != nil {
-		smState := n.sm.GetState(volumeID)
-		switch smState {
-		case StateNodeStaged:
-			// Happy path: NodeStageVolume completed — proceed.
-		case StateNodePublished:
-			// Already published: fall through to the IsMounted idempotency
-			// check below, which will detect the existing bind-mount and
-			// return success without repeating the mount.
-		default:
-			// Volume is not staged: NodeStageVolume must be called first.
-			return nil, status.Errorf(codes.FailedPrecondition,
-				"volume %q: NodePublishVolume is not valid in state %s; "+
-					"NodeStageVolume must be called before NodePublishVolume",
-				volumeID, smState)
-		}
+	err = n.validateNodePublishState(volumeID)
+	if err != nil {
+		return nil, err
 	}
 
-	// ── Idempotency check ───────────────────────────────────────────────────
-	// If target_path is already mounted return success immediately per CSI spec §4.7.
 	alreadyMounted, mountCheckErr := n.mounter.IsMounted(targetPath)
 	if mountCheckErr != nil {
 		return nil, status.Errorf(codes.Internal,
@@ -1331,57 +1477,23 @@ func (n *NodeServer) NodePublishVolume( //nolint:gocyclo // SM guard + capabilit
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
-	// ── Build mount options ─────────────────────────────────────────────────
-	// Start with "bind" to perform a bind mount from the staging path.
-	// Append the resolved mount options (VolumeContext, else the caller's
-	// mount flags), then add "ro" if readonly.
-	mountOptions := []string{"bind"}
-	if volCap.GetMount() != nil {
-		flags, flagsErr := resolveMountFlags(req.GetVolumeContext(), volCap)
-		if flagsErr != nil {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"NodePublishVolume: volume %q: %v", volumeID, flagsErr)
-		}
-		mountOptions = append(mountOptions, flags...)
+	fsType, mountOptions, mountErr := resolveNodePublishMount(req)
+	if mountErr != nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"NodePublishVolume: volume %q: %v", volumeID, mountErr)
 	}
-	if readonly {
+	if req.GetReadonly() {
 		mountOptions = append(mountOptions, "ro")
 	}
 
-	// ── Determine fsType ────────────────────────────────────────────────────
-	// For a bind mount the fsType is typically empty (kernel re-uses the
-	// source's filesystem type).  We pass the explicit fsType only for MOUNT
-	// access so that the mounter implementation can make use of it if needed.
-	fsType := ""
-	if volCap.GetMount() != nil {
-		fsType = volCap.GetMount().GetFsType()
+	err = n.mountNodePublish(stagingPath, targetPath, fsType, volCap, mountOptions)
+	if err != nil {
+		return nil, err
 	}
 
-	// ── Perform bind mount ──────────────────────────────────────────────────
-	switch {
-	case volCap.GetMount() != nil, volCap.GetBlock() != nil:
-		// Both MOUNT and BLOCK access types use a bind mount from the
-		// stage-side artifact to the pod's target path.  Filesystem mode
-		// binds the stagingTargetPath directory; Block mode binds the
-		// regular-file device sentinel created inside the staging
-		// directory by NodeStageVolume (see blockStagingDeviceFile).
-		bindSource := stageBindTarget(stagingPath, volCap)
-		bindErr := n.mounter.Mount(bindSource, targetPath, fsType, mountOptions)
-		if bindErr != nil {
-			return nil, status.Errorf(codes.Internal,
-				"NodePublishVolume: bind-mount %q → %q: %v",
-				bindSource, targetPath, bindErr)
-		}
-	default:
-		return nil, status.Error(codes.InvalidArgument, //nolint:wrapcheck
-			"NodePublishVolume: volume_capability must specify mount or block access type")
-	}
-
-	// ── Advance state machine to NodePublished ───────────────────────────────
 	if n.sm != nil {
 		n.sm.ForceState(volumeID, StateNodePublished)
 	}
-
 	return &csi.NodePublishVolumeResponse{}, nil
 }
 

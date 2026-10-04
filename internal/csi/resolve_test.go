@@ -27,6 +27,28 @@ import (
 	"github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
+func TestApplyProtocolOverride_NFSMemberCompatibility(t *testing.T) {
+	t.Parallel()
+
+	override := &v1alpha1.ProtocolOverrides{NFS: &v1alpha1.NFSOverrides{}}
+	if err := applyProtocolOverride(
+		&v1alpha1.ProtocolSpec{NFS: &v1alpha1.NFSConfig{}},
+		override,
+		"binding",
+	); err != nil {
+		t.Fatalf("matching NFS override: %v", err)
+	}
+
+	err := applyProtocolOverride(
+		&v1alpha1.ProtocolSpec{ISCSI: &v1alpha1.ISCSIConfig{}},
+		override,
+		"binding",
+	)
+	if err == nil {
+		t.Fatal("mismatched NFS override was accepted")
+	}
+}
+
 // TestResolveFilesystem_GeneratedClassMountOptions verifies a generated class
 // resolves an explicit mount list even when the live binding sets none, so
 // the node applies no stale StorageClass mountOptions from the capability.

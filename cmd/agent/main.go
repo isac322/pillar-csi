@@ -46,62 +46,132 @@ import (
 	"github.com/isac322/pillar-csi/internal/agent/backend"
 	"github.com/isac322/pillar-csi/internal/agent/backend/lvm"
 	"github.com/isac322/pillar-csi/internal/agent/backend/zfs"
+	"github.com/isac322/pillar-csi/internal/agent/nfs"
 	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
 	"github.com/isac322/pillar-csi/internal/runtimepaths"
 	"github.com/isac322/pillar-csi/internal/telemetry"
 	"github.com/isac322/pillar-csi/internal/tlscreds"
 )
 
-// observabilityShutdownTimeout bounds each of the metrics server shutdown
-// and the span flush on exit.
-const observabilityShutdownTimeout = 5 * time.Second
-
-// metricsReadHeaderTimeout bounds how long the metrics server waits for a
-// scrape's request headers.
-const metricsReadHeaderTimeout = 10 * time.Second
+const (
+	// ObservabilityShutdownTimeout bounds each of the metrics server shutdown
+	// and the span flush on exit.
+	observabilityShutdownTimeout = 5 * time.Second
+	// MetricsReadHeaderTimeout bounds how long the metrics server waits for a
+	// scrape's request headers.
+	metricsReadHeaderTimeout = 10 * time.Second
+	agentDataRoot            = "/var/lib/pillar-csi/agent"
+	agentDatasetRoot         = agentDataRoot + "/datasets"
+	agentNFSStateRoot        = agentDataRoot + "/nfs"
+)
 
 // buildVolumeBackends constructs the pool→backend registry from the agent
-// config file's backends entries.  For ZFS backends the registry key is the
-// pool name.  For LVM backends the registry key is the VG name (used as the
-// "pool" prefix in VolumeIDs of the form "<vg>/<lv-name>").
-//
-// The key must be unique across all entries: agent RPCs route a volume to its
-// backend by the volume ID's first path component alone (pool name or VG
-// name), so two backends sharing a key are indistinguishable.  Rather than
-// silently dropping all but the last entry, a duplicate key is a fatal
-// configuration error.
-//
-// Per-volume settings (LVM provisioningMode) are resolved by the controller
-// and sent with each CreateVolume, so the backend only needs placement.
+// config file's backends entries. A ZFS pool may have one zvol and one
+// dataset backend; exact (pool, backend type) duplicates are rejected.
 func buildVolumeBackends(
 	specs []pillarv1alpha1.BackendSpec,
 	configfsRoot string,
 ) (map[string]backend.VolumeBackend, error) {
-	m := make(map[string]backend.VolumeBackend, len(specs))
+	registries, _, err := buildVolumeBackendRegistry(specs, configfsRoot, agentDatasetRoot)
+	return registries, err
+}
+
+func buildVolumeBackendRegistry(
+	specs []pillarv1alpha1.BackendSpec,
+	configfsRoot, datasetRoot string,
+) (
+	registries map[string]backend.VolumeBackend,
+	variantRegistry map[string]map[agentv1.BackendType]backend.VolumeBackend,
+	err error,
+) {
+	registries = make(map[string]backend.VolumeBackend, len(specs))
+	variantRegistry = make(map[string]map[agentv1.BackendType]backend.VolumeBackend, len(specs))
 	seen := make(map[string]int, len(specs))
 	for i, spec := range specs {
 		key := spec.PoolName()
-		if prev, dup := seen[key]; dup {
-			return nil, fmt.Errorf(
-				"agent config: duplicate pool/VG %q: backends[%d] (%s) conflicts with backends[%d] (%s); "+
-					"pool/VG names must be unique across backends",
-				key, i, spec.Kind(), prev, specs[prev].Kind())
+		typ, err := backendTypeForSpec(spec, i)
+		if err != nil {
+			return nil, nil, err
 		}
-		seen[key] = i
-		switch {
-		case spec.ZFS != nil:
-			m[key] = zfs.New(spec.ZFS.Pool, spec.ZFS.ParentDataset, zfs.WithConfigfsRoot(configfsRoot))
-		case spec.LVM != nil:
-			mode := lvm.ProvisionModeLinear
-			if spec.LVM.ProvisioningMode == pillarv1alpha1.LVMProvisioningModeThin {
-				mode = lvm.ProvisionModeThin
-			}
-			m[key] = lvm.New(spec.LVM.VolumeGroup, spec.LVM.ThinPool).WithMode(mode)
-		default:
-			return nil, fmt.Errorf("agent config: backends[%d]: exactly one of lvm, zfs must be set", i)
+		seenKey := fmt.Sprintf("%s/%s", key, typ)
+		collisionErr := rejectBackendCollision(variantRegistry[key], key, typ)
+		if collisionErr != nil {
+			return nil, nil, collisionErr
+		}
+		if prev, dup := seen[seenKey]; dup {
+			return nil, nil, fmt.Errorf(
+				"agent config: duplicate pool/backend %q: backends[%d] conflicts "+
+					"with backends[%d]",
+				seenKey, i, prev,
+			)
+		}
+		seen[seenKey] = i
+		b := newConfiguredBackend(spec, typ, configfsRoot, datasetRoot)
+		if _, exists := registries[key]; !exists {
+			registries[key] = b
+		}
+		if variantRegistry[key] == nil {
+			variantRegistry[key] = make(map[agentv1.BackendType]backend.VolumeBackend)
+		}
+		variantRegistry[key][typ] = b
+	}
+	return registries, variantRegistry, nil
+}
+
+func backendTypeForSpec(spec pillarv1alpha1.BackendSpec, index int) (agentv1.BackendType, error) {
+	switch {
+	case spec.ZFS != nil && spec.ZFS.VolumeType == pillarv1alpha1.ZFSVolumeTypeDataset:
+		return agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET, nil
+	case spec.ZFS != nil:
+		return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL, nil
+	case spec.LVM != nil:
+		return agentv1.BackendType_BACKEND_TYPE_LVM, nil
+	default:
+		return agentv1.BackendType_BACKEND_TYPE_UNSPECIFIED, fmt.Errorf(
+			"agent config: backends[%d]: exactly one of lvm, zfs must be set", index,
+		)
+	}
+}
+
+func rejectBackendCollision(
+	existing map[agentv1.BackendType]backend.VolumeBackend,
+	key string,
+	typ agentv1.BackendType,
+) error {
+	if len(existing) == 0 {
+		return nil
+	}
+	if typ == agentv1.BackendType_BACKEND_TYPE_LVM {
+		return fmt.Errorf("agent config: pool/VG name collision %q between LVM and another backend", key)
+	}
+	for existingType := range existing {
+		if existingType == agentv1.BackendType_BACKEND_TYPE_LVM {
+			return fmt.Errorf("agent config: pool/VG name collision %q between LVM and another backend", key)
 		}
 	}
-	return m, nil
+	return nil
+}
+
+func newConfiguredBackend(
+	spec pillarv1alpha1.BackendSpec,
+	typ agentv1.BackendType,
+	configfsRoot, datasetRoot string,
+) backend.VolumeBackend {
+	switch {
+	case spec.ZFS != nil && typ == agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET:
+		return zfs.NewDataset(spec.ZFS.Pool, spec.ZFS.ParentDataset, datasetRoot)
+	case spec.ZFS != nil:
+		return zfs.New(spec.ZFS.Pool, spec.ZFS.ParentDataset,
+			zfs.WithConfigfsRoot(configfsRoot))
+	case spec.LVM != nil:
+		mode := lvm.ProvisionModeLinear
+		if spec.LVM.ProvisioningMode == pillarv1alpha1.LVMProvisioningModeThin {
+			mode = lvm.ProvisionModeThin
+		}
+		return lvm.New(spec.LVM.VolumeGroup, spec.LVM.ThinPool).WithMode(mode)
+	default:
+		panic("backend type derived without a configured backend")
+	}
 }
 
 // buildGRPCOpts returns the gRPC server options for the given TLS
@@ -120,6 +190,65 @@ func buildGRPCOpts(tlsEnabled bool, cert, key, ca string) ([]grpc.ServerOption, 
 	return []grpc.ServerOption{grpc.Creds(creds)}, nil
 }
 
+type configuredAgent struct {
+	volumeBackends map[string]backend.VolumeBackend
+	variants       map[string]map[agentv1.BackendType]backend.VolumeBackend
+	nfsManager     *nfs.Manager
+}
+
+func configureAgent(configPath, configfsRoot, nfsBindAddress string) (configuredAgent, error) {
+	specs, err := loadAgentConfig(configPath)
+	if err != nil {
+		return configuredAgent{}, err
+	}
+	volumeBackends, variants, err := buildVolumeBackendRegistry(
+		specs, configfsRoot, agentDatasetRoot,
+	)
+	if err != nil {
+		return configuredAgent{}, err
+	}
+	return configuredAgent{
+		volumeBackends: volumeBackends,
+		variants:       variants,
+		nfsManager:     startNFSManager(specs, nfsBindAddress),
+	}, nil
+}
+
+func startNFSManager(specs []pillarv1alpha1.BackendSpec, bindAddress string) *nfs.Manager {
+	for _, spec := range specs {
+		if spec.ZFS == nil || spec.ZFS.VolumeType != pillarv1alpha1.ZFSVolumeTypeDataset {
+			continue
+		}
+		manager, err := nfs.NewManager(nfs.Config{
+			StateDir:    agentNFSStateRoot,
+			ExportRoot:  agentDatasetRoot,
+			BindAddress: bindAddress,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pillar-agent: WARNING: NFS unavailable: %v\n", err)
+			return nil
+		}
+		startErr := manager.Start(context.Background())
+		if startErr != nil {
+			fmt.Fprintf(os.Stderr, "pillar-agent: WARNING: NFS unavailable: %v\n", startErr)
+			closeNFSManager(manager)
+			return nil
+		}
+		return manager
+	}
+	return nil
+}
+
+func closeNFSManager(manager *nfs.Manager) {
+	if manager == nil {
+		return
+	}
+	err := manager.Close()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pillar-agent: NFS shutdown: %v\n", err)
+	}
+}
+
 func main() {
 	listenAddr := flag.String("listen-address", ":9500", "gRPC listen address (host:port)")
 	metricsAddr := flag.String("metrics-bind-address", "0",
@@ -134,10 +263,11 @@ func main() {
 			"    - lvm: {volumeGroup: data-vg, thinPool: thin-pool-0}")
 	cfgRoot := flag.String("configfs-root", resolvedDefaultConfigfsRoot(),
 		"nvmet configfs root directory (override in tests)")
+	nfsBindAddress := flag.String("nfs-bind-address", os.Getenv("PILLAR_AGENT_BIND_ADDRESS"),
+		"numeric node address advertised by NFS (required for dataset backends)")
 	tlsCert := flag.String("tls-cert", "", "path to PEM server certificate for mTLS")
 	tlsKey := flag.String("tls-key", "", "path to PEM server private key for mTLS")
 	tlsCA := flag.String("tls-ca", "", "path to PEM CA certificate for mTLS client verification")
-
 	flag.Parse()
 
 	if *configPath == "" {
@@ -151,30 +281,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	backendSpecs, err := loadAgentConfig(*configPath)
+	runtime, err := configureAgent(*configPath, *cfgRoot, *nfsBindAddress)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	volumeBackends, err := buildVolumeBackends(backendSpecs, *cfgRoot)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	volumeBackends := runtime.volumeBackends
+	variants := runtime.variants
+	nfsManager := runtime.nfsManager
+	opts := []agent.ServerOption{agent.WithExportRestoreGate(), agent.WithBackendVariants(variants)}
+	if nfsManager != nil {
+		opts = append(opts, agent.WithNFSManager(nfsManager))
 	}
-	// The agent starts with the export restore pending: it re-creates no
-	// export until the controller sent the complete export state in one
-	// ReconcileState, so a shared NVMe/TCP port starts listening only after
-	// every export on it is ready (issue #92).
-	srv := agent.NewServer(volumeBackends, *cfgRoot, agent.WithExportRestoreGate())
-
+	srv := agent.NewServer(volumeBackends, *cfgRoot, opts...)
 	serveAgent(srv, serveConfig{
-		listenAddr:  *listenAddr,
-		metricsAddr: *metricsAddr,
-		gracePeriod: *gracePeriod,
-		tlsEnabled:  tlsEnabled,
-		tlsCert:     *tlsCert,
-		tlsKey:      *tlsKey,
-		tlsCA:       *tlsCA,
+		listenAddr: *listenAddr, metricsAddr: *metricsAddr, gracePeriod: *gracePeriod,
+		tlsEnabled: tlsEnabled, tlsCert: *tlsCert, tlsKey: *tlsKey, tlsCA: *tlsCA,
+		nfsManager: nfsManager,
 	})
 }
 
@@ -187,6 +310,7 @@ type serveConfig struct {
 	tlsCert     string
 	tlsKey      string
 	tlsCA       string
+	nfsManager  *nfs.Manager
 }
 
 // serveAgent sets up telemetry and the metrics endpoint, then serves srv
@@ -196,6 +320,7 @@ func serveAgent(srv *agent.Server, cfg serveConfig) {
 	shutdownTelemetry, err := telemetry.Setup(context.Background(), telemetry.ComponentAgent, version)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: telemetry setup: %v\n", err)
+		closeNFSManager(cfg.nfsManager)
 		os.Exit(1)
 	}
 	// os.Exit skips defers, so every exit path below calls fail, which
@@ -203,6 +328,7 @@ func serveAgent(srv *agent.Server, cfg serveConfig) {
 	var metricsSrv *http.Server
 	fail := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, format, args...)
+		closeNFSManager(cfg.nfsManager)
 		shutdownObservability(metricsSrv, shutdownTelemetry)
 		os.Exit(1)
 	}
@@ -249,6 +375,7 @@ func serveAgent(srv *agent.Server, cfg serveConfig) {
 	if serveErr != nil {
 		fail("serve: %v\n", serveErr)
 	}
+	closeNFSManager(cfg.nfsManager)
 	shutdownObservability(metricsSrv, shutdownTelemetry)
 }
 

@@ -103,6 +103,16 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	Expect(err).NotTo(HaveOccurred())
 
 	state := suitePayload.KindState
+	// JSON carries connection details, not cluster ownership. In an in-process
+	// run, retain the original state registered after creation and verification
+	// only when its identity matches the payload. Reused clusters and workers
+	// without a local ownership ledger keep the decoded, unowned state.
+	suiteInvocationTeardown.mu.Lock()
+	if owned := suiteInvocationTeardown.kind; owned != nil && owned.clusterCreated &&
+		sameKindClusterIdentity(owned, state) && owned.KubeContext == state.KubeContext {
+		state = owned
+	}
+	suiteInvocationTeardown.mu.Unlock()
 	suiteKindCluster = state
 	suiteHelmBootstrap = suitePayload.HelmState
 

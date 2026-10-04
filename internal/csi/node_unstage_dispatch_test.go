@@ -276,19 +276,22 @@ func TestNodeUnstageVolume_Dispatch_LegacyMigration(t *testing.T) {
 func TestNodeUnstageVolume_Dispatch_UnknownProtocol(t *testing.T) {
 	t.Parallel()
 
-	// Register only the NVMe-oF handler; the state file will claim "nfs"
-	// (a protocol this driver does not serve).
+	// Register only the NVMe-oF handler; the state file will claim an unknown
+	// protocol member that this driver does not serve.
 	handlers := map[string]ProtocolHandler{
 		ProtocolNVMeoFTCP: &mockProtocolHandler{},
 	}
 	env := newHandlerNodeTestEnv(t, handlers)
 	stagingPath := t.TempDir()
 
-	const volumeID = "tank/pvc-unknown-proto"
+	const (
+		volumeID        = "tank/pvc-unknown-proto"
+		unknownProtocol = "future-protocol"
+	)
 
 	// Write a state file with an unregistered protocol type.
 	if err := env.srv.writeStageState(volumeID, &nodeStageState{
-		ProtocolType: "nfs",
+		ProtocolType: unknownProtocol,
 	}); err != nil {
 		t.Fatalf("writeStageState: %v", err)
 	}

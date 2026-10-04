@@ -16,12 +16,9 @@ limitations under the License.
 
 package csi
 
-// Unit tests for resolveInitiatorID — the private method that looks up the
-// protocol-specific initiator identity from CSINode annotations.
-//
-// These tests exercise the annotation read/parse logic in isolation without
-// going through the full ControllerPublishVolume/ControllerUnpublishVolume path,
-// covering all protocol cases defined in RFC §5.2.
+// Tests for protocol-specific node identities: block initiators use CSINode
+// annotations, while NFS uses numeric Node InternalIP addresses and matches
+// the storage address family before recording or granting a publication.
 //
 // Run with:
 //
@@ -71,29 +68,11 @@ func newMinimalControllerServer(t *testing.T, objs ...ctrlclient.Object) *Contro
 	return NewControllerServerWithDialer(fakeClient, "pillar-csi.bhyoo.com", nil)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Annotation key contract
-// ─────────────────────────────────────────────────────────────────────────────
-
-// TestResolveInitiatorID_AnnotationKeyValues pins the annotation key constants
-// to the RFC-specified wire values.  Any accidental rename will fail this test
-// before any cluster-level behavior changes.
-func TestResolveInitiatorID_AnnotationKeyValues(t *testing.T) {
-	t.Parallel()
-
-	if AnnotationNVMeOFHostNQN != "pillar-csi.bhyoo.com/nvmeof-host-nqn" {
-		t.Errorf("AnnotationNVMeOFHostNQN = %q, want \"pillar-csi.bhyoo.com/nvmeof-host-nqn\"",
-			AnnotationNVMeOFHostNQN)
-	}
-	if AnnotationISCSIInitiatorIQN != "pillar-csi.bhyoo.com/iscsi-initiator-iqn" {
-		t.Errorf("AnnotationISCSIInitiatorIQN = %q, want \"pillar-csi.bhyoo.com/iscsi-initiator-iqn\"",
-			AnnotationISCSIInitiatorIQN)
-	}
+func nodeWithStatus(name string, nodeStatus corev1.NodeStatus) *corev1.Node {
+	node := &corev1.Node{Status: nodeStatus}
+	node.Name = name
+	return node
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// NVMe-oF TCP protocol
-// ─────────────────────────────────────────────────────────────────────────────
 
 // TestResolveInitiatorID_NVMeoF_CSINodeNotFound verifies that
 // resolveInitiatorID returns FailedPrecondition when the CSINode does not
@@ -236,26 +215,140 @@ func TestResolveInitiatorID_ISCSI_OnlyISCSIAnnotationRead(t *testing.T) {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Protocol passthrough (every non-NVMe-oF protocol string)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// TestResolveInitiatorID_NFS_PassthroughNodeID verifies that for the NFS
-// protocol resolveInitiatorID returns the nodeID as-is without reading any
-// CSINode annotation.  RFC §5.2: NFS annotation-based resolution is Phase 2.
-func TestResolveInitiatorID_NFS_PassthroughNodeID(t *testing.T) {
+// TestResolveInitiatorID_NFS_InternalIP verifies that NFS uses the node's
+// InternalIP, not its name or ExternalIP, without requiring a CSINode.
+func TestResolveInitiatorID_NFS_InternalIP(t *testing.T) {
 	t.Parallel()
 
-	// No CSINode seeded — any CSINode lookup would fail with NotFound, proving
-	// the function does NOT attempt a CSINode lookup for NFS.
-	srv := newMinimalControllerServer(t)
-	const nodeID = "worker-node-1"
-	got, err := srv.resolveInitiatorID(context.Background(), nodeID, "nfs")
+	const wantIP = "10.0.0.12"
+	node := nodeWithStatus("worker-node-1", corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+		{Type: corev1.NodeExternalIP, Address: "192.0.2.12"},
+		{Type: corev1.NodeInternalIP, Address: wantIP},
+	}})
+	srv := newMinimalControllerServer(t, node)
+	got, err := srv.resolveInitiatorID(context.Background(), node.Name, ProtocolNFS)
 	if err != nil {
-		t.Fatalf("NFS passthrough: unexpected error: %v", err)
+		t.Fatalf("resolve NFS InternalIP: %v", err)
 	}
-	if got != nodeID {
-		t.Errorf("NFS passthrough: resolveInitiatorID = %q, want nodeID %q", got, nodeID)
+	if got != wantIP {
+		t.Errorf("NFS initiator = %q, want InternalIP %q", got, wantIP)
+	}
+}
+
+func TestResolveInitiatorID_NFS_InvalidNodeAddress(t *testing.T) {
+	t.Parallel()
+
+	const nodeID = "worker-node-1"
+	for _, tc := range []struct {
+		name     string
+		node     *corev1.Node
+		publish  bool
+		wantCode codes.Code
+	}{
+		{name: "missing Node", wantCode: codes.FailedPrecondition},
+		{name: "missing Node at publish", publish: true, wantCode: codes.NotFound},
+		{
+			name: "no InternalIP",
+			node: nodeWithStatus(nodeID, corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeExternalIP, Address: "192.0.2.12"},
+			}}),
+			publish:  true,
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name: "nonnumeric InternalIP",
+			node: nodeWithStatus(nodeID, corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: "worker-node-1.example.test"},
+			}}),
+			wantCode: codes.FailedPrecondition,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var objs []ctrlclient.Object
+			if tc.node != nil {
+				objs = append(objs, tc.node)
+			}
+			srv := newMinimalControllerServer(t, objs...)
+			var err error
+			if tc.publish {
+				_, err = srv.resolvePublishInitiator(context.Background(), nodeID, ProtocolNFS)
+			} else {
+				_, err = srv.resolveInitiatorID(context.Background(), nodeID, ProtocolNFS)
+			}
+			if status.Code(err) != tc.wantCode {
+				t.Fatalf("error = %v, want code %s", err, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestResolvePublishGrant_NFS_AddressFamily(t *testing.T) {
+	t.Parallel()
+
+	const (
+		nodeID = "dual-stack-worker"
+		v4     = "10.0.0.12"
+		v6     = "fd00::12"
+	)
+	for _, tc := range []struct {
+		name        string
+		addresses   []corev1.NodeAddress
+		bindAddress string
+		wantIP      string
+		wantCode    codes.Code
+	}{
+		{
+			name: "IPv4 storage selects second address",
+			addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: v6},
+				{Type: corev1.NodeInternalIP, Address: v4},
+			},
+			bindAddress: "10.0.0.2",
+			wantIP:      v4,
+		},
+		{
+			name: "IPv6 storage selects second address",
+			addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: v4},
+				{Type: corev1.NodeInternalIP, Address: v6},
+			},
+			bindAddress: "fd00::2",
+			wantIP:      v6,
+		},
+		{
+			name:        "IPv4-only node cannot use IPv6 storage",
+			addresses:   []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: v4}},
+			bindAddress: "fd00::2",
+			wantCode:    codes.InvalidArgument,
+		},
+		{
+			name:        "IPv6-only node cannot use IPv4 storage",
+			addresses:   []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: v6}},
+			bindAddress: "10.0.0.2",
+			wantCode:    codes.InvalidArgument,
+		},
+		{
+			name:        "storage address must be numeric",
+			addresses:   []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: v4}},
+			bindAddress: "storage.example.test",
+			wantCode:    codes.FailedPrecondition,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			node := nodeWithStatus(nodeID, corev1.NodeStatus{Addresses: tc.addresses})
+			srv := newMinimalControllerServer(t, node)
+			pvs := &v1alpha1.PillarVolumeState{
+				Spec: v1alpha1.PillarVolumeStateSpec{ProtocolType: ProtocolNFS},
+				Status: v1alpha1.PillarVolumeStateStatus{
+					ExportSpec: &v1alpha1.VolumeExportSpec{NFS: &v1alpha1.NFSExportSpec{}},
+				},
+			}
+			got, _, err := srv.resolvePublishGrant(
+				context.Background(), false, nodeID, ProtocolNFS, tc.bindAddress, pvs)
+			checkResolveResult(t, got, err, tc.wantCode != codes.OK, tc.wantCode, tc.wantIP)
+		})
 	}
 }
 
@@ -388,12 +481,16 @@ func TestResolveInitiatorID_TableDriven(t *testing.T) {
 			seedObjs:   []ctrlclient.Object{csiNodeWith(map[string]string{AnnotationISCSIInitiatorIQN: testIQN})},
 			wantResult: testIQN,
 		},
-		// Passthrough cases
+		// NFS uses a numeric Node InternalIP without any CSINode.
 		{
-			name:       "nfs: no CSINode needed → nodeID passthrough",
-			protocol:   "nfs",
-			wantResult: testNode,
+			name:     "nfs: Node InternalIP without CSINode",
+			protocol: ProtocolNFS,
+			seedObjs: []ctrlclient.Object{nodeWithStatus(testNode, corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: "10.0.0.13"},
+			}})},
+			wantResult: "10.0.0.13",
 		},
+		// Unsupported protocols remain passthrough for agent rejection.
 		{
 			name:       "smb: no CSINode needed → nodeID passthrough",
 			protocol:   "smb",

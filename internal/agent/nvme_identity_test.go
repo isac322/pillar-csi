@@ -201,9 +201,11 @@ func TestNVMeIdentity_CorruptRecordFailsReconcile(t *testing.T) {
 
 	resp, err := srv.ReconcileState(context.Background(), &agentv1.ReconcileStateRequest{
 		Volumes: []*agentv1.VolumeDesiredState{{
-			VolumeId: testVolumeID, DevicePath: testDevicePath,
-			Exports: []*agentv1.ExportDesiredState{nvmeofExportState("10.0.0.1")},
-			Fence:   testFence(t),
+			VolumeId:    testVolumeID,
+			BackendType: agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL,
+			DevicePath:  testDevicePath,
+			Exports:     []*agentv1.ExportDesiredState{nvmeofExportState("10.0.0.1")},
+			Fence:       testFence(t),
 		}},
 	})
 	if err != nil {

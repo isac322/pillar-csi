@@ -78,6 +78,10 @@ func exportParamsForRequest(req *agentv1.ExportVolumeRequest) (ExportParams, err
 		if req.GetExportParams().GetIscsi() == nil {
 			return ExportParams{}, status.Errorf(codes.InvalidArgument, "iscsi export params required")
 		}
+	case agentv1.ProtocolType_PROTOCOL_TYPE_NFS:
+		if req.GetExportParams().GetNfs() == nil {
+			return ExportParams{}, status.Errorf(codes.InvalidArgument, "nfs export params required")
+		}
 	case agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED:
 		return ExportParams{}, status.Errorf(codes.InvalidArgument,
 			"exportParamsForRequest: protocol_type is required")
@@ -85,7 +89,6 @@ func exportParamsForRequest(req *agentv1.ExportVolumeRequest) (ExportParams, err
 		return ExportParams{}, status.Errorf(codes.Unimplemented,
 			"exportParamsForRequest: unsupported protocol type %s", req.GetProtocolType().String())
 	}
-
 	return params, nil
 }
 

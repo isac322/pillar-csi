@@ -194,13 +194,14 @@ var _ = Describe("PillarStorageClass CRD Schema Validation", func() {
 		)
 	}
 
-	expectUnprocessable := func(err error, contains string) {
+	expectUnprocessable := func(err error, field string) {
 		Expect(err).To(HaveOccurred())
 		statusErr, ok := err.(*errors.StatusError)
 		Expect(ok).To(BeTrue(), "error should be a *errors.StatusError: %v", err)
 		Expect(statusErr.ErrStatus.Code).To(Equal(int32(422)),
 			"HTTP status code should be 422 UnprocessableEntity: %v", err)
-		Expect(err.Error()).To(ContainSubstring(contains))
+		Expect(statusErr.ErrStatus.Details).NotTo(BeNil())
+		Expect(statusErr.ErrStatus.Details.Causes).To(ContainElement(HaveField("Field", field)))
 	}
 
 	// ── E25.2.4 — TestPillarStorageClassCRD_InvalidCreate_InvalidFSType ──────
@@ -214,21 +215,21 @@ var _ = Describe("PillarStorageClass CRD Schema Validation", func() {
 	It("Should reject spec.overrides.backend with both zfs and lvm", func() {
 		err := applyBinding("crd-test-two-backend-overrides", `{"storeRef": "p", "protocolRef": "q",
 			"overrides": {"backend": {"zfs": {"properties": {"compression": "zstd"}}, "lvm": {"provisioningMode": "thin"}}}}`)
-		expectUnprocessable(err, "exactly one of zfs or lvm must be set")
+		expectUnprocessable(err, "spec.overrides.backend")
 	})
 
 	// ── E25.2.6 — TestPillarStorageClassCRD_InvalidCreate_EmptyBackendOverrides
 	It("Should reject spec.overrides.backend without a member", func() {
 		err := applyBinding("crd-test-empty-backend-overrides",
 			`{"storeRef": "p", "protocolRef": "q", "overrides": {"backend": {}}}`)
-		expectUnprocessable(err, "exactly one of zfs or lvm must be set")
+		expectUnprocessable(err, "spec.overrides.backend")
 	})
 
 	// ── E25.2.7 — TestPillarStorageClassCRD_InvalidCreate_EmptyProtocolOverrides
 	It("Should reject spec.overrides.protocol without a member", func() {
 		err := applyBinding("crd-test-empty-protocol-overrides",
 			`{"storeRef": "p", "protocolRef": "q", "overrides": {"protocol": {}}}`)
-		expectUnprocessable(err, "exactly one protocol member must be set")
+		expectUnprocessable(err, "spec.overrides.protocol")
 	})
 
 	// ── E25.2.8 — TestPillarStorageClassCRD_InvalidCreate_RemovedOverrideFields
@@ -251,7 +252,7 @@ var _ = Describe("PillarStorageClass CRD Schema Validation", func() {
 	It("Should reject spec.overrides.protocol with both nvmeofTcp and iscsi", func() {
 		err := applyBinding("crd-test-two-protocol-overrides", `{"storeRef": "p", "protocolRef": "q",
 			"overrides": {"protocol": {"nvmeofTcp": {"ctrlLossTmo": 30}, "iscsi": {"loginTimeout": 30}}}}`)
-		expectUnprocessable(err, "exactly one protocol member must be set (supported: nvmeofTcp, iscsi)")
+		expectUnprocessable(err, "spec.overrides.protocol")
 	})
 
 	// ── E25.2.11 — TestPillarStorageClassCRD_InvalidCreate_ISCSIStructuralOverride

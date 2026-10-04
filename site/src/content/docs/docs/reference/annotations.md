@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-You set pillar-csi configuration with three keys: `pillar-csi.bhyoo.com/backend`, `pillar-csi.bhyoo.com/protocol` and `pillar-csi.bhyoo.com/filesystem`. Each value is a YAML document with the same shape as the matching subtree of `PillarStore.spec.backend`, `PillarProtocol.spec.protocol` or `PillarStorageClass.spec.filesystem`. The same three keys and shapes work as PVC annotations and as parameters of a hand-written StorageClass, so a setting reads the same wherever you write it. The `protocol` document accepts `nvmeofTcp` or `iscsi`, and its member must match the member of the `PillarProtocol`. NFS and SMB are planned and designed to use the same `protocol` document.
+You set pillar-csi configuration with three keys: `pillar-csi.bhyoo.com/backend`, `pillar-csi.bhyoo.com/protocol` and `pillar-csi.bhyoo.com/filesystem`. Each value is a YAML document with the same shape as the matching subtree of `PillarStore.spec.backend`, `PillarProtocol.spec.protocol` or `PillarStorageClass.spec.filesystem`. The same three keys and shapes work as PVC annotations and as parameters of a hand-written StorageClass. The `protocol` document accepts `nvmeofTcp`, `iscsi`, or `nfs`, and its member must match the `PillarProtocol`. NFS requires a ZFS dataset backend; its version, port, ACL and squash are structural and not per-volume tunables. SMB and directory backends are unavailable.
 
 All pillar-csi keys live under the `pillar-csi.bhyoo.com/` prefix. The CSI driver name and StorageClass provisioner is `pillar-csi.bhyoo.com`.
 
@@ -18,15 +18,15 @@ Each value is limited to the tunable fields of its subtree. See [Override settin
 | Key | Document shape | Tunable fields |
 |---|---|---|
 | `pillar-csi.bhyoo.com/backend` | `zfs: {...}` or `lvm: {...}` | `zfs.properties`, `lvm.provisioningMode` |
-| `pillar-csi.bhyoo.com/protocol` | `nvmeofTcp: {...}` or `iscsi: {...}` | `nvmeofTcp`: `maxQueueSize`, `inCapsuleDataSize`, `maxDataTransferSize`, `ctrlLossTmo`, `reconnectDelay`. `iscsi`: `loginTimeout`, `replacementTimeout`, `noopOutInterval`, `noopOutTimeout` |
-| `pillar-csi.bhyoo.com/filesystem` | `{fsType, mkfsOptions, mountOptions, periodicTrim}` | all four |
+| `pillar-csi.bhyoo.com/protocol` | `nvmeofTcp: {...}`, `iscsi: {...}`, or `nfs: {}` | block protocol tuning fields; NFS has no per-volume protocol tunables |
+| `pillar-csi.bhyoo.com/filesystem` | `{fsType, mkfsOptions, mountOptions, periodicTrim}` | block: all four; NFS: `fsType` omitted or `nfs`, and `mountOptions` only |
 
 Rules:
 
 - The controller reads these once, in `CreateVolume`. Later edits do not change an existing volume.
 - Any other key under `pillar-csi.bhyoo.com/` on a PVC fails provisioning with `unsupported PVC annotation "<key>"`. The 0.2 keys `backend-override`, `protocol-override`, `fs-override` and `param.*` fall under this rule.
 - Structural fields fail with `<key>: <path> is structural and cannot be set per volume`. Unknown fields fail with `unknown field`.
-- `pillar-csi.bhyoo.com/filesystem` is rejected on a PVC with `volumeMode: Block`.
+`pillar-csi.bhyoo.com/filesystem` is rejected on a PVC with `volumeMode: Block`. For NFS, `fsType` may be omitted or `nfs`; nonempty `mkfsOptions`, enabled periodic trim, and contradictory mount flags are rejected.
 
 One more PVC annotation is not a configuration document:
 
@@ -42,7 +42,6 @@ A StorageClass generated from a `PillarStorageClass` carries one pillar-csi para
 |---|---|
 | `pillar-csi.bhyoo.com/storage-class` | name of the `PillarStorageClass` |
 
-Any other `pillar-csi.bhyoo.com/` parameter on a generated class is rejected. Settings such as overrides and `spec.localAttach` stay on the `PillarStorageClass`, and the controller reads them from there at `CreateVolume`.
 
 A StorageClass you write yourself (`provisioner: pillar-csi.bhyoo.com`) accepts:
 
@@ -53,8 +52,8 @@ A StorageClass you write yourself (`provisioner: pillar-csi.bhyoo.com`) accepts:
 | `pillar-csi.bhyoo.com/backend` | no | backend document, as on a PVC |
 | `pillar-csi.bhyoo.com/protocol` | no | protocol document, as on a PVC |
 | `pillar-csi.bhyoo.com/filesystem` | no | filesystem document, as on a PVC |
-| `pillar-csi.bhyoo.com/local-attach` | no | `"true"` or `"false"`, default `false`; any other value is rejected with `InvalidArgument`. Same meaning as `PillarStorageClass.spec.localAttach`; see [Attach volumes locally on the storage node](/docs/how-to/local-attach/) |
-| `csi.storage.k8s.io/fstype` | no | `ext4` or `xfs`; must equal the filesystem document's `fsType` if both are set |
+| `pillar-csi.bhyoo.com/local-attach` | no | `"true"` or `"false"`, default `false`; rejected for NFS volumes because NFS always uses its network mount. For block volumes, see [Attach volumes locally on the storage node](/docs/how-to/local-attach/) |
+| `csi.storage.k8s.io/fstype` | no | `ext4`, `xfs`, or `nfs`; must equal the filesystem document's `fsType` if both are set |
 
 Any other `pillar-csi.bhyoo.com/` parameter, including the 0.2 flat keys such as `zfs-prop.*`, `lvm-*`, `nvmeof-*`, `acl-enabled` and `backend-type`, is rejected.
 
@@ -96,11 +95,12 @@ The controller writes these into `PersistentVolume.spec.csi.volumeAttributes` at
 
 | Key | Value |
 |---|---|
-| `target_id` | target identifier; for NVMe-oF/TCP, the subsystem NQN; for iSCSI, the target IQN |
+| `target_id` | target identifier; for NVMe-oF/TCP, the subsystem NQN; for iSCSI, the target IQN; for NFS, the server export path |
 | `address` | storage node address the export listens on, recorded at provisioning |
-| `port` | TCP port the export listens on, recorded at provisioning |
-| `pillar-csi.bhyoo.com/protocol-type` | `nvmeof-tcp` or `iscsi` |
-| `pillar-csi.bhyoo.com/volume-ref` | protocol-level reference of the volume (the NVMe subsystem name, or the iSCSI LUN number `0`) |
+| `port` | TCP port the export listens on, recorded at provisioning; NFS is fixed at `2049` |
+| `pillar-csi.bhyoo.com/protocol-type` | `nvmeof-tcp`, `iscsi` or `nfs` |
+| `pillar-csi.bhyoo.com/nfs-version` | resolved NFS version, currently `4.2` |
+| `pillar-csi.bhyoo.com/volume-ref` | protocol-level reference of the volume (the NVMe subsystem name, iSCSI LUN number `0`, or the NFS export path) |
 | `pillar-csi.bhyoo.com/nvmeof-max-queue-size` | resolved `maxQueueSize` |
 | `pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo` | resolved `ctrlLossTmo`, seconds |
 | `pillar-csi.bhyoo.com/nvmeof-reconnect-delay` | resolved `reconnectDelay`, seconds |

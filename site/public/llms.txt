@@ -1,13 +1,14 @@
 # pillar-csi
 
-> pillar-csi is a Kubernetes CSI driver that exports ZFS zvols and LVM logical volumes from storage nodes to pods over NVMe-oF/TCP. The Linux kernel NVMe-oF target (nvmet) serves each volume, and the driver configures both ends. It installs as one Helm release: a controller, an agent on each storage node, and a node plugin on each worker.
+> pillar-csi is a Kubernetes CSI driver that exports ZFS zvols and LVM logical volumes from storage nodes to pods over NVMe-oF/TCP or iSCSI, and ZFS datasets over NFSv4.2. It installs as one Helm release: a controller, an agent on each storage node, and a node plugin on each worker.
 
-Shipped today: ZFS and LVM backends, NVMe-oF/TCP export, filesystem (ext4, XFS) and raw block volumes, online expansion, ReadWriteOnce, ReadWriteOncePod and ReadOnlyMany access (ReadWriteMany is rejected), optional mTLS between controller and agent. Planned, not available: iSCSI, NFS, and SMB. pillar-csi does not replicate data; each volume lives on one storage node. License: Apache-2.0. Source: https://github.com/isac322/pillar-csi
+Shipped today: ZFS zvols and datasets, LVM logical volumes, NVMe-oF/TCP, iSCSI and NFSv4.2; Filesystem and Block modes where the protocol permits; online expansion; ReadWriteOnce, ReadWriteOncePod and ReadOnlyMany, plus ReadWriteMany for NFS; optional mTLS between controller and agent. NFS uses a fixed TCP port 2049, root squash by default, and no per-volume protocol tunables. SMB is planned, not available. pillar-csi does not replicate data; each volume lives on one storage node. License: Apache-2.0. Source: https://github.com/isac322/pillar-csi
 
 ## Docs
 
 - [Documentation home](https://pillar-csi.bhyoo.com/docs/): overview and entry points
 - [Tutorial: your first PVC](https://pillar-csi.bhyoo.com/docs/tutorials/first-pvc/): from one storage node to a Pod with a mounted volume
+- [Configure NFS](https://pillar-csi.bhyoo.com/docs/how-to/configure-nfs/): ZFS dataset backend, NFSv4.2, RWX, ACLs, expansion and recovery
 - [Install with Helm](https://pillar-csi.bhyoo.com/docs/how-to/install-helm/): chart install, values, upgrade, uninstall
 - [Prerequisites](https://pillar-csi.bhyoo.com/docs/reference/prerequisites/): kernel modules, Kubernetes and Helm versions, ports
 - [Support matrix](https://pillar-csi.bhyoo.com/docs/reference/support-matrix/): what is supported and what is planned

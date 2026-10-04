@@ -2,9 +2,10 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,61 +89,64 @@ func TestNewKindBootstrapStateCreatesUniqueTmpScopedArtifacts(t *testing.T) {
 	}
 }
 
-func TestKindBootstrapCreateClusterUsesKindKubeconfigAndContext(t *testing.T) {
-	t.Parallel()
+func TestKindBootstrapNFSPreparationFailureCleansOwnedCluster(t *testing.T) {
+	t.Setenv("E2E_NFS_E2E", " TrUe ")
+	cause := errors.New("sysfs unavailable")
+	for _, tc := range []struct {
+		name        string
+		nodeSuffix  string
+		operation   string
+		result      fakeCommandResult
+		deleteFails bool
+	}{
+		{name: "first worker remount", nodeSuffix: "-worker", operation: "mount -o remount,rw /sys", result: fakeCommandResult{err: cause}},
+		{name: "second worker remount", nodeSuffix: "-worker2", operation: "mount -o remount,rw /sys", result: fakeCommandResult{err: cause}},
+		{name: "readback failure", nodeSuffix: "-worker2", operation: "findmnt -no OPTIONS /sys", result: fakeCommandResult{err: cause}},
+		{name: "still read-only", nodeSuffix: "-worker2", operation: "findmnt -no OPTIONS /sys", result: fakeCommandResult{stdout: "ro,nosuid,nodev,noexec\n"}},
+		{name: "rw substring is not writable", nodeSuffix: "-worker2", operation: "findmnt -no OPTIONS /sys", result: fakeCommandResult{stdout: "ro,rwfoo\n"}},
+		{name: "empty readback", nodeSuffix: "-worker2", operation: "findmnt -no OPTIONS /sys", result: fakeCommandResult{}},
+		{name: "failed deletion retains ownership", nodeSuffix: "-worker2", operation: "mount -o remount,rw /sys", result: fakeCommandResult{err: cause}, deleteFails: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := newValidKindBootstrapState(t)
+			state.clusterCreated = false
+			state.KubeContext = ""
+			outputs := map[string]fakeCommandResult{
+				"kind create cluster --name " + state.ClusterName + " --kubeconfig " + state.KubeconfigPath + " --wait " + state.CreateTimeout.String() + " --config " + filepath.Join(state.GeneratedDir, "nfs-kind.yaml"): {},
+				"kind delete cluster --name " + state.ClusterName: {},
+			}
+			for _, suffix := range []string{"-worker", "-worker2"} {
+				node := state.ClusterName + suffix
+				outputs["docker exec "+node+" mount -o remount,rw /sys"] = fakeCommandResult{}
+				outputs["docker exec "+node+" findmnt -no OPTIONS /sys"] = fakeCommandResult{stdout: "rw,nosuid,nodev,noexec,relatime\n"}
+			}
+			node := state.ClusterName + tc.nodeSuffix
+			outputs["docker exec "+node+" "+tc.operation] = tc.result
+			if tc.deleteFails {
+				outputs["kind delete cluster --name "+state.ClusterName] = fakeCommandResult{err: errors.New("delete failed")}
+			}
+			runner := &fakeCommandRunner{t: t, outputs: outputs}
 
-	suitePaths := newTestSuiteTempPaths(t)
-	state := &kindBootstrapState{
-		SuiteRootDir:   suitePaths.RootDir,
-		WorkspaceDir:   suitePaths.WorkspaceDir,
-		LogsDir:        suitePaths.LogsDir,
-		GeneratedDir:   suitePaths.GeneratedDir,
-		ClusterName:    "pillar-csi-e2e-p1234-abcd1234",
-		KubeconfigPath: suitePaths.KubeconfigPath(),
-		KindBinary:     "kind",
-		KubectlBinary:  "kubectl",
-		CreateTimeout:  2 * time.Minute,
-		DeleteTimeout:  2 * time.Minute,
-	}
-
-	fakeRunner := &fakeCommandRunner{
-		t: t,
-		outputs: map[string]fakeCommandResult{
-			"kind create cluster --name pillar-csi-e2e-p1234-abcd1234 --kubeconfig " + state.KubeconfigPath + " --wait 2m0s": {},
-			"kubectl config current-context --kubeconfig " + state.KubeconfigPath: {
-				stdout: "kind-pillar-csi-e2e-p1234-abcd1234\n",
-			},
-		},
-	}
-
-	if err := state.createCluster(context.Background(), fakeRunner); err != nil {
-		t.Fatalf("createCluster: %v", err)
-	}
-
-	if state.KubeContext != "kind-"+state.ClusterName {
-		t.Fatalf("KubeContext = %q, want %q", state.KubeContext, "kind-"+state.ClusterName)
-	}
-
-	wantCalls := []commandSpec{
-		{
-			Name: "kind",
-			Args: []string{
-				"create", "cluster",
-				"--name", state.ClusterName,
-				"--kubeconfig", state.KubeconfigPath,
-				"--wait", "2m0s",
-			},
-		},
-		{
-			Name: "kubectl",
-			Args: []string{
-				"config", "current-context",
-				"--kubeconfig", state.KubeconfigPath,
-			},
-		},
-	}
-	if !reflect.DeepEqual(fakeRunner.calls, wantCalls) {
-		t.Fatalf("calls = %#v, want %#v", fakeRunner.calls, wantCalls)
+			err := state.createCluster(context.Background(), runner)
+			if err == nil {
+				t.Fatal("createCluster accepted failed NFS sysfs preparation")
+			}
+			if tc.result.err != nil && !errors.Is(err, tc.result.err) {
+				t.Fatalf("createCluster error = %v, want cause %v", err, tc.result.err)
+			}
+			if !strings.Contains(err.Error(), node) || !strings.Contains(err.Error(), "/sys") {
+				t.Fatalf("createCluster error does not identify node and sysfs target: %v", err)
+			}
+			if state.clusterCreated != tc.deleteFails {
+				t.Fatalf("clusterCreated = %v after cleanup; deletion failed = %v", state.clusterCreated, tc.deleteFails)
+			}
+			if state.KubeContext != "" {
+				t.Fatalf("bootstrap published context despite sysfs preparation failure: %q", state.KubeContext)
+			}
+			if _, err := os.Stat(state.SuiteRootDir); !os.IsNotExist(err) {
+				t.Fatalf("suite root still exists or returned unexpected error: %v", err)
+			}
+		})
 	}
 }
 

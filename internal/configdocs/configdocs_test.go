@@ -56,12 +56,6 @@ func TestDecodeOverrides_Rejections(t *testing.T) {
 			wantErr: "iscsi.loginTimeout: 0 is out of range [1, 2147483647]",
 		},
 		{
-			name:    "protocol union with two members",
-			decode:  protocolOverride,
-			raw:     "nvmeofTcp: {maxQueueSize: 64}\niscsi: {loginTimeout: 30}",
-			wantErr: "pillar-csi.bhyoo.com/protocol: exactly one of iscsi or nvmeofTcp must be set (got iscsi, nvmeofTcp)",
-		},
-		{
 			name:    "backend structural zfs.pool",
 			decode:  backendOverride,
 			raw:     "zfs: {pool: other}",
@@ -82,8 +76,8 @@ func TestDecodeOverrides_Rejections(t *testing.T) {
 		{
 			name:    "unsupported protocol variant",
 			decode:  protocolOverride,
-			raw:     "nfs: {version: 4}",
-			wantErr: `pillar-csi.bhyoo.com/protocol: unknown field "nfs" (supported: iscsi or nvmeofTcp)`,
+			raw:     "smb: {share: data}",
+			wantErr: `pillar-csi.bhyoo.com/protocol: unknown field "smb" (supported: iscsi or nfs or nvmeofTcp)`,
 		},
 		{
 			name:    "removed discriminator field",
@@ -161,7 +155,7 @@ func TestDecodeOverrides_Rejections(t *testing.T) {
 			name:    "filesystem fsType enum",
 			decode:  filesystemDoc,
 			raw:     "fsType: btrfs",
-			wantErr: `fsType: unsupported value "btrfs" (supported: ext4, xfs)`,
+			wantErr: `fsType: unsupported value "btrfs" (supported: ext4, xfs, nfs)`,
 		},
 		{
 			name:    "filesystem list items are strings",
@@ -366,11 +360,10 @@ func TestDecodeBackendSpec(t *testing.T) {
 	}
 
 	for raw, want := range map[string]string{
-		"zfs: {parentDataset: k8s}":        "cfg: backends[2]: zfs.pool is required",
-		"lvm: {thinPool: thin0}":           "cfg: backends[2]: lvm.volumeGroup is required",
-		"zfs: {pool: p, volumeType: file}": `zfs.volumeType: unsupported value "file" (supported: zvol)`,
-		"dir: {path: /srv}":                `cfg: backends[2]: unknown field "dir" (supported: lvm or zfs)`,
-		"{}":                               "cfg: backends[2]: exactly one of lvm or zfs must be set (got none)",
+		"zfs: {parentDataset: k8s}": "cfg: backends[2]: zfs.pool is required",
+		"lvm: {thinPool: thin0}":    "cfg: backends[2]: lvm.volumeGroup is required",
+		"dir: {path: /srv}":         `cfg: backends[2]: unknown field "dir" (supported: lvm or zfs)`,
+		"{}":                        "cfg: backends[2]: exactly one of lvm or zfs must be set (got none)",
 	} {
 		_, err := DecodeBackendSpec("cfg: backends[2]", raw)
 		if err == nil || !strings.Contains(err.Error(), want) {

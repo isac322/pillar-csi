@@ -25,7 +25,7 @@ Annotations added to the agent DaemonSet.
 
 Type: `list`. Default: `[]`
 
-Backend placement config for the pillar-agent. The list is rendered verbatim into the `backends:` list of the agent config file (ConfigMap &lt;fullname>-agent-config, passed to the agent via `--config`). Each entry sets exactly one of `zfs` or `lvm`, with the same keys as the placement fields of PillarStore.spec.backend: - zfs: `pool` is required; `volumeType` (only `zvol`, the default) and `parentDataset` are optional. `properties` is refused: ZFS properties are per-volume settings of the PillarStore, PillarStorageClass overrides or PVC backend document. - lvm: `volumeGroup` is required; `thinPool` (thin pool LV used by thin volumes) and `provisioningMode` (`linear` default | `thin`; the mode for agent requests that name none — CSI always names the resolved mode) are optional. The agent rejects unknown keys with their path and exits with an error when no backend is configured. An entry setting neither or both of zfs/lvm fails the chart render. Each ZFS `pool` and LVM `volumeGroup` may appear in at most one entry (a ZFS pool and an LVM VG must not share a name either): volumes are routed to a backend by pool/VG name alone, so a duplicate fails the chart render and the agent refuses to start when given one. `parentDataset` and `thinPool` decide where volumes are created and must equal the PillarStore's spec.backend.zfs.parentDataset / spec.backend.lvm.thinPool for that pool/VG (omitted = pool root / no thin pool). On a mismatch the PillarStore is not Ready (PoolDiscovered=False, BackendLayoutMismatch) and CreateVolume fails; volumes are never placed elsewhere. Example: backends: - zfs: pool: tank - zfs: volumeType: zvol pool: hot-data parentDataset: k8s - lvm: volumeGroup: data-vg thinPool: thin0 provisioningMode: linear
+Backend placement config for the pillar-agent. The list is rendered verbatim into the `backends:` list of the agent config file (ConfigMap &lt;fullname>-agent-config, passed to the agent via `--config`). Each entry sets exactly one of `zfs` or `lvm`, with the same keys as the placement fields of PillarStore.spec.backend: - zfs: `pool` is required; `volumeType` (`zvol`, the default, or `dataset`) and `parentDataset` are optional. `properties` is refused: ZFS properties are per-volume settings of the PillarStore, PillarStorageClass overrides or PVC backend document. - lvm: `volumeGroup` is required; `thinPool` (thin pool LV used by thin volumes) and `provisioningMode` (`linear` default | `thin`; the mode for agent requests that name none — CSI always names the resolved mode) are optional. The agent rejects unknown keys with their path and exits with an error when no backend is configured. An entry setting neither or both of zfs/lvm fails the chart render. Each (ZFS pool, volumeType) pair may appear in at most one entry; zvol and dataset entries may share a pool because lifecycle requests carry their backend type. Each LVM volumeGroup must be unique and cannot share a name with a ZFS pool. Ambiguous duplicate placements fail the chart render. `parentDataset` and `thinPool` decide where volumes are created and must equal the PillarStore's spec.backend.zfs.parentDataset / spec.backend.lvm.thinPool for that pool/VG (omitted = pool root / no thin pool). On a mismatch the PillarStore is not Ready (PoolDiscovered=False, BackendLayoutMismatch) and CreateVolume fails; volumes are never placed elsewhere. Dataset placement enables the NFS server deployment contract: hostPID permits foreign mountd detection, dataset mounts under /var/lib/pillar-csi/agent/datasets propagate Bidirectionally, and /var/lib/nfs persists in the private agent-state subdirectory nfs/lib. The fixed agent-state hostPath /var/lib/pillar-csi/agent must persist across pod and host restarts. Its datasets pseudoroot needs dedicated, persistent NFS-exportable filesystem backing that encodes export filehandles; container overlay/rootfs is unsupported. Use canonical paths without symlinks. NFS startup rejects backing without export filehandles; no tmpfs fallback is created. The dedicated Kind NFS fixture uses tmpfs for ephemeral QA only, never as the production backing for agent state or the pseudoroot. No host NFS utilities or host /var/lib/nfs exports state are used. Example: backends: - zfs: pool: tank - zfs: volumeType: zvol pool: hot-data parentDataset: k8s - zfs: volumeType: dataset pool: hot-data parentDataset: k8s - lvm: volumeGroup: data-vg thinPool: thin0 provisioningMode: linear
 
 ### <code>agent.<wbr>extraArgs</code>
 
@@ -49,7 +49,7 @@ gRPC listen port inside the container (also exposed as hostPort).
 
 Type: `bool`. Default: `true`
 
-Run the agent Pod in the host network namespace. Required for the NVMe-oF data plane (see PRD §2.4). Set to false only for isolated gRPC-only deployments where no kernel target is exported (e.g. unit-test harnesses); production NVMe-oF exports will fail with "connection refused" at NodeStageVolume when this is false.
+Run the agent Pod in the host network namespace. Required for kernel NVMe-oF, iSCSI and NFS targets (see PRD §2.4). Set to false only for isolated gRPC-only deployments where no kernel target is exported. Dataset/NFS backends reject false because server ownership and clients must use the same storage-node network namespace.
 
 ### <code>agent.<wbr>hostPort</code>
 
@@ -101,11 +101,12 @@ Type: `list`. Default:
   "nvmet_tcp",
   "target_core_mod",
   "target_core_iblock",
-  "iscsi_target_mod"
+  "iscsi_target_mod",
+  "nfsd"
 ]
 ```
 
-Kernel modules to load. Failures are silently ignored (best-effort). nvmet must be listed before nvmet_tcp (it is a dependency). target_core_mod, target_core_iblock and iscsi_target_mod provide the LIO iSCSI target (target_core_mod before the other two).
+Kernel modules to load. Failures are silently ignored (best-effort). nvmet must be listed before nvmet_tcp (it is a dependency). target_core_mod, target_core_iblock and iscsi_target_mod provide the LIO iSCSI target (target_core_mod before the other two). nfsd serves NFSv4.2 from datasets; helpers are bundled in the agent image.
 
 ### <code>agent.<wbr>initModprobe.<wbr>resources</code>
 
@@ -154,7 +155,7 @@ Labels added to the agent Pod template.
 
 Type: `bool`. Default: `true`
 
-Run the agent container in privileged mode (default: true). The storage backends open host device nodes directly: LVM needs /dev/mapper/control and every PV block device (and dm-N nodes created at runtime by lvcreate); ZFS needs /dev/zfs. For a non-privileged container the container runtime installs the default OCI device cgroup allowlist (on cgroup v2 an eBPF device filter), which rejects open() on these nodes with EPERM even for runAsUser=0 + CAP_SYS_ADMIN and a hostPath /dev mount — capabilities cannot bypass the device cgroup. The agent then cannot query pool capacity, reports degraded health and no discovered pools, and PillarStores never become Ready. This applies to bare-metal nodes as well as Kind/nested setups. Set to false only when the deployment authorizes those host devices for the agent container by other means (e.g. runtime device-cgroup configuration or a device plugin/CDI covering every required device).
+Run the agent container in privileged mode (default: true). The storage backends open host device nodes directly: LVM needs /dev/mapper/control and every PV block device (and dm-N nodes created at runtime by lvcreate); ZFS needs /dev/zfs. For a non-privileged container the container runtime installs the default OCI device cgroup allowlist (on cgroup v2 an eBPF device filter), which rejects open() on these nodes with EPERM even for runAsUser=0 + CAP_SYS_ADMIN and a hostPath /dev mount — capabilities cannot bypass the device cgroup. The agent then cannot query pool capacity, reports degraded health and no discovered pools, and PillarStores never become Ready. This applies to bare-metal nodes as well as Kind/nested setups. Set to false only for block backends when the deployment authorizes those host devices by other means (e.g. runtime device-cgroup configuration or a device plugin/CDI covering every required device). Dataset/NFS backends reject false: Bidirectional dataset mount propagation requires privilege.
 
 ### <code>agent.<wbr>resources</code>
 
@@ -693,7 +694,7 @@ Additional environment variables injected into the node container.
 
 Type: `bool`. Default: `true`
 
-Run the node Pod in the host network namespace. Required because `nvme connect` writes to /dev/nvme-fabrics issue TCP SYNs from the caller's netns; with hostNetwork: false the SYNs originate in the pod netns and cannot reach the host-network nvmet listener exposed by the agent. See PRD §2.4 for the kernel netns rationale.
+Run the node Pod in the host network namespace. Required because `nvme connect` writes to /dev/nvme-fabrics and NFS mounts reach the storage-node listener from the caller's netns; with hostNetwork: false those operations originate in the pod netns and cannot reach host-network targets reliably. See PRD §2.4 for the kernel netns rationale.
 
 ### <code>node.<wbr>image.<wbr>pullPolicy</code>
 
@@ -738,11 +739,13 @@ Type: `list`. Default:
   "nvme_fabrics",
   "nvme_tcp",
   "dm_mod",
-  "iscsi_tcp"
+  "iscsi_tcp",
+  "nfs",
+  "nfsv4"
 ]
 ```
 
-Kernel modules to load. Failures are silently ignored (best-effort). nvme_fabrics must be listed before nvme_tcp (it is a dependency). dm_mod provides the device-mapper target that holds the backend device of a local attach on the storage node. iscsi_tcp is the iSCSI initiator transport (pulls libiscsi, libiscsi_tcp and scsi_transport_iscsi).
+Kernel modules to load. Failures are silently ignored (best-effort). nvme_fabrics must be listed before nvme_tcp (it is a dependency). dm_mod provides the device-mapper target that holds the backend device of a local attach on the storage node. iscsi_tcp is the iSCSI initiator transport (pulls libiscsi, libiscsi_tcp and scsi_transport_iscsi). nfs and nfsv4 enable NFSv4.2 mounts using the bundled mount.nfs helper. Register NFSv4 client support before pillar-node starts: this best-effort BusyBox loader can fail on compressed host modules (`.ko.zst`). Preload nfs and nfsv4 with the host module loader and persist them in /etc/modules-load.d/.
 
 ### <code>node.<wbr>initModprobe.<wbr>resources</code>
 

@@ -1,13 +1,13 @@
 ---
 title: pillar-csi documentation
-description: Docs for pillar-csi, a Kubernetes CSI driver that exports ZFS zvols and LVM volumes to pods over NVMe-oF/TCP or iSCSI. Tutorials, how-to guides, and reference.
+description: Docs for pillar-csi, a Kubernetes CSI driver that exports ZFS zvols and LVM volumes over NVMe-oF/TCP or iSCSI, and ZFS datasets over NFSv4.2. Tutorials, how-to guides, and reference.
 ---
 
 import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-pillar-csi is a Container Storage Interface (CSI) driver for Kubernetes. It creates volumes in the ZFS pools and LVM volume groups on your storage nodes, and the Linux kernel serves them to pods over TCP, with the NVMe-oF target or the LIO iSCSI target.
+pillar-csi is a Container Storage Interface (CSI) driver for Kubernetes. It creates block volumes in the ZFS pools and LVM volume groups on your storage nodes, or filesystem datasets in ZFS, and serves them to pods over NVMe-oF/TCP, iSCSI, or NFSv4.2.
 
-The driver's container images carry every tool it runs, so your hosts need only the NVMe-oF or iSCSI kernel modules and a ZFS pool or LVM volume group. NVMe-oF/TCP and iSCSI ship today; NFS and SMB are planned.
+The driver's container images carry every user-space tool it runs, so your hosts need only the kernel support and storage required by the protocol and backend. NVMe-oF/TCP, iSCSI, and NFSv4.2 ship today; SMB is planned and unavailable.
 
 If you have not installed pillar-csi yet, start with the tutorial. It takes you from one storage node to a pod with a mounted volume.
 
@@ -20,8 +20,13 @@ If you have not installed pillar-csi yet, start with the tutorial. It takes you 
 <CardGrid>
 	<LinkCard
 		title="How-to guides"
-		description="Install with Helm, prepare nodes, enable mTLS, expand volumes, upgrade, and fix common failures."
+		description="Install with Helm, configure NFS datasets, prepare nodes, enable mTLS, expand volumes, upgrade, and fix common failures."
 		href="/docs/how-to/install-helm/"
+	/>
+	<LinkCard
+		title="Configure NFS"
+		description="Serve shared ZFS datasets over NFSv4.2 with RWX, node-IP ACLs, quota expansion, and no host NFS packages."
+		href="/docs/how-to/configure-nfs/"
 	/>
 	<LinkCard
 		title="Reference"

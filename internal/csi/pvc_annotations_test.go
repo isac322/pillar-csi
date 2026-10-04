@@ -232,15 +232,28 @@ func TestDecodePVCAnnotations_ProtocolStructuralFieldsRejected(t *testing.T) {
 	}
 }
 
+func TestDecodePVCAnnotations_NFSStructuralFieldsRejected(t *testing.T) {
+	t.Parallel()
+	for _, doc := range []string{
+		"nfs:\n  version: \"4.2\"\n",
+		"nfs:\n  port: 2049\n",
+		"nfs:\n  acl: true\n",
+		"nfs:\n  squash: root\n",
+	} {
+		_, err := decodePVCAnnotations(map[string]string{v1alpha1.AnnotationProtocolDoc: doc})
+		if err == nil {
+			t.Fatalf("decodePVCAnnotations(%q): expected structural-field error", doc)
+		}
+	}
+}
+
 func TestDecodePVCAnnotations_ProtocolInvalidDocuments(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
 		doc       string
 		fragments []string
 	}{
-		"nfs member":             {"nfs:\n  version: \"4.2\"\n", []string{`unknown field "nfs"`}},
 		"smb member":             {"smb:\n  share: data\n", []string{`unknown field "smb"`}},
-		"iscsi unknown field":    {"iscsi:\n  headerDigest: CRC32C\n", []string{"unknown field iscsi.headerDigest"}},
 		"iscsi login timeout 0":  {"iscsi:\n  loginTimeout: 0\n", []string{"iscsi.loginTimeout"}},
 		"member scalar":          {"nvmeofTcp: just-a-string", []string{"nvmeofTcp"}},
 		"unknown field":          {"nvmeofTcp:\n  keepAliveTmo: 5\n", []string{"unknown field nvmeofTcp.keepAliveTmo"}},

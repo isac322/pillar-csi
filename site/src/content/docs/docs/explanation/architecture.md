@@ -1,11 +1,11 @@
 ---
 title: Architecture
-description: "How pillar-csi works. A controller, a storage-node agent and a node plugin export ZFS zvols and LVM volumes to pods over the kernel NVMe-oF/TCP or iSCSI target."
+description: "How pillar-csi works. A controller, a storage-node agent and a node plugin export ZFS zvols and LVM volumes over NVMe-oF/TCP or iSCSI, and ZFS datasets over NFSv4.2."
 sidebar:
   order: 1
 ---
 
-pillar-csi turns ZFS zvols and LVM logical volumes on a storage node into Kubernetes volumes that pods on other nodes can use. It runs as three workloads from one Helm release. The Linux kernel carries the data. The storage node exports each volume with an in-kernel target: `nvmet` for NVMe-oF/TCP, or the LIO target for iSCSI. The worker connects with the in-kernel NVMe/TCP or iSCSI initiator. pillar-csi configures both ends and then stays out of the I/O path.
+pillar-csi turns ZFS zvols, LVM logical volumes, and ZFS datasets on a storage node into Kubernetes volumes that pods can use. It runs as three workloads from one Helm release. Block data uses the Linux kernel's `nvmet` or LIO target and matching initiator; NFS datasets use the kernel NFS server and a bundled client mount helper. pillar-csi configures the endpoints and stays out of steady-state I/O.
 
 pillar-csi is not a distributed filesystem. It does not replicate, stripe or pool data across nodes. Each volume lives on one storage node, in a ZFS pool or LVM volume group you already run there.
 
@@ -27,21 +27,21 @@ storage node
   pillar-agent (DaemonSet)
     -> zfs / lvm commands
     -> nvmet or LIO configfs
-  zvol or LV
-    -> kernel nvmet subsystem
-       or LIO iSCSI target
-    -> TCP listener :4420 or :3260
+    -> owned NFS export state
+  zvol, LV, or ZFS dataset
+    -> block target or kernel NFS server
+    -> TCP listener :4420, :3260, or :2049
         |
         | data path:
-        | NVMe/TCP or iSCSI, kernel only
+        | block protocol or NFSv4.2
         v
 worker node
   pillar-node (DaemonSet)
-    connect or log in, mkfs, mount
-  pod mounts /dev/nvmeXnY or /dev/sdX
+    connect or log in, or mount NFS
+  pod gets a block device or filesystem mount
 ```
 
-The diagram shows only shipped parts. The protocols are NVMe-oF over TCP and iSCSI, and the backends are ZFS zvols and LVM logical volumes.
+The shipped protocols are NVMe-oF/TCP, iSCSI, and NFSv4.2. The shipped backends are ZFS zvols, ZFS datasets, and LVM logical volumes. SMB and directory backends are not offered.
 
 ### pillar-controller
 
@@ -49,35 +49,31 @@ A Deployment that runs the CRD reconcilers and the CSI Controller service, with 
 
 ### pillar-agent
 
-A DaemonSet that runs only on storage nodes. The controller labels a node `pillar-csi.bhyoo.com/agent-node=true` when a `PillarAgent` resource points at it, and the agent DaemonSet's `nodeSelector` matches that label. The agent is a gRPC server on port 9500 with no Kubernetes API client. It creates and deletes zvols and logical volumes in the pools listed in its `--config` file (the chart renders `agent.backends` into it). It writes the NVMe-oF target directly into `/sys/kernel/config/nvmet`, and the iSCSI target into the LIO tree under `/sys/kernel/config/target`: one iSCSI target per volume, with one portal group, one network portal and LUN 0 on an `iblock` backstore of the zvol or logical volume. It reads back what it wrote, so a configfs write that did not take effect becomes an error. The agent reports iSCSI as a supported protocol only when the LIO iSCSI target is usable on the node. The agent runs with `hostNetwork: true` because the kernel binds the `nvmet_tcp` and LIO iSCSI listeners in the network namespace of the process that enables the port.
+A DaemonSet that runs only on storage nodes. The controller labels a node `pillar-csi.bhyoo.com/agent-node=true` when a `PillarAgent` resource points at it, and the agent DaemonSet's `nodeSelector` matches that label. The agent is a gRPC server on port 9500 with no Kubernetes API client. It creates and deletes zvols, datasets, and logical volumes in the pools listed in its `--config` file. It writes block targets through configfs and supervises only the NFS exports it owns; it never stops or reconfigures foreign NFS server state. It reads back what it writes and refuses to report the protocol ready when ownership or recovery cannot be established.
 
 ### pillar-node
 
-A DaemonSet on every worker that implements the CSI Node service. When kubelet stages an NVMe-oF volume, pillar-node connects to the storage node by writing the connect string to the kernel's `/dev/nvme-fabrics` device (it does not need `nvme-cli`) and waits for the `/dev/nvmeXnY` device. For an iSCSI volume, pillar-node's built-in initiator opens the TCP connection, runs the iSCSI login in Go, and hands the logged-in connection to the kernel's `iscsi_tcp` driver over the `NETLINK_ISCSI` socket, the same interface `iscsid` uses. The kernel then creates the `/dev/sdX` disk for LUN 0. It does not need `iscsiadm`, `iscsid` or the `open-iscsi` package. pillar-node then formats the device with ext4 or xfs if it has no filesystem yet, and mounts it. For `volumeMode: Block` it bind-mounts the raw device instead. It also uses `hostNetwork: true`, so the initiator's TCP connection starts from the host network where the target listens. iSCSI needs this too, because the kernel serves `NETLINK_ISCSI` only in the host's initial network namespace.
+A DaemonSet on every worker that implements the CSI Node service. For NVMe-oF and iSCSI it connects to the kernel block initiator; for NFS it mounts the server export with the bundled helper. It formats only blank block devices. NFS datasets are already filesystems, so `fsType`, `mkfsOptions`, periodic trim, and block volume mode are invalid for them. NFS defaults to hard, NFSv4.2 and TCP; contradictory mount flags are rejected.
 
-pillar-node publishes each node's initiator identity on its CSINode object: the NVMe host NQN from `/etc/nvme/hostnqn` and the iSCSI initiator IQN from `/etc/iscsi/initiatorname.iscsi`. It generates either file if it is missing. pillar-node also recovers iSCSI sessions itself: when a connection fails, it logs in again and hands the new connection to the kernel, and after a restart it adopts the pillar-csi sessions that already exist on the node.
+pillar-node publishes each block initiator identity on its CSINode object. NFS ACLs use the node `InternalIP` resolved for each publication. It persists typed stage state so an unstage after plugin restart unmounts the exact NFS staging path; no host package or global mount helper is required.
 
-Both DaemonSets have an init container that runs `modprobe` against the host's `/lib/modules`: `nvme_fabrics`, `nvme_tcp` and `iscsi_tcp` on workers, `nvmet`, `nvmet_tcp`, `target_core_mod`, `target_core_iblock` and `iscsi_target_mod` on storage nodes. The init container loads modules the host already has; it cannot install missing ones, and it exits successfully even when a module fails to load. See [prerequisites](/docs/reference/prerequisites/).
+Both DaemonSets have init containers that load only the kernel modules already present on the host. See [prerequisites](/docs/reference/prerequisites/).
 
 ### What the images contain
 
-Each image carries the tools its component runs, so hosts do not need them.
+Each image carries the tools its component runs, so hosts do not need user-space packages.
 
 | Image | Base | Tools inside |
 | --- | --- | --- |
 | `ghcr.io/isac322/pillar-csi/controller` | distroless static | the controller binary only |
-| `ghcr.io/isac322/pillar-csi/agent` | Alpine 3.24 | OpenZFS 2.4 userland (`zfs`, `zpool`) and `lvm2`, with LVM set to work without a host udev daemon |
-| `ghcr.io/isac322/pillar-csi/node` | Alpine 3.24 | `util-linux` (mount), `e2fsprogs` (mkfs.ext4, resize2fs), `xfsprogs` (mkfs.xfs, xfs_growfs) |
+| `ghcr.io/isac322/pillar-csi/agent` | Alpine 3.24 | OpenZFS 2.4 userland (`zfs`, `zpool`), `lvm2`, and supervised NFS export helpers |
+| `ghcr.io/isac322/pillar-csi/node` | Alpine 3.24 | `util-linux`, `e2fsprogs`, `xfsprogs`, and bundled NFS mount utilities |
 
-The agent and node images have no shell and no package manager. Neither image uses `nvme-cli`, `nvmetcli`, `targetcli`, `iscsiadm`, `iscsid` or SSH: the agent writes the target through configfs, and the node plugin connects through `/dev/nvme-fabrics` or its own iSCSI initiator. The modprobe init containers use `busybox`.
+The images have no package manager. They do not use `nvme-cli`, `nvmetcli`, `targetcli`, `iscsiadm`, `iscsid` or SSH. Hosts still provide kernel support and storage; container-bundled utilities do not install host packages.
 
-What the host must still provide is kernel-side: the NVMe-oF and iSCSI modules listed above for the protocols you use, and on the storage node the pool itself. That means the ZFS kernel module with the pool imported, or device-mapper with the LVM volume group present (plus `dm_thin_pool` for thin pools).
+The control path runs over gRPC. When a PVC is created, the controller resolves the StorageClass to a `PillarStore` and `PillarProtocol`, then asks the agent to create the backend volume and export it. For NFS, `ControllerPublishVolume` uses the node's `InternalIP` for the export ACL when enabled; an empty allowed set denies volume data even if an unauthorized mount reaches an empty backing stub. Kubelet asks pillar-node to connect or mount. Deletion runs the same steps in reverse. The controller-to-agent channel is plaintext by default; mTLS is opt-in.
 
-## Control path and data path
-
-The control path runs over gRPC. When a PVC is created, the controller resolves the StorageClass to a `PillarStore` and `PillarProtocol`, and asks the agent to create the backend volume and then to export it. When a pod is scheduled, the controller asks the agent to allow the worker's NVMe host NQN or iSCSI initiator IQN on that export (if the protocol enables ACLs), and kubelet asks pillar-node to connect and mount. Deletion runs the same steps in reverse. The controller-to-agent channel is plaintext by default; mTLS is opt-in (see [configure mTLS](/docs/how-to/configure-mtls/)).
-
-The data path contains only kernel code. Once a volume is connected, reads and writes go from the pod's filesystem to the worker's NVMe/TCP or iSCSI initiator, over TCP to the storage node's `nvmet` or LIO target, and into the zvol or logical volume. pillar-agent, pillar-node and the controller can restart without interrupting I/O on volumes that are already connected. For iSCSI, pillar-node is also the process that recovers a failed connection, so a connection that fails while pillar-node is down is recovered when it starts again.
+The data path is kernel-backed. Block I/O runs through the worker initiator and storage target; NFS I/O runs through the worker NFS client and storage-node NFS server. RPC TLS is not offered, and mTLS protects only controller-to-agent control traffic. A protocol ACL is access control, not encryption.
 
 ## Custom resources
 
@@ -86,45 +82,45 @@ All pillar-csi resources are cluster-scoped and live in the `pillar-csi.bhyoo.co
 | Resource | What it describes | References |
 | --- | --- | --- |
 | `PillarAgent` | One storage node and how to reach its agent: a `nodeRef` to the Kubernetes node, whose address the controller resolves | a Kubernetes `Node` |
-| `PillarStore` | One pool on that node: exactly one `zfs` or `lvm` backend member | `agentRef` to a `PillarAgent` |
-| `PillarProtocol` | Network export settings: exactly one `nvmeofTcp` member (port, ACL on or off, queue size, in-capsule data size, reconnect timeouts) or `iscsi` member (port, ACL on or off, login, replacement and NOP-Out timeouts) | none |
+| `PillarStore` | One pool and backend: ZFS zvol or dataset, or an LVM volume group | `agentRef` to a `PillarAgent` |
+| `PillarProtocol` | Exactly one `nvmeofTcp`, `iscsi`, or `nfs` member; NFS is fixed to version 4.2 and port 2049 | none |
 | `PillarStorageClass` | A store and a protocol combined into a generated Kubernetes `StorageClass`, with filesystem settings and per-class overrides | `storeRef`, `protocolRef` |
 | `PillarVolumeState` | Internal. One per provisioned volume; the controller creates it and users never write it | the `PillarAgent` that hosts the volume |
 
-A validating webhook rejects backend and protocol combinations that cannot work together. Each resource has a finalizer that blocks deletion while something still depends on it: a `PillarAgent` while stores reference it, a `PillarStore` while storage classes or volumes use it, a `PillarProtocol` while storage classes reference it, and a `PillarStorageClass` while PVCs use its generated `StorageClass`. The field-by-field reference is in [CRD reference](/docs/reference/crd/).
+A validating webhook rejects backend and protocol combinations that cannot work together, including NFS with zvol/LVM, NFS with Block mode, and localAttach for NFS.
 
 ## One driver for every backend and protocol
 
 pillar-csi is one CSI driver with one set of workloads: a controller, an agent DaemonSet and a node DaemonSet. The same set serves every pool and every backend and protocol the driver implements. To add a pool, you add it to `agent.backends` and create a `PillarStore`; the driver and the Helm release stay the same.
 
-Configuration is split into three axes: the backend (`zfs` or `lvm`), the protocol (`nvmeofTcp` or `iscsi`) and the filesystem (`fsType`, `mkfsOptions`, `mountOptions`). Each axis has one YAML shape, and the same shape appears at every layer that can set it. A later layer overrides an earlier one:
+Configuration is split into three axes: the backend (`zfs` or `lvm`), the protocol (`nvmeofTcp`, `iscsi`, or `nfs`) and the filesystem (`fsType`, `mkfsOptions`, `mountOptions`). Each axis has one YAML shape, and the same shape appears at every layer that can set it. A later layer overrides an earlier one:
 
-1. `PillarStore.spec.backend` and `PillarProtocol.spec.protocol` hold the defaults for the pool and the transport.
+1. `PillarStore.spec.backend` and `PillarProtocol.spec.protocol` hold the defaults for the pool and transport.
 2. `PillarStorageClass.spec.overrides` and `spec.filesystem` override them for one storage class.
 3. The PVC annotations `pillar-csi.bhyoo.com/backend`, `pillar-csi.bhyoo.com/protocol` and `pillar-csi.bhyoo.com/filesystem` override them for one volume.
 
-For example, `zfs: {properties: {compression: zstd}}` means the same thing in a store, in a class override and in a PVC annotation. Overrides accept only tuning fields. Placement and security fields such as `pool`, `volumeGroup`, `port` and `acl` are rejected with their path. See [volume overrides](/docs/how-to/volume-overrides/) for the full rules.
+For NFS, the ZFS dataset backend and NFS protocol are structural. `version: "4.2"` and `port: 2049` are fixed, `squash` defaults to `root`, and NFS protocol settings are not per-volume overrides. Only `filesystem.mountOptions` supplies mount flags; support defaults such as hard, NFSv4.2 and TCP cannot be contradicted. `fsType` may be omitted or set to `nfs`; `mkfsOptions`, enabled periodic trim and `localAttach` are rejected for NFS.
 
-Each axis is a union with one member per implementation, and the controller, node plugin and agent dispatch on that member. The CRDs accept the `nvmeofTcp` and `iscsi` protocols and the `zfs` and `lvm` backends. NFS and SMB are planned as new members of the same driver and the same configuration model; they are not implemented.
+Each axis is a union with one member per implementation, and the controller, node plugin and agent dispatch on that member. The CRDs accept the `nvmeofTcp`, `iscsi`, and `nfs` protocols and the `zfs` and `lvm` backends. SMB and directory backends are not offered.
 
 ## Durable state
 
 The controller keeps each volume's state in its `PillarVolumeState` so it can recover after a crash, a leader change or a storage-node reboot. The object records:
 
-- the volume's identity and routing: the agent, the backend and protocol type, the capacity and the PVC it was provisioned for;
-- the effective configuration resolved at the first `CreateVolume` attempt, so later edits to a store, protocol or class do not change existing volumes;
-- the lifecycle phase, including partial-failure phases that record whether the backend volume and the export were created;
-- the export spec (bind address, port, ACL flag), which is the desired state the controller uses to rebuild the export after the storage node loses its target configuration;
-- the list of nodes the volume is published to, which enforces access-mode exclusivity;
-- the `publicationGeneration` counter and the `deleting` flag, which fence stale operations.
+- the volume's identity and routing: the agent, backend and protocol type, capacity and PVC;
+- the effective configuration resolved at the first `CreateVolume` attempt, so later edits do not change an existing volume;
+- lifecycle phases recording whether the backend volume and export were created;
+- the export spec, including bind address/port and protocol-specific ACL, squash, readonly and version state;
+- the list of nodes the volume is published to, which enforces block access-mode exclusivity and tracks NFS ACL membership;
+- the `publicationGeneration` counter and `deleting` flag, which fence stale operations.
 
-The agent keeps two small records per volume in `/var/lib/pillar-csi/agent` on the storage node's own disk: a fencing mark and, for older exports, a pinned NVMe namespace identity. pillar-node records each staged volume in `/var/lib/pillar-csi/node/` on the worker so it can disconnect the right session at unstage. All three paths are `hostPath` mounts, never PVCs, so the storage stack does not depend on its own volumes. pillar-node also mounts `/etc/nvme` and `/etc/iscsi` from the host for the initiator identity files. [Fencing and consistency](/docs/explanation/fencing-and-consistency/) explains how these records keep a stale operation from undoing a newer one.
+The agent persists fencing and recovery records under the existing storage-node hostPath; pillar-node persists typed stage state under its worker hostPath so it can unmount the exact path after restart. These paths are never PVCs, so the storage stack does not depend on its own volumes. [Fencing and consistency](/docs/explanation/fencing-and-consistency/) explains how durable records keep stale operations from undoing newer ones.
 
 ## After a storage-node reboot
 
-A reboot empties `nvmet` and LIO configfs, so every export on that node disappears. Connected workers keep retrying their connections while the node is down. When the agent starts, it refuses to create any export until the controller sends the complete export state for that node in one request. The agent then prepares every export before it enables any listener, so a reconnecting worker finds either no listener or its fully configured subsystem. Each namespace comes back with the same UUID, NGUID and serial it had before, which the worker's kernel requires in order to keep the device. For iSCSI the agent rebuilds each target with the same IQN and LUN 0 from the same export state, and removes pillar-csi targets that are no longer in it.
+A reboot clears block target state and NFS export state, so every export on that node is temporarily unavailable. Connected workers keep retrying their connections or NFS mounts while the node is down. When the agent starts, it refuses to report availability until the controller sends the complete owned export state. The agent restores block identities and NFS root/child dataset exports from that state before serving listeners. It restores ACL membership, readonly state, squash, version and stable internal identities, and removes only pillar-csi-owned exports that are no longer desired. Foreign NFS exports are never stopped or reconfigured.
 
-NVMe-oF workers reconnect only within the kernel's `ctrl_loss_tmo` window: 600 seconds by default, or the `ctrlLossTmo` set on the `PillarProtocol`. A storage node that stays down longer than that loses its connections for good, and the filesystems on those volumes see I/O errors. iSCSI workers keep trying to log in again every few seconds. The kernel holds I/O for `replacementTimeout` seconds (120 by default) and then fails it, so the filesystem sees I/O errors if the storage node stays down longer than that. While a storage node is down, its volumes are unavailable; no other node holds a copy.
+While a storage node is down, its volumes are unavailable; no other node holds a copy. Block protocols retain their existing timeout behavior. NFS clients retry according to their mount behavior, but an outage beyond workload tolerance can still surface I/O errors. A daemon failure cannot silently leave a volume reported healthy.
 
 ## Further reading
 

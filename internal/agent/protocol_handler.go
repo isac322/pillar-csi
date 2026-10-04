@@ -127,6 +127,12 @@ func (s *Server) handlerForProtocol(protocol agentv1.ProtocolType) (AgentProtoco
 		return NewNVMeoFTCPAgentHandler(s), nil
 	case agentv1.ProtocolType_PROTOCOL_TYPE_ISCSI:
 		return NewISCSIAgentHandler(s), nil
+	case agentv1.ProtocolType_PROTOCOL_TYPE_NFS:
+		if s.nfsManager == nil {
+			//nolint:wrapcheck // gRPC status errors must not be double-wrapped.
+			return nil, status.Error(codes.Unimplemented, "NFS protocol is unavailable on this agent")
+		}
+		return NewNFSAgentHandler(s, s.nfsManager), nil
 	case agentv1.ProtocolType_PROTOCOL_TYPE_UNSPECIFIED:
 		return nil, status.Errorf(codes.InvalidArgument, "handlerForProtocol: protocol_type is required")
 	default:

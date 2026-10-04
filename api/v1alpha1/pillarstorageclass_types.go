@@ -82,11 +82,11 @@ type StorageClassTemplate struct {
 // List fields use list semantics on every layer: omitted (absent or null)
 // inherits the value of the layer below, an explicit empty list [] clears it.
 type FilesystemConfig struct {
-	// fsType is the filesystem the node formats a new volume with when
-	// volumeMode is Filesystem.
+	// fsType is the filesystem type the node uses for a block volume in
+	// Filesystem mode.  The controller defaults omitted values to ext4;
+	// file protocols such as NFS use their protocol filesystem instead.
 	// +optional
-	// +kubebuilder:validation:Enum=ext4;xfs
-	// +kubebuilder:default=ext4
+	// +kubebuilder:validation:Enum=ext4;xfs;nfs
 	FSType string `json:"fsType,omitempty"`
 
 	// mkfsOptions are additional mkfs arguments used when the node formats a
@@ -242,11 +242,15 @@ type ISCSIOverrides struct {
 	NoopOutTimeout *int32 `json:"noopOutTimeout,omitempty"`
 }
 
+// NFSOverrides is intentionally empty: NFS structural export settings are
+// fixed per PillarProtocol and cannot be overridden per binding or volume.
+type NFSOverrides struct{}
+
 // ProtocolOverrides is the per-binding or per-volume override document for
 // the transport protocol.  Exactly one member must be set, and it must match
 // the protocol member configured on the referenced PillarProtocol.
 //
-// +kubebuilder:validation:XValidation:rule="(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1 : 0) == 1",message="exactly one protocol member must be set (supported: nvmeofTcp, iscsi)"
+// +kubebuilder:validation:XValidation:rule="(has(self.nvmeofTcp) ? 1 : 0) + (has(self.iscsi) ? 1 : 0) + (has(self.nfs) ? 1 : 0) == 1",message="exactly one protocol member must be set (supported: nvmeofTcp, iscsi, nfs)"
 type ProtocolOverrides struct {
 	// nvmeofTcp overrides NVMe-oF/TCP tunables; valid only when the
 	// protocol's member is nvmeofTcp.
@@ -257,16 +261,23 @@ type ProtocolOverrides struct {
 	// is iscsi.
 	// +optional
 	ISCSI *ISCSIOverrides `json:"iscsi,omitempty"`
+
+	// nfs is an empty override member; NFS settings are structural and fixed
+	// by the referenced PillarProtocol.
+	// +optional
+	NFS *NFSOverrides `json:"nfs,omitempty"`
 }
 
-// Kind returns the selected override member name ("nvmeofTcp" or "iscsi"),
-// or "" when the union is empty.
+// Kind returns the selected override member name ("nvmeofTcp", "iscsi", or
+// "nfs"), or "" when the union is empty.
 func (p ProtocolOverrides) Kind() string {
 	switch {
 	case p.NVMeOFTCP != nil:
 		return "nvmeofTcp"
 	case p.ISCSI != nil:
 		return "iscsi"
+	case p.NFS != nil:
+		return "nfs"
 	default:
 		return ""
 	}

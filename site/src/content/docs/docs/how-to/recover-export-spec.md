@@ -1,19 +1,17 @@
 ---
 title: Recover a volume stuck at ExportSpecMissing
-description: Manual pillar-csi runbook for legacy volumes whose PillarVolumeState lacks exportSpec, so the NVMe-oF/TCP export cannot be rebuilt after a storage node restart.
+description: Manual pillar-csi runbook for legacy volumes whose export record is missing, including block exports and NFSv4.2 dataset exports.
 sidebar:
   order: 11
 ---
 
-Each `PillarVolumeState` has an `ExportReconciled` condition. It reports whether the kernel export on the storage node still matches the export the controller recorded for the volume in `status.exportSpec`. After an agent restart, a storage node reboot or an `nvmet` reload, the controller rebuilds the export from that record.
+A volume provisioned before the controller started recording `exportSpec` (issue [#83](https://github.com/isac322/pillar-csi/issues/83)) has no durable desired state to rebuild after an agent restart, storage-node reboot, or target reload. The controller refuses to guess and sets `ExportReconciled=False` with reason `ExportSpecMissing`. This page repairs one volume at a time by supplying evidence-backed values.
 
-A volume provisioned before the controller started recording `exportSpec` (issue [#83](https://github.com/isac322/pillar-csi/issues/83)) has no record to rebuild from. When its storage node loses target state, the controller refuses to guess and sets `ExportReconciled=False` with reason `ExportSpecMissing`. The volume stays offline until you supply the record by hand. After that one repair, the volume recovers on its own like any other.
+NFS volumes use the same repair path, but their export record must preserve NFSv4.2, fixed port 2049, bind address, squash policy, readonly state, and ACL membership. The agent restores only pillar-csi-owned exports; it never stops or reconfigures foreign NFS exports. Do not invent a public fsid or export path: the controller and agent derive internal identities from the recorded volume state.
 
-This page is that repair. Volumes created by 0.2.0 or later record `exportSpec` at `CreateVolume` and never need it.
+## Why the controller does not fill the record
 
-## Why the controller does not fill the record in
-
-`status.exportInfo` looks like a source, but it only describes the last live endpoint (`targetID`, `address`, `port`, `volumeRef`). It has no ACL field, and the address or port may have changed since provisioning. The current `PillarProtocol`, `PillarStorageClass` and `PillarAgent` may have changed too. A wrong ACL value fails in either direction: turning ACL on for a volume that ran open locks out every consumer, and turning it off for a volume that relied on it exposes the namespace to the whole network. So every value below comes from provisioning-time evidence or an explicit decision you record.
+`status.exportInfo` describes only the last live endpoint (`targetID`, `address`, `port`, `volumeRef`). It does not contain the complete desired ACL, squash, readonly, or protocol version state, and the current `PillarProtocol`, `PillarStorageClass`, and `PillarAgent` may have changed. A wrong value can lock out a consumer or expose an export to every reachable host. Every repaired value therefore comes from provisioning-time evidence or an explicit operator decision.
 
 ## Before you start
 
@@ -101,7 +99,7 @@ A non-empty `status.publishedNodes` is normal if consumers were attached when th
 
 ## 3. Decide the export record
 
-The schema requires three fields: `bindAddress` (non-empty), `port` (0 to 65535) and `aclEnabled` (boolean). None has a default here. Decide each from provisioning-time evidence, never from `status.exportInfo` alone and never from the current CRs.
+The generic record requires `bindAddress` (non-empty), `port` (0 to 65535) and `aclEnabled` (boolean). For an NFS volume, also record the protocol-specific `nfs` member: `version: "4.2"`, `squash` (`root`, `none`, or `all`), and `readonly`. Do not use defaults in a recovery patch; choose every value from provisioning-time evidence or an explicit operator decision.
 
 ### bindAddress
 
@@ -111,7 +109,11 @@ This patch does not update the PV, and consumers keep connecting to `volumeAttri
 
 ### port
 
-Choose it explicitly. `volumeAttributes["port"]` and `exportInfo.port` show what the export used; compare them with the class default of `4420` before you reuse either. No PVC annotation ever changed the port, so the port came from the protocol. The current `PillarProtocol` port may have changed since.
+For block exports, compare `volumeAttributes["port"]` and `exportInfo.port` with the protocol default before reusing either. For NFS, the port is fixed at `2049`; any other value is invalid and must not be patched.
+
+### NFS protocol state
+
+For an NFS volume, confirm the original version was `4.2`, record the historical `squash` policy, and set `readonly` to the volume's read-only policy (`true` only for ROX). The conservative default is `squash: root`; choose `squash: none` only when evidence shows the workload required root/fsGroup initialization. RPC TLS is not offered.
 
 ### aclEnabled
 
@@ -119,12 +121,24 @@ No provisioning-time record exists, and that gap is the reason the controller st
 
 What each ACL value does:
 
-- `true` admits only the initiators in `publishedNodes`, excluding entries marked `revoking`. An empty list admits nobody, and the controller can still report `Reconciled` while consumers missing from the list stay locked out.
-- `false` sets `attr_allow_any_host=1`, which exposes the volume to every host that can reach the port.
+- `true` admits only the initiators or node IPs in `publishedNodes`, excluding entries marked `revoking`. An empty list denies volume data; an unauthorized NFS mount may expose only an empty backing stub, so verify dataset data rather than mount success alone.
+- `false` allows every reachable client for the protocol. For NFS this is an export with no client restriction; for block protocols it is the protocol's open-host mode.
 
 You may deliberately change the historical intent, but only after recording the choice and its connectivity and security consequences.
 
-Leave out the optional `inCapsuleDataSize` and `maxDataTransferSize`. Controllers that recorded no `exportSpec` never set either on the export, so the restored export keeps accepting the port's values as before.
+For NFS, include its member in the status patch:
+
+```sh
+NFS_VERSION=4.2
+NFS_SQUASH=root
+NFS_READONLY=false
+case "$NFS_VERSION:$NFS_SQUASH" in
+  4.2:root|4.2:none|4.2:all) ;;
+  *) echo "NFS_VERSION must be 4.2 and NFS_SQUASH root, none, or all"; exit 1 ;;
+esac
+```
+
+The JSON patch below shows the generic block shape. For NFS, add `nfs:{version:"4.2",squash:"root",readonly:false}` (using the values you verified) inside the `status.exportSpec` value. Never add a public fsid or invent an export path.
 
 Look at the evidence:
 

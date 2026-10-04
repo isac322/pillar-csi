@@ -1,6 +1,6 @@
 ---
 title: FAQ
-description: "Answers about pillar-csi, the ZFS and LVM NVMe-oF and iSCSI CSI driver: replication, RDMA, host and kernel requirements, RWX, snapshots, democratic-csi and reboots."
+description: "Answers about pillar-csi, the ZFS zvol, ZFS dataset, LVM, NVMe-oF/TCP, iSCSI and NFSv4.2 CSI driver: replication, host and kernel requirements, RWX, snapshots and reboots."
 sidebar:
   order: 1
 ---
@@ -11,13 +11,13 @@ No. pillar-csi does not replicate, stripe or pool data across nodes. Each volume
 
 ## Do I need RDMA or special network hardware?
 
-No. pillar-csi uses NVMe-oF over TCP or iSCSI, and both run on ordinary Ethernet and IP. RDMA transports such as RoCE and InfiniBand are not implemented; TCP is the only transport. The NVMe-oF target listens on port 4420 and the iSCSI target on port 3260, unless the `PillarProtocol` sets another port.
+No. pillar-csi uses NVMe-oF over TCP, iSCSI, or NFSv4.2, and they run on ordinary Ethernet and IP. RDMA transports such as RoCE and InfiniBand are not implemented; TCP is the only transport. NVMe-oF listens on port 4420, iSCSI on 3260, and NFS on fixed port 2049.
 
 ## What do I need to install on the hosts?
 
-No packages. The images carry the tools pillar-csi runs: the agent image has the OpenZFS userland and `lvm2`, and the node image has `util-linux`, `e2fsprogs` and `xfsprogs`. The node plugin connects through the kernel's `/dev/nvme-fabrics` device, so workers do not need `nvme-cli`. For iSCSI, the node plugin logs in with its own initiator and hands the connection to the kernel, so workers do not need `open-iscsi`, `iscsiadm` or `iscsid`. The agent writes the target through configfs, so the storage node does not need `nvmetcli` or `targetcli`, and the controller reaches the agent over gRPC, so no host needs SSH access.
+No user-space packages. The images carry the tools pillar-csi runs: the agent image has the OpenZFS userland and `lvm2`, and the node image has block filesystem tools plus the bundled NFS mount helper. The node plugin connects through the kernel's `/dev/nvme-fabrics` device, so workers do not need `nvme-cli`. For iSCSI, the node plugin logs in with its own initiator and hands the connection to the kernel, so workers do not need `open-iscsi`, `iscsiadm` or `iscsid`. For NFS, the node image supplies the mount helper; workers need only NFS client kernel support. The agent writes block targets through configfs and owns its NFS export state, so storage nodes do not need `nvmetcli`, `targetcli`, host `rpc.mountd` configuration, or SSH access.
 
-The hosts must provide what a container cannot: the NVMe-oF or iSCSI kernel modules, and on the storage node the pool itself (a ZFS pool imported by the host's ZFS kernel module, or an LVM volume group). You also list each pool in the chart's `agent.backends` value, which is empty by default. At run time the agent and node plugin keep small state files in hostPath directories under `/var/lib/pillar-csi/`, and the node plugin keeps the node's initiator identity in `/etc/nvme` and `/etc/iscsi`; that is data, not installed software. See [prerequisites](/docs/reference/prerequisites/).
+The hosts must provide what a container cannot: the kernel modules or built-in support for the protocol, and on the storage node the pool itself (a ZFS pool imported by the host's ZFS kernel module, or an LVM volume group). You also list each pool in the chart's `agent.backends` value, which is empty by default. At run time the agent and node plugin keep small state files in hostPath directories under `/var/lib/pillar-csi/`; that is data, not installed software. See [prerequisites](/docs/reference/prerequisites/).
 
 ## What are the kernel requirements?
 
@@ -25,7 +25,7 @@ For NVMe-oF/TCP, storage nodes need the `nvmet` and `nvmet_tcp` modules; workers
 
 ## Does it support ReadWriteMany (RWX)?
 
-Not yet. pillar-csi exports block devices over NVMe-oF/TCP or iSCSI, and an ext4 or xfs filesystem on a block device cannot be mounted read-write by two nodes at once. Switching a volume to iSCSI does not change that. It supports `ReadWriteOnce`, `ReadWriteOncePod` and `ReadOnlyMany`, and it rejects RWX requests. For shared read-write storage, use an NFS-based driver.
+Yes, for NFS only. A ZFS dataset exported over NFSv4.2 supports `ReadWriteOnce`, `ReadWriteOncePod`, `ReadWriteMany`, and `ReadOnlyMany`. Block volumes over NVMe-oF/TCP and iSCSI continue to reject RWX because ext4/xfs filesystems cannot be mounted read-write by multiple nodes safely.
 
 ## Does it support snapshots or clones?
 
@@ -41,7 +41,7 @@ Yes. Create one `PillarAgent` per storage node and one `PillarStore` per pool, t
 
 ## Does iSCSI need another driver? Will NFS or SMB?
 
-No. iSCSI is part of the same driver: create a `PillarProtocol` with the `iscsi` member instead of `nvmeofTcp`, and bind it to a store with a `PillarStorageClass`. See [Configure iSCSI](/docs/how-to/configure-iscsi/). NFS and SMB are planned as additions in the same way, as new members of `PillarProtocol.spec.protocol` set with the same YAML shape in storage class overrides and PVC annotations. They are not implemented yet, and there are no release dates. [Architecture](/docs/explanation/architecture/#one-driver-for-every-backend-and-protocol) explains the model.
+No. iSCSI and NFS are part of the same driver: create a `PillarProtocol` with the `iscsi` or `nfs` member and bind it to a compatible store with a `PillarStorageClass`. NFS requires a ZFS dataset (`zfs.volumeType: dataset`), uses NFSv4.2 on fixed port 2049, and supports RWX. SMB remains planned and unavailable; the API does not offer its protocol member. See the [support matrix](/docs/reference/support-matrix/).
 
 ## How does democratic-csi compare?
 
@@ -49,14 +49,16 @@ Both can export ZFS zvols over NVMe-oF and iSCSI. democratic-csi manages a ZFS-o
 
 ## What happens when the storage node reboots?
 
-Its volumes are unavailable until it comes back. Workers keep retrying their connections in the meantime. The reboot clears the kernel's NVMe-oF and iSCSI target configuration, so when the agent starts, the controller sends it the full list of exports for that node and the agent rebuilds all of them before it opens any listener. Each NVMe namespace and iSCSI LUN returns with the same identifiers it had before, so the workers' kernels accept it and I/O resumes on the existing mounts.
+Its volumes are unavailable until it comes back. Workers keep retrying their connections or NFS mounts in the meantime. The reboot clears kernel block-target state and NFS export state, so when the agent starts, the controller sends the complete list of owned exports for that node and the agent rebuilds them before reporting exports ready. Block namespaces and iSCSI targets return with stable identities; NFS restores the owned root and child dataset exports with their recorded ACL, squash, readonly, and version state. Foreign NFS exports are never stopped or reconfigured.
 
-NVMe-oF workers retry only for the kernel's `ctrl_loss_tmo` period: 600 seconds by default, or the `ctrlLossTmo` value in the `PillarProtocol`. If the node is down longer than that, the workers drop the connection and the filesystems on those volumes see I/O errors. iSCSI workers keep logging in again, but the kernel holds I/O only for `replacementTimeout` seconds, 120 by default, and then fails it. Plan longer outages with [node maintenance](/docs/how-to/node-maintenance/). [Architecture](/docs/explanation/architecture/#after-a-storage-node-reboot) describes the recovery in more detail.
+NVMe-oF workers retry only for the kernel's `ctrl_loss_tmo` period: 600 seconds by default, or the `ctrlLossTmo` value in the `PillarProtocol`. If the node is down longer than that, the workers drop the connection and filesystems see I/O errors. iSCSI workers keep logging in again, but the kernel holds I/O only for `replacementTimeout` seconds, 120 by default, and then fails it. NFS clients retry according to their mount behavior; an outage longer than the workload's tolerance can still surface I/O errors. Plan longer outages with [node maintenance](/docs/how-to/node-maintenance/). 
 
 ## Is the traffic encrypted?
 
-The controller-to-agent gRPC channel can use mTLS, but it is off by default; see [configure mTLS](/docs/how-to/configure-mtls/). pillar-csi does not configure TLS for NVMe/TCP or any encryption for iSCSI, so volume data crosses the network unencrypted. iSCSI CHAP authentication is not supported either. Keep storage traffic on a network you trust, and set `acl: true` on the `PillarProtocol` so the target admits only the hosts that volumes are published to.
+The controller-to-agent gRPC channel can use mTLS, but it is off by default; see [configure mTLS](/docs/how-to/configure-mtls/). pillar-csi does not configure TLS for NVMe/TCP, iSCSI, or NFS RPC, so volume data crosses the network unencrypted. ACLs limit which nodes may connect but do not encrypt traffic. iSCSI CHAP is available only when configured on the iSCSI protocol. Keep storage traffic on a network you trust, and set protocol ACLs explicitly when other machines share the network.
 
 ## Which filesystems does it support?
 
-pillar-csi formats new volumes with ext4 (the default) or xfs and mounts them. It never reformats a volume that already has a filesystem. With `volumeMode: Block`, the pod gets the raw NVMe or SCSI device and no filesystem is created.
+Block protocols format new volumes with ext4 (the default) or xfs and mount them. NFS uses an already-mounted ZFS dataset and never formats it. For NFS, `fsType` may be omitted or set to `nfs`; `mountOptions` is the only supported filesystem setting. `mkfsOptions`, enabled periodic trim, and explicit block volume mode are rejected. It never reformats a volume that already has a filesystem. With `volumeMode: Block`, the pod gets the raw NVMe or SCSI device and no filesystem is created.
+
+For NFS, `squash: root` is the conservative default. Select `squash: none` explicitly when a workload needs root or fsGroup initialization to reach the dataset; this is an authorization choice, not transport protection.
