@@ -311,7 +311,12 @@ Upgrading from 0.4.x to 0.5.0 is a `helm upgrade`, but it adds CRD fields (`spec
 
 Chart values changes: new `node.trim.enabled` and `node.trim.interval`. With `rbac.create: true` (the default) the chart also adds a namespaced Role and RoleBinding so the controller can read the Secrets named by `iscsi.auth.secretRef`.
 
-Upgrading from 0.5.0 to 0.5.1 is a drop-in `helm upgrade`: no CRD, API or wire changes. 0.5.1 fixes the node plugin reporting a staged filesystem as healthy and skipping the mount after the kernel shut it down — an XFS shutdown or an ext4 remount-ro abort still passes the mount-table check while every write fails — so pod bind mounts failed forever ([#168](https://github.com/isac322/pillar-csi/issues/168)); it now probes the staged filesystem and re-mounts it.
+Upgrading from 0.5.0 to 0.5.1 is a `helm upgrade`, but it adds CRD fields (`spec.protocol.nfs` on `PillarProtocol` and `PillarStorageClass`, the `nfs` protocol and `dataset` volumeType members) and new agent RPC fields, so upgrade the controller, agent and node plugin together in one release. With `installCRDs: true` (the default) the chart applies the changed CRDs; if you set `installCRDs: false` and manage CRDs through GitOps, apply the 0.5.1 CRDs (server-side apply) before or with the chart. What 0.5.1 adds:
+
+- Shared NFSv4.2 volumes on ZFS datasets, including `ReadWriteMany`: the agent runs the kernel NFS server and reconciles only its own exports, and the node mounts with the bundled helper, so hosts need no NFS packages ([Configure NFS](https://pillar-csi.bhyoo.com/docs/how-to/configure-nfs/)).
+- A bug fix: a staged filesystem that entered kernel shutdown (an XFS shutdown or an ext4 remount-ro abort) still passed the mount-table check, so NodeStageVolume reported success forever while pod bind mounts failed ([#168](https://github.com/isac322/pillar-csi/issues/168)); the node plugin now probes the staged filesystem and re-mounts a dead one.
+
+Chart values changes: the default `node.initModprobe.modules` adds `nfs` and `nfsv4`; if you override that list, add the modules you need. ZFS `agent.backends` entries accept `volumeType: dataset` with `parentDataset`, and dataset placement enables the NFS server deployment contract.
 
 ### Local attach on the storage node
 
