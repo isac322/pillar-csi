@@ -19,6 +19,7 @@ package csi
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
@@ -170,6 +171,20 @@ func resolveMountFlags(volCtx map[string]string, volCap *csi.VolumeCapability) (
 			paramMountOptions, raw, err)
 	}
 	return flags, nil
+}
+
+// stagedMountReadOnly reports whether the resolved mount flags mount the
+// filesystem read-only ("ro").  The caller needs that answer before running
+// the write-based health probe (CheckMountHealth): EROFS on a requested
+// read-only mount is the expected outcome, not evidence of a dead
+// filesystem, so probing a mount staged with "ro" would misclassify it as
+// ErrMountUnhealthy (issue #168).
+func stagedMountReadOnly(volCtx map[string]string, volCap *csi.VolumeCapability) (bool, error) {
+	flags, err := resolveMountFlags(volCtx, volCap)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(flags, "ro"), nil
 }
 
 // formatFsType returns the type NodeStageVolume formats a MOUNT volume with

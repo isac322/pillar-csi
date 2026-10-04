@@ -13,6 +13,7 @@ package sanity
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 
@@ -76,6 +77,29 @@ func (m *fakeMounter) IsMounted(target string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.mounted[target], nil
+}
+
+// CheckMountHealth reports every recorded mount as healthy: the fake never
+// simulates a kernel-shutdown filesystem (issue #168).  An unmounted path
+// is an inconclusive probe, matching the real mounter's contract.
+func (m *fakeMounter) CheckMountHealth(target string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.mounted[target] {
+		return fmt.Errorf("%q is not a mount point", target)
+	}
+	return nil
+}
+
+// HasOtherMounts reports no extra mounts: the fake records one mount per
+// path and never creates bind mounts.
+func (m *fakeMounter) HasOtherMounts(target string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.mounted[target] {
+		return false, fmt.Errorf("%q is not a mount point", target)
+	}
+	return false, nil
 }
 
 // fakeResizer is a no-op Resizer for NodeExpandVolume.
