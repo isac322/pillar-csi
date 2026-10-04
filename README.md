@@ -168,7 +168,7 @@ agent:
 
 ```sh
 helm install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
-  --version 0.5.1 \
+  --version 0.5.2 \
   --namespace pillar-csi --create-namespace \
   -f values.yaml
 ```
@@ -317,6 +317,11 @@ Upgrading from 0.5.0 to 0.5.1 is a `helm upgrade`, but it adds CRD fields (`spec
 - A bug fix: a staged filesystem that entered kernel shutdown (an XFS shutdown or an ext4 remount-ro abort) still passed the mount-table check, so NodeStageVolume reported success forever while pod bind mounts failed ([#168](https://github.com/isac322/pillar-csi/issues/168)); the node plugin now probes the staged filesystem and re-mounts a dead one.
 
 Chart values changes: the default `node.initModprobe.modules` adds `nfs` and `nfsv4`; if you override that list, add the modules you need. ZFS `agent.backends` entries accept `volumeType: dataset` with `parentDataset`, and dataset placement enables the NFS server deployment contract.
+
+Upgrading from 0.5.1 to 0.5.2 is a `helm upgrade` with no CRD changes; only the node plugin image changed. What 0.5.2 adds:
+
+- A bug fix: kubelet retries NodePublishVolume without ever re-calling NodeStageVolume while the VolumeAttachment persists, so the 0.5.1 staged-filesystem repair could never run during pod-delete — the pod stayed ContainerCreating with `mount` exit 32 until an operator detached the volume ([#172](https://github.com/isac322/pillar-csi/issues/172)); NodePublishVolume now probes the staged mount before bind-mounting and repairs a dead one in place (unmount + re-mount replays the journal) when nothing else pins it.
+- A bug fix (follow-up to [#168](https://github.com/isac322/pillar-csi/issues/168)): a volume published to two pod bind targets could be downgraded to `NodeStaged` after the first NodeUnpublishVolume while a bind still pinned it; the node plugin now keeps the volume `NodePublished` until the last bind is unpublished.
 
 ### Local attach on the storage node
 
