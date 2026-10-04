@@ -60,7 +60,34 @@ func newFilesystemNetworkFixture(ctx context.Context, tc, kind string, local boo
 	if kind != "directory" {
 		n.Dataset = f.CanonicalSource
 	}
-	n.Must(ctx, "-n", n.Namespace, "wait", "--for=jsonpath={.status.phase}=Bound", "pvc/"+n.PVCName, "--timeout=3m")
+	waitOutput, waitErr := n.Kubectl(ctx, "", "-n", n.Namespace, "wait", "--for=jsonpath={.status.phase}=Bound", "pvc/"+n.PVCName, "--timeout=3m")
+	if waitErr != nil {
+		diagnosticCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		var diagnostics strings.Builder
+		capture := func(args ...string) (string, error) {
+			output, diagnosticErr := n.Kubectl(diagnosticCtx, "", args...)
+			diagnosticOutput := output
+			const maxDiagnosticBytes = 32 * 1024
+			if len(diagnosticOutput) > maxDiagnosticBytes {
+				diagnosticOutput = "[earlier output truncated]\n" + diagnosticOutput[len(diagnosticOutput)-maxDiagnosticBytes:]
+			}
+			fmt.Fprintf(&diagnostics, "\n\nkubectl %s:\n%s", strings.Join(args, " "), diagnosticOutput)
+			if diagnosticErr != nil {
+				fmt.Fprintf(&diagnostics, "\nDiagnostic command failed: %v", diagnosticErr)
+			}
+			return output, diagnosticErr
+		}
+		capture("-n", n.Namespace, "get", "pvc", n.PVCName, "-o", "yaml")
+		capture("-n", n.Namespace, "describe", "pvc", n.PVCName)
+		capture("-n", n.Namespace, "get", "events", "--field-selector=involvedObject.kind=PersistentVolumeClaim,involvedObject.name="+n.PVCName, "-o", "wide")
+		volumeName, volumeErr := capture("-n", n.Namespace, "get", "pvc", n.PVCName, "-o", "jsonpath={.spec.volumeName}")
+		if volumeName = strings.TrimSpace(volumeName); volumeErr == nil && volumeName != "" {
+			capture("get", "pillarvolumestate", volumeName, "-o", "yaml")
+			capture("get", "pv", volumeName, "-o", "yaml")
+		}
+		Fail(fmt.Sprintf("PVC %s/%s did not become Bound: %v\nWait output:\n%s%s", n.Namespace, n.PVCName, waitErr, waitOutput, diagnostics.String()))
+	}
 	n.PVName = n.Must(ctx, "-n", n.Namespace, "get", "pvc", n.PVCName, "-o", "jsonpath={.spec.volumeName}")
 	n.StorageClass = n.Must(ctx, "-n", n.Namespace, "get", "pvc", n.PVCName, "-o", "jsonpath={.spec.storageClassName}")
 	n.Must(ctx, "patch", "pv", n.PVName, "--type=merge", "-p", `{"spec":{"persistentVolumeReclaimPolicy":"Delete"}}`)
