@@ -171,10 +171,10 @@ func (e Export) options() string {
 		squash = "all_squash"
 	}
 	options := mode + ",sync,no_subtree_check,secure,sec=sys,fsid=" + e.fsid() + "," + squash
-	// NFSv4 clients must cross the dedicated pseudoroot's owned child mounts.
-	// Child exports remain individually admitted and never inherit this flag.
-	if e.VolumeID == rootVolumeID {
-		options += ",crossmnt"
+	// Only validated adopted child mounts need nohide for NFSv4 traversal.
+	// The pseudoroot must not inherit child access through crossmnt.
+	if e.VolumeID != rootVolumeID && e.SourceKey != "" && e.FenceUID != "" {
+		options += ",nohide"
 	}
 	return options
 }
@@ -812,12 +812,9 @@ func optionValue(options, key string) string {
 	return ""
 }
 
-func optionFlagsValid(flags []string) bool {
-	return !slices.Contains(flags, "nohide")
-}
-
 func optionsTraversalMatches(actual, wanted []string) bool {
-	return slices.Contains(actual, "crossmnt") == slices.Contains(wanted, "crossmnt")
+	return slices.Contains(actual, "crossmnt") == slices.Contains(wanted, "crossmnt") &&
+		slices.Contains(actual, "nohide") == slices.Contains(wanted, "nohide")
 }
 
 func optionConflictPresent(option string, flags []string) bool {
@@ -841,6 +838,8 @@ func optionConflictPresent(option string, flags []string) bool {
 		opposite = "subtree_check"
 	case "crossmnt":
 		opposite = "nocrossmnt"
+	case "nohide":
+		opposite = "hide"
 	}
 	return opposite != "" && slices.Contains(flags, opposite)
 }
@@ -848,7 +847,7 @@ func optionConflictPresent(option string, flags []string) bool {
 func optionsMatch(actual, wanted string) bool {
 	flags := strings.Split(actual, ",")
 	wantedFlags := strings.Split(wanted, ",")
-	if !optionFlagsValid(flags) || !optionsTraversalMatches(flags, wantedFlags) {
+	if !optionsTraversalMatches(flags, wantedFlags) {
 		return false
 	}
 	for option := range strings.SplitSeq(wanted, ",") {
