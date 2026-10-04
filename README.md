@@ -168,7 +168,7 @@ agent:
 
 ```sh
 helm install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
-  --version 0.5.0 \
+  --version 0.5.1 \
   --namespace pillar-csi --create-namespace \
   -f values.yaml
 ```
@@ -310,6 +310,8 @@ Upgrading from 0.4.x to 0.5.0 is a `helm upgrade`, but it adds CRD fields (`spec
 - A bug fix: `csi.storage.k8s.io/fstype: xfs` on a hand-written StorageClass now produces an XFS volume instead of ext4.
 
 Chart values changes: new `node.trim.enabled` and `node.trim.interval`. With `rbac.create: true` (the default) the chart also adds a namespaced Role and RoleBinding so the controller can read the Secrets named by `iscsi.auth.secretRef`.
+
+Upgrading from 0.5.0 to 0.5.1 is a drop-in `helm upgrade`: no CRD, API or wire changes. 0.5.1 fixes the node plugin reporting a staged filesystem as healthy and skipping the mount after the kernel shut it down — an XFS shutdown or an ext4 remount-ro abort still passes the mount-table check while every write fails — so pod bind mounts failed forever ([#168](https://github.com/isac322/pillar-csi/issues/168)); it now probes the staged filesystem and re-mounts it.
 
 ### Local attach on the storage node
 
