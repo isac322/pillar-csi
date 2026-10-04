@@ -164,6 +164,8 @@ type csiMockMounter struct {
 	mountFn          func(source, target, fsType string, options []string) error
 	unmountFn        func(target string) error
 	isMountedFn      func(target string) (bool, error)
+	checkHealthFn    func(target string) error
+	hasOtherMountsFn func(target string) (bool, error)
 
 	// call counters
 	formatAndMountCalls int
@@ -238,6 +240,26 @@ func (m *csiMockMounter) IsMounted(target string) (bool, error) {
 	v := m.mounted[target]
 	m.mu.Unlock()
 	return v, nil
+}
+
+func (m *csiMockMounter) CheckMountHealth(target string) error {
+	m.mu.Lock()
+	fn := m.checkHealthFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(target)
+	}
+	return nil
+}
+
+func (m *csiMockMounter) HasOtherMounts(target string) (bool, error) {
+	m.mu.Lock()
+	fn := m.hasOtherMountsFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(target)
+	}
+	return false, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
-**총 테스트 케이스: 435** (실제 실행 spec 435개; strict TC 라벨 426개: 기존 default-profile 413개 + E37 dedicated NFS lane 13개; 라벨 없는 teardown 보장 9개 포함. 전체 문서 inventory는 **701개**이며 비기본 E33·E36·F27–F31 및 reference 항목을 포함하며 strict gate에서 별도로 보고한다.)
+-**총 테스트 케이스: 435** (실제 실행 spec 435개; strict TC 라벨 426개: 기존 default-profile 413개 + E37 dedicated NFS lane 13개; 라벨 없는 teardown 보장 9개 포함. 전체 문서 inventory는 **717개**이며 비기본 E33·E36·F27–F31 및 reference 항목을 포함하며 strict gate에서 별도로 보고한다.)
 
 ---
 
@@ -47,6 +47,7 @@
   - [E3.21: NodePublishVolume — 바인드 마운트, 읽기 전용, 멱등성 및 오류 처리 (단위 테스트)](#e321-nodepublishvolume--바인드-마운트-읽기-전용-멱등성-및-오류-처리-단위-테스트)
   - [E3.22: NodeUnpublishVolume — 언마운트, 멱등성 및 오류 처리 (단위 테스트)](#e322-nodeunpublishvolume--언마운트-멱등성-및-오류-처리-단위-테스트)
   - [E3.23: NodePublish/NodeUnpublish — 전체 노드 라이프사이클 (단위 테스트)](#e323-nodepublishnodeunpublish--전체-노드-라이프사이클-단위-테스트)
+  - [E3.24: NodeStage/NodePublish — 커널 셧다운 파일시스템 감지 및 복구 (단위 테스트)](#e324-nodestagenodepublish--커널-셧다운-파일시스템-감지-및-복구-단위-테스트)
 - [E4: 교차-컴포넌트 CSI 라이프사이클](#e4-교차-컴포넌트-csi-라이프사이클)
 - [E5: 순서 제약 (Ordering Constraints)](#e5-순서-제약-ordering-constraints)
 - [E6: 부분 실패 영속성 (Partial Failure Persistence)](#e6-부분-실패-영속성-partial-failure-persistence)
@@ -1290,6 +1291,47 @@ NodeStageVolume → NodePublishVolume → NodeUnpublishVolume → NodeUnstageVol
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
 | 206 | `TestNodeFullLifecycle` | Stage → Publish → Unpublish → Unstage 전체 노드 라이프사이클 단위 검증 | `newNodeTestEnv(t)` 초기화; `env.connector.devicePath="/dev/nvme0n1"`; `stagingPath=t.TempDir()`; `targetPath=t.TempDir()`; `VolumeContext`: `nqn`, `addr="192.0.2.10"`, `port="4420"` | 1) `NodeStageVolume{VolumeId, stagingPath, VolumeContext, mountCap("ext4")}` 전송; 2) `NodePublishVolume{VolumeId, stagingPath, targetPath, mountCap("ext4")}` 전송; 3) `IsMounted(targetPath)=true` 확인; 4) `NodeUnpublishVolume{VolumeId, targetPath}` 전송; 5) `IsMounted(targetPath)=false` 확인; 6) `NodeUnstageVolume{VolumeId, stagingPath}` 전송 | 전 단계 성공; Stage 후 스테이징 경로 마운트; Publish 후 타깃 경로 마운트; Unpublish 후 타깃 경로 해제; Unstage 후 스테이징 경로 해제; `disconnectCalls` 길이=1 | `CSI-N`, `Conn`, `Mnt`, `State` |
+
+---
+
+### E3.24 NodeStage/NodePublish — 커널 셧다운 파일시스템 감지 및 복구 (단위 테스트)
+
+**설명:** 스테이징된 파일시스템이 디바이스는 멀쩡한 채 커널 셧다운(XFS forced
+shutdown, ext4 `errors=remount-ro`)에 들어간 경우 — 마운트 테이블 항목과
+`stat(2)`는 그대로 정상이라 `IsMounted`로는 감지할 수 없다 — `NodeStageVolume`의
+멱등 경로가 성공을 반환해선 안 된다(이슈 #168). 다른 마운트가 없는 죽은
+파일시스템은 언마운트 후 재마운트로 복구하고, 포드 바인드 마운트가 죽은
+슈퍼블록을 고정(pinning)하고 있는 동안에는 마운트를 유지한 채 오류를 반환한다.
+`NodePublishVolume`의 멱등 경로도 같은 사각지대를 검증한다.
+
+> **시그니처 근거:** Lima VM(linux 7.0)에서 `xfs_io -x -c shutdown`으로 재현 —
+> 셧다운 XFS는 `stat→EIO`, `statfs→OK`, `access(W_OK)→OK`, `O_TMPFILE→EIO`;
+> ext4 remount-ro는 `O_TMPFILE→EROFS`. 동일 디바이스의 다른 마운트가 남아
+> 있는 동안의 재마운트는 같은 죽은 슈퍼블록을 재부착한다.
+
+**소스 파일:** `internal/csi/node_stage_test.go`, `internal/csi/node_publish_test.go`, `internal/csi/mounter_health_linux_test.go`
+
+**CI 실행 가능 여부:** ✅ 가능 (실제 마운트 없음; mock 기반)
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| 207 | `TestNodeStageVolume_IdempotentHealthyMount` | 건강한 스테이징 마운트의 반복 NodeStage는 멱등 성공 (헬스 게이트 회귀 없음) | NodeStageVolume 1회 성공 (stagingPath 마운트) | 1) 동일 요청으로 NodeStageVolume 재전송 | 성공; `FormatAndMount` 총 1회; `Unmount` 미호출; `CheckMountHealth` 호출됨 | `CSI-N`, `Mnt` |
+| 208 | `TestNodeStageVolume_StagedFilesystemShutdown_ReStages` | 셧다운 파일시스템 + 다른 마운트 없음 → 데드 마운트 제거 후 재스테이징 (이슈 #168) | NodeStageVolume 성공; `mounter.markUnhealthy(devicePath)` | 1) 동일 요청으로 NodeStageVolume 재전송 | 성공; `Unmount(stagingPath)` 1회; `FormatAndMount` 총 2회; 복구 후 `CheckMountHealth` 정상 | `CSI-N`, `Mnt` |
+| 209 | `TestNodeStageVolume_StagedFilesystemShutdown_PinnedByBind` | 셧다운 파일시스템 + 포드 바인드 잔존(데드 슈퍼블록 고정) → Internal; bind 제거 후 재스테이지 성공 | NodeStage+NodePublish 성공; `markUnhealthy` | 1) NodeStageVolume 재전송; 2) NodeUnpublishVolume; 3) NodeStageVolume 재전송 | 1단계 gRPC `Internal`; stagingPath 언마운트 안 됨; `FormatAndMount` 총 1회 유지; 3단계 후 `CheckMountHealth` 정상 | `CSI-N`, `Mnt` |
+| 210 | `TestNodeStageVolume_StagedFilesystemShutdown_ProbeError` | 헬스 프로브가 비결정적 오류(비-ErrMountUnhealthy) 반환 → Internal, 마운트 유지 | NodeStageVolume 성공; `mounter.checkHealthErr` 설정 | 1) NodeStageVolume 재전송 | gRPC `Internal`; `Unmount` 미호출; stagingPath 마운트 유지 | `CSI-N`, `Mnt` |
+| 211 | `TestNodeStageVolume_StagedFilesystemShutdown_HasOtherMountsError` | 마운트 공유 검사(`HasOtherMounts`) 실패 → Internal, 데드 마운트 유지 | NodeStageVolume 성공; `markUnhealthy`; `hasOtherMountsErr` 설정 | 1) NodeStageVolume 재전송 | gRPC `Internal`; `Unmount` 미호출 | `CSI-N`, `Mnt` |
+| 212 | `TestNodeStageVolume_StagedFilesystemShutdown_BlockSkipsProbe` | BLOCK 접근은 스테이징된 파일시스템이 없어 헬스 프로브 생략 → 멱등 성공 유지 | NodeStageVolume(blockCap) 성공 | 1) 동일 요청 재전송 | 성공; `CheckMountHealth` 미호출 | `CSI-N`, `Mnt` |
+| 213 | `TestNodePublishVolume_DeadBindRecoversViaTeardown` | 데드 바인드 잔존 시 재스테이지 불가(슈퍼블록 고정) → unpublish → 재스테이지 → 재발행 정상 (전체 복구 흐름) | NodeStage+NodePublish 성공; `markUnhealthy` | 1) NodeStageVolume 재전송; 2) NodeUnpublishVolume; 3) NodeStageVolume; 4) NodePublishVolume | 1단계 gRPC `Internal`; 2~4단계 모두 성공; 최종 `CheckMountHealth(targetPath)` 정상 | `CSI-N`, `Mnt` |
+| 214 | `TestNodePublishVolume_BindOntoStillDeadStage` | 여전히 죽은 스테이징 FS 위에 바인드 → 바인드 후 헬스 프로브 실패 → 바인드 제거 + Internal | NodeStage 성공; `markUnhealthy` | 1) NodePublishVolume 전송 | gRPC `Internal`; targetPath 비마운트; `Unmount(targetPath)` 1회 | `CSI-N`, `Mnt` |
+| 215 | `TestNodePublishVolume_IdempotentDeadBindNotSuccess` | 이미 마운트된 데드 바인드 → 멱등 성공 금지: 바인드 제거 후 재바인드·재프로브로 Internal (이슈 #168 증상) | NodeStage+NodePublish 성공; `markUnhealthy` | 1) NodePublishVolume 재전송 | gRPC `Internal`; targetPath 최종 비마운트 | `CSI-N`, `Mnt` |
+| 216 | `TestNodePublishVolume_DeadBindProbeError` | 기존 바인드 헬스 프로브 비결정적 오류 → Internal, 바인드 유지 | NodeStage+NodePublish 성공; `checkHealthErr` 설정 | 1) NodePublishVolume 재전송 | gRPC `Internal`; targetPath 마운트 유지 | `CSI-N`, `Mnt` |
+| 217 | `TestKubeMounter_CheckMountHealth_WritableDir` | 쓰기 가능 디렉터리의 헬스 프로브 성공 + 프로브 잔여물 없음 | `NewKubeMounter()`; `t.TempDir()` | 1) `CheckMountHealth(target)` 호출; 2) 디렉터리 항목 재확인 | nil 반환; `.pillar-health-*` 파일 미잔존 | `Mnt` |
+| 218 | `TestKubeMounter_CheckMountHealth_MissingDir` | 존재하지 않는 경로 → 일반 프로브 오류 (ErrMountUnhealthy 아님) | `NewKubeMounter()` | 1) 없는 경로에 `CheckMountHealth` 호출 | 오류 반환; `errors.Is(err, ErrMountUnhealthy)` = false | `Mnt` |
+| 219 | `TestKubeMounter_CheckMountHealth_UnwritableDir` | 쓰기 불가 디렉터리(EACCES) → 비결정적 오류 (ErrMountUnhealthy 아님); root 실행 시 Skip | `NewKubeMounter()`; `chmod 0500` 디렉터리 | 1) `CheckMountHealth(target)` 호출 | 오류 반환; `ErrMountUnhealthy` 아님 | `Mnt` |
+| 220 | `TestKubeMounter_HasOtherMounts_NotMountPoint` | 비-마운트 경로 → 오류 반환 (조용한 false 금지: 실패한 검사가 마운트 제거를 허용하지 않음) | `NewKubeMounter()`; `t.TempDir()` (마운트 포인트 아님) | 1) `HasOtherMounts(target)` 호출 | 오류 반환 | `Mnt` |
+| 221 | `TestNodeStageVolume_ReadonlyMountSkipsProbe` | `ro` 마운트 플래그로 스테이징된 파일시스템은 쓰기 프로브 생략 (EROFS는 기대 응답; 1차·멱등 모두) | `newNodeTestEnv(t)`; `mountCapRO("ext4")` | 1) NodeStageVolume; 2) 동일 요청 재전송 | 두 호출 모두 성공; `CheckMountHealth`·`Unmount` 미호출; `FormatAndMount` 1회 | `CSI-N`, `Mnt` |
+| 222 | `TestNodePublishVolume_ReadonlyBindProbesStagedFilesystem` | 읽기 전용 바인드는 쓰기 프로브 불가 → RW 스테이징 마운트로 헬스 판정; 데드면 바인드 제거 + Internal | NodeStage+Readonly NodePublish 성공; `markUnhealthy` | 1) `CheckMountHealth(stagingPath)` 호출 확인; 2) NodePublishVolume 재전송 | `checkHealthCalls`에 stagingPath 포함; 2단계 gRPC `Internal`; targetPath 비마운트 | `CSI-N`, `Mnt` |
+
 
 ---
 

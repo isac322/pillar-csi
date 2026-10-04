@@ -29,9 +29,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -99,21 +101,45 @@ var _ Connector = (*mockConnector)(nil)
 
 // mockMounter is a test double for the Mounter interface.
 // It records every call and maintains a simple in-memory mount table.
+//
+// The mount table tracks the mount source of every mounted path so that
+// bind mounts share the filesystem identity of their origin: marking a
+// device source unhealthy makes every mount and bind of it report
+// ErrMountUnhealthy, mirroring a kernel-shutdown filesystem whose
+// superblock outlives any single mount entry.  A device source heals when
+// its last mount is unmounted (the next FormatAndMount/Mount of that
+// device re-uses the source without the shutdown mark), or when
+// FormatAndMount mounts it fresh.
 type mockMounter struct {
 	// mountedPaths is the set of paths currently "mounted".
 	mountedPaths map[string]bool
+	// mountSource records the mount source per mounted path: the device
+	// for filesystem mounts, the source path for bind mounts.
+	mountSource map[string]string
+	// unhealthy holds device sources whose filesystem entered kernel
+	// shutdown; probes of every mount rooted at one report
+	// ErrMountUnhealthy.
+	unhealthy map[string]bool
+	// mountRO records mounts created read-only ("ro" option or a bind of a
+	// read-only mount): their health probe fails with EROFS, the same
+	// answer a kernel shutdown produces, which is why read-only mounts are
+	// never write-probed in production code.
+	mountRO map[string]bool
 
 	// errors to return per method (nil = success).
 	formatAndMountErr error
 	mountErr          error
 	unmountErr        error
 	isMountedErr      error
+	checkHealthErr    error
+	hasOtherMountsErr error
 
 	// Recorded calls.
 	formatAndMountCalls []formatAndMountCall
 	mountCalls          []mountCall
 	unmountCalls        []string
 	isMountedCalls      []string
+	checkHealthCalls    []string
 }
 
 type formatAndMountCall struct {
@@ -128,7 +154,41 @@ type mountCall struct {
 }
 
 func newMockMounter() *mockMounter {
-	return &mockMounter{mountedPaths: make(map[string]bool)}
+	return &mockMounter{
+		mountedPaths: make(map[string]bool),
+		mountSource:  make(map[string]string),
+		unhealthy:    make(map[string]bool),
+		mountRO:      make(map[string]bool),
+	}
+}
+
+// markUnhealthy makes every mount whose filesystem is rooted at source
+// (itself a device path) report ErrMountUnhealthy, like an XFS forced
+// shutdown: mounts stay in the table but fail the health probe.
+func (m *mockMounter) markUnhealthy(source string) {
+	m.unhealthy[source] = true
+}
+
+// resolveSource walks bind chains to the ultimate device source of the
+// filesystem mounted at path, mirroring mountinfo's shared device number.
+func (m *mockMounter) resolveSource(path string) string {
+	source := m.mountSource[path]
+	for m.mountedPaths[source] {
+		source = m.mountSource[source]
+	}
+	return source
+}
+
+// deviceMounts counts mounts whose filesystem is rooted at source,
+// including bind mounts of any directory of it.
+func (m *mockMounter) deviceMounts(source string) int {
+	count := 0
+	for path := range m.mountedPaths {
+		if m.resolveSource(path) == source {
+			count++
+		}
+	}
+	return count
 }
 
 func (m *mockMounter) FormatAndMount(
@@ -140,6 +200,11 @@ func (m *mockMounter) FormatAndMount(
 		return m.formatAndMountErr
 	}
 	m.mountedPaths[target] = true
+	m.mountSource[target] = source
+	m.mountRO[target] = slices.Contains(options, "ro")
+	// Mounting a device whose dead superblock is still pinned by other
+	// mounts re-attaches the dead filesystem, so the unhealthy mark is
+	// deliberately kept; Unmount clears it when the last mount goes away.
 	return nil
 }
 
@@ -149,6 +214,10 @@ func (m *mockMounter) Mount(source, target, fsType string, options []string) err
 		return m.mountErr
 	}
 	m.mountedPaths[target] = true
+	m.mountSource[target] = source
+	// A bind mount is read-only when asked ("ro") or when its source mount
+	// is read-only — mount(2) inherits the read-only superblock flag.
+	m.mountRO[target] = slices.Contains(options, "ro") || m.mountRO[source]
 	return nil
 }
 
@@ -157,7 +226,14 @@ func (m *mockMounter) Unmount(target string) error {
 	if m.unmountErr != nil {
 		return m.unmountErr
 	}
+	source := m.resolveSource(target)
 	delete(m.mountedPaths, target)
+	delete(m.mountSource, target)
+	delete(m.mountRO, target)
+	// The superblock dies with its last mount: the next mount starts clean.
+	if m.deviceMounts(source) == 0 {
+		delete(m.unhealthy, source)
+	}
 	return nil
 }
 
@@ -167,6 +243,36 @@ func (m *mockMounter) IsMounted(target string) (bool, error) {
 		return false, m.isMountedErr
 	}
 	return m.mountedPaths[target], nil
+}
+
+func (m *mockMounter) CheckMountHealth(target string) error {
+	m.checkHealthCalls = append(m.checkHealthCalls, target)
+	if m.checkHealthErr != nil {
+		return m.checkHealthErr
+	}
+	if !m.mountedPaths[target] {
+		return fmt.Errorf("%q is not a mount point", target)
+	}
+	if m.unhealthy[m.resolveSource(target)] {
+		return fmt.Errorf("probe %q: %w: %w", target, ErrMountUnhealthy, syscall.EIO)
+	}
+	// A write probe on a read-only mount answers EROFS — indistinguishable
+	// from an ext4 remount-ro shutdown, which is why production code never
+	// probes mounts that are read-only by request.
+	if m.mountRO[target] {
+		return fmt.Errorf("probe %q: %w: %w", target, ErrMountUnhealthy, syscall.EROFS)
+	}
+	return nil
+}
+
+func (m *mockMounter) HasOtherMounts(target string) (bool, error) {
+	if m.hasOtherMountsErr != nil {
+		return false, m.hasOtherMountsErr
+	}
+	if !m.mountedPaths[target] {
+		return false, fmt.Errorf("%q is not a mount point", target)
+	}
+	return m.deviceMounts(m.resolveSource(target)) > 1, nil
 }
 
 // Compile-time interface check.
@@ -217,6 +323,14 @@ func mountCap(fsType string) *csi.VolumeCapability {
 			Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
 		},
 	}
+}
+
+// mountCapRO returns a VolumeCapability for filesystem mount access that is
+// staged read-only through the "ro" mount flag.
+func mountCapRO(fsType string) *csi.VolumeCapability {
+	vc := mountCap(fsType)
+	vc.GetMount().MountFlags = []string{"ro"}
+	return vc
 }
 
 // blockCap returns a VolumeCapability for raw block access.
@@ -467,6 +581,290 @@ func TestNodeStageVolume_Idempotent(t *testing.T) {
 	}
 	if got := len(env.mounter.formatAndMountCalls); got != fmCount1 {
 		t.Errorf("FormatAndMount called again on idempotent stage: count went %d → %d", fmCount1, got)
+	}
+}
+
+// TestNodeStageVolume_IdempotentHealthyMount verifies the health gate does
+// not disturb the common case: a staged volume whose filesystem is alive
+// returns idempotent success without re-mounting.
+func TestNodeStageVolume_IdempotentHealthyMount(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	req := &csi.NodeStageVolumeRequest{
+		VolumeId:          "tank/pvc-healthy",
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("xfs"),
+		VolumeContext:     mountVolumeContext("nqn.test:healthy", testStorageAddr),
+	}
+
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("first NodeStageVolume: %v", err)
+	}
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("second NodeStageVolume: %v", err)
+	}
+
+	if got := len(env.mounter.formatAndMountCalls); got != 1 {
+		t.Errorf("FormatAndMount called %d times, want 1 (no re-mount of a healthy stage)", got)
+	}
+	if len(env.mounter.unmountCalls) != 0 {
+		t.Errorf("Unmount called %d times on a healthy staged mount, want 0", len(env.mounter.unmountCalls))
+	}
+	if got := len(env.mounter.checkHealthCalls); got < 1 {
+		t.Errorf("CheckMountHealth not called on the idempotent path")
+	}
+}
+
+// TestNodeStageVolume_StagedFilesystemShutdown_ReStages covers issue #168:
+// the staged filesystem entered kernel shutdown (XFS forced shutdown,
+// ext4 abort) while its device stayed healthy.  With no pod bind mounts
+// left, NodeStageVolume must not report success — it must drop the dead
+// mount and re-mount so the filesystem recovers (journal replay) without
+// an operator forcing NodeUnstageVolume.
+func TestNodeStageVolume_StagedFilesystemShutdown_ReStages(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	const volumeID = "tank/pvc-shutdown"
+	req := &csi.NodeStageVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("xfs"),
+		VolumeContext:     mountVolumeContext("nqn.test:shutdown", testStorageAddr),
+	}
+
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("first NodeStageVolume: %v", err)
+	}
+
+	// The filesystem enters kernel shutdown while every mount table entry
+	// stays in place — the signature IsMounted cannot see.
+	env.mounter.markUnhealthy(env.connector.devicePath)
+
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("NodeStageVolume on a dead staged filesystem: %v", err)
+	}
+
+	// The dead mount must have been unmounted and re-mounted, not simply
+	// reported as still staged.
+	if len(env.mounter.unmountCalls) != 1 || env.mounter.unmountCalls[0] != stagingPath {
+		t.Fatalf("Unmount calls = %v, want exactly [%s]", env.mounter.unmountCalls, stagingPath)
+	}
+	if got := len(env.mounter.formatAndMountCalls); got != 2 {
+		t.Errorf("FormatAndMount called %d times, want 2 (re-mount after drop)", got)
+	}
+	// After repair the mock clears the shutdown mark: the staged filesystem
+	// must now probe healthy, proving the repair actually happened.
+	if err := env.mounter.CheckMountHealth(stagingPath); err != nil {
+		t.Errorf("staged filesystem still unhealthy after repair: %v", err)
+	}
+	state, err := env.srv.readStageState(volumeID)
+	if err != nil {
+		t.Fatalf("readStageState after repair: %v", err)
+	}
+	if state == nil {
+		t.Error("stage state missing after repair")
+	}
+}
+
+// TestNodeStageVolume_StagedFilesystemShutdown_PinnedByBind covers the same
+// shutdown while a pod bind mount still references the dead superblock:
+// unmount+mount would silently re-attach the same dead filesystem, so the
+// RPC must fail instead of reporting success.  The mount stays in place so
+// NodeUnstageVolume can still run once teardown removes the bind.
+func TestNodeStageVolume_StagedFilesystemShutdown_PinnedByBind(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	targetPath := t.TempDir()
+	const volumeID = "tank/pvc-pinned"
+	req := &csi.NodeStageVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("xfs"),
+		VolumeContext:     mountVolumeContext("nqn.test:pinned", testStorageAddr),
+	}
+
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("first NodeStageVolume: %v", err)
+	}
+	// A pod bind mount keeps the dead superblock alive.
+	if _, err := env.srv.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:          volumeID,
+		StagingTargetPath: stagingPath,
+		TargetPath:        targetPath,
+		VolumeCapability:  mountCap("xfs"),
+		VolumeContext:     mountVolumeContext("nqn.test:pinned", testStorageAddr),
+	}); err != nil {
+		t.Fatalf("NodePublishVolume: %v", err)
+	}
+
+	env.mounter.markUnhealthy(env.connector.devicePath)
+
+	_, err := env.srv.NodeStageVolume(context.Background(), req)
+	requireGRPCCode(t, err, codes.Internal)
+
+	// The dead staged mount must NOT be dropped: it is the only handle on
+	// the shared filesystem whose other mounts survive, and re-mounting
+	// would only re-attach the dead superblock.
+	for _, target := range env.mounter.unmountCalls {
+		if target == stagingPath {
+			t.Fatalf("staging path was unmounted although pod binds still pin the filesystem")
+		}
+	}
+	if got := len(env.mounter.formatAndMountCalls); got != 1 {
+		t.Errorf("FormatAndMount called %d times, want 1 (no re-mount while pinned)", got)
+	}
+	mounted, _ := env.mounter.IsMounted(stagingPath) //nolint:errcheck // mock never errors
+	if !mounted {
+		t.Error("staging mount was removed although the filesystem is still pinned")
+	}
+
+	// Once teardown removes the bind mount, the next stage repairs the
+	// volume without operator action.
+	if _, err := env.srv.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+		VolumeId:   volumeID,
+		TargetPath: targetPath,
+	}); err != nil {
+		t.Fatalf("NodeUnpublishVolume: %v", err)
+	}
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("NodeStageVolume after bind removal: %v", err)
+	}
+	if err := env.mounter.CheckMountHealth(stagingPath); err != nil {
+		t.Errorf("staged filesystem still unhealthy after repair: %v", err)
+	}
+}
+
+// TestNodeStageVolume_StagedFilesystemShutdown_ProbeError covers a health
+// probe that fails inconclusively (not ErrMountUnhealthy): nothing can be
+// concluded about the filesystem, so the mount must not be dropped and the
+// error must surface to the CO instead of an idempotent success.
+func TestNodeStageVolume_StagedFilesystemShutdown_ProbeError(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	req := &csi.NodeStageVolumeRequest{
+		VolumeId:          "tank/pvc-probe",
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("xfs"),
+		VolumeContext:     mountVolumeContext("nqn.test:probe", testStorageAddr),
+	}
+
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("first NodeStageVolume: %v", err)
+	}
+
+	env.mounter.checkHealthErr = errors.New("mountinfo unreadable")
+
+	_, err := env.srv.NodeStageVolume(context.Background(), req)
+	requireGRPCCode(t, err, codes.Internal)
+
+	if len(env.mounter.unmountCalls) != 0 {
+		t.Errorf("Unmount called %d times on an inconclusive probe, want 0", len(env.mounter.unmountCalls))
+	}
+	mounted, _ := env.mounter.IsMounted(stagingPath) //nolint:errcheck // mock never errors
+	if !mounted {
+		t.Error("staging mount was dropped on an inconclusive probe")
+	}
+}
+
+// TestNodeStageVolume_StagedFilesystemShutdown_HasOtherMountsError covers a
+// dead filesystem whose mount-sharing check itself fails: the mount must
+// not be dropped on an inconclusive check.
+func TestNodeStageVolume_StagedFilesystemShutdown_HasOtherMountsError(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	req := &csi.NodeStageVolumeRequest{
+		VolumeId:          "tank/pvc-mounts-err",
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("xfs"),
+		VolumeContext:     mountVolumeContext("nqn.test:mounts-err", testStorageAddr),
+	}
+
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("first NodeStageVolume: %v", err)
+	}
+
+	env.mounter.markUnhealthy(env.connector.devicePath)
+	env.mounter.hasOtherMountsErr = errors.New("mountinfo parse failed")
+
+	_, err := env.srv.NodeStageVolume(context.Background(), req)
+	requireGRPCCode(t, err, codes.Internal)
+
+	if len(env.mounter.unmountCalls) != 0 {
+		t.Errorf("Unmount called %d times on an inconclusive mount-sharing check, want 0",
+			len(env.mounter.unmountCalls))
+	}
+}
+
+// TestNodeStageVolume_StagedFilesystemShutdown_BlockSkipsProbe verifies the
+// shutdown detection only applies to filesystem mounts: a Block-mode stage
+// has no staged filesystem to probe and must keep returning idempotent
+// success.
+func TestNodeStageVolume_StagedFilesystemShutdown_BlockSkipsProbe(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	req := &csi.NodeStageVolumeRequest{
+		VolumeId:          "tank/pvc-block-dead",
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  blockCap(),
+		VolumeContext:     mountVolumeContext("nqn.test:block-dead", testStorageAddr),
+	}
+
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("first NodeStageVolume: %v", err)
+	}
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("second NodeStageVolume (block): %v", err)
+	}
+	if len(env.mounter.checkHealthCalls) != 0 {
+		t.Errorf("CheckMountHealth called %d times for block access, want 0",
+			len(env.mounter.checkHealthCalls))
+	}
+}
+
+// TestNodeStageVolume_ReadonlyMountSkipsProbe pins the read-only contract:
+// a filesystem staged with the "ro" mount flag answers the write probe
+// with EROFS — the same signature as an ext4 remount-ro shutdown — so
+// NodeStageVolume must not run the probe at all, on the first stage or on
+// the idempotent retry.
+func TestNodeStageVolume_ReadonlyMountSkipsProbe(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	req := &csi.NodeStageVolumeRequest{
+		VolumeId:          "tank/pvc-stage-ro",
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCapRO("ext4"),
+		VolumeContext:     mountVolumeContext("nqn.test:stage-ro", testStorageAddr),
+	}
+
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("read-only NodeStageVolume: %v", err)
+	}
+	if _, err := env.srv.NodeStageVolume(context.Background(), req); err != nil {
+		t.Fatalf("idempotent read-only NodeStageVolume: %v", err)
+	}
+	if len(env.mounter.checkHealthCalls) != 0 {
+		t.Errorf("CheckMountHealth called %d times on a read-only stage, want 0: "+
+			"EROFS is the expected answer, not a dead filesystem", len(env.mounter.checkHealthCalls))
+	}
+	if got := len(env.mounter.unmountCalls); got != 0 {
+		t.Errorf("Unmount called %d times on a read-only stage, want 0", got)
+	}
+	if got := len(env.mounter.formatAndMountCalls); got != 1 {
+		t.Errorf("FormatAndMount called %d times, want 1", got)
 	}
 }
 

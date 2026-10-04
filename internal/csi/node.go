@@ -336,6 +336,28 @@ type Mounter interface {
 
 	// IsMounted returns true if target currently has an active mount.
 	IsMounted(target string) (bool, error)
+
+	// CheckMountHealth verifies that the filesystem mounted at target can
+	// still serve writes.  IsMounted only proves a mount exists; a mounted
+	// filesystem whose kernel instance was shut down (XFS forced shutdown,
+	// ext4 abort) keeps passing the mount check while every real operation
+	// fails.  Returns nil for a live filesystem, an error wrapping
+	// ErrMountUnhealthy for a dead one, and any other error when the probe
+	// itself fails.
+	//
+	// The probe is a metadata write: a mount that was deliberately mounted
+	// read-only ("ro" mount flag or a read-only bind) answers it with
+	// EROFS, which CheckMountHealth cannot tell apart from the ext4
+	// remount-ro abort signature — both report ErrMountUnhealthy.  Callers
+	// must not probe mounts whose configuration is read-only by request.
+	CheckMountHealth(target string) error
+
+	// HasOtherMounts reports whether the filesystem mounted at target is
+	// referenced by at least one more mount in this mount namespace (pod
+	// bind mounts of the staging path).  When it returns true, unmounting
+	// target does not detach the filesystem — a fresh mount would silently
+	// re-attach the same superblock.  An error is inconclusive.
+	HasOtherMounts(target string) (bool, error)
 }
 
 // NodeServer implements csi.NodeServer.  It handles the per-node portion of
@@ -436,8 +458,11 @@ type NodeServer struct {
 	dmTargetPresentFn func(name string) (bool, error)
 
 	// volumeLocks serializes, per volume ID, NodeStageVolume,
-	// NodeUnstageVolume, NodeExpandVolume and every periodic trim chunk
-	// (see trim.go).  The zero value is ready to use.
+	// NodeUnstageVolume, NodePublishVolume, NodeUnpublishVolume,
+	// NodeExpandVolume and every periodic trim chunk (see trim.go).  Publish
+	// and unpublish join the same lock because the stage repair path drops
+	// and re-mounts the staged filesystem a bind mount references (issue
+	// #168).  The zero value is ready to use.
 	volumeLocks volumeLockSet
 
 	// pageSize is the memory page size NodeStageVolume checks an NVMe-oF
@@ -838,6 +863,11 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		case StateNodeStaged:
 			// Already staged: fall through to the file-based idempotency check
 			// below, which will detect the existing mount and return success.
+		case StateNodePublished:
+			// Published but staged filesystem may be dead: allow re-entry so
+			// the idempotency/health check can repair it or fail with a
+			// retryable error (issue #168).  HasOtherMounts keeps a mount
+			// still referenced by live binds from being dropped.
 		default:
 			// Volume is not in a state that permits NodeStageVolume.
 			// ControllerPublishVolume must be called first.
@@ -847,6 +877,27 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 				volumeID, smState)
 		}
 	}
+
+	// A filesystem staged with the "ro" mount flag is read-only by request:
+	// the write-based health probe must not run against it — EROFS is the
+	// expected answer, not the ext4 remount-ro shutdown signature (issue
+	// #168).  Resolution only matters for filesystem mounts of non-NFS
+	// protocols, the configurations that are probed below.
+	stagedRO := false
+	if volCap.GetMount() != nil && protocolType != ProtocolNFS {
+		var roErr error
+		stagedRO, roErr = stagedMountReadOnly(volCtx, volCap)
+		if roErr != nil {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"NodeStageVolume: volume %q: %v", volumeID, roErr)
+		}
+	}
+
+	// deadDropped records that this call unmounted a kernel-shutdown staged
+	// filesystem: a successful repair then proves no other mount references
+	// the old superblock (HasOtherMounts gates the drop), so demoting the SM
+	// out of NodePublished cannot strand a live publish bind.
+	deadDropped := false
 
 	// ── Idempotency check ───────────────────────────────────────────────────
 	// If the volume was already fully staged (state file exists + path mounted),
@@ -881,6 +932,26 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 			return nil, status.Errorf(codes.Internal,
 				"NodeStageVolume: check if %q is mounted: %v", bindTarget, mountCheckErr)
 		}
+		if mounted && volCap.GetMount() != nil && protocolType != ProtocolNFS && !stagedRO {
+			// A mount table entry says nothing about filesystem health:
+			// a kernel-shutdown XFS or an ext4 remount-ro abort keeps
+			// passing IsMounted while every write inside it fails
+			// (issue #168).  Reporting success here would publish a dead
+			// filesystem forever — pod bind mounts fail on kernels that
+			// reject them, or worse, succeed and hand the dead fs to
+			// containers on kernels that don't.  Probe the filesystem
+			// instead and, when it is dead, drop the staging mount and
+			// fall through to re-attach and re-mount from scratch.  A
+			// filesystem staged read-only (stagedRO) skips the write probe:
+			// EROFS is its expected answer, not a death signature.
+			usable, deadErr := n.dropUnusableStagedMount(volumeID, stagingPath)
+			if deadErr != nil {
+				return nil, status.Errorf(codes.Internal,
+					"NodeStageVolume: volume %q: %v", volumeID, deadErr)
+			}
+			mounted = usable
+			deadDropped = deadDropped || !usable
+		}
 		if mounted {
 			// Records written before the periodic trim existed lack the
 			// staging path; backfill it so the trim loop need not derive it.
@@ -909,7 +980,8 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 			trace.SpanFromContext(ctx).SetAttributes(telemetry.KeyStageAlreadyStaged.Bool(true))
 			return &csi.NodeStageVolumeResponse{}, nil
 		}
-		// State file exists but mount is gone (e.g., node reboot).
+		// State file exists but the staged surface is not mounted (node
+		// reboot), or its filesystem was dead and has just been dropped.
 		// Fall through to re-connect and re-mount below.
 	}
 	trace.SpanFromContext(ctx).SetAttributes(telemetry.KeyStageAlreadyStaged.Bool(false))
@@ -1022,6 +1094,28 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 			return nil, failStaged(status.Errorf(codes.Internal,
 				"NodeStageVolume: check if %q is mounted: %v", stagingPath, mountCheckErr))
 		}
+		if alreadyMounted {
+			// A leftover mount whose state file is missing (or whose dead
+			// filesystem was just dropped above) is re-adopted only when the
+			// filesystem is actually usable; a dead one is dropped and
+			// re-mounted below.  See the idempotency check for the kernel
+			// shutdown case (issue #168).
+			if protocolType != ProtocolNFS && !stagedRO {
+				var deadErr error
+				alreadyMounted, deadErr = n.dropUnusableStagedMount(volumeID, stagingPath)
+				if deadErr != nil {
+					// Return deadErr directly, never via failStaged: the
+					// helper kept the mount in place on purpose (inconclusive
+					// probe, other mounts still pin the dead filesystem, or
+					// the unmount itself failed), and abortLocal would tear it
+					// down.  The attach/claim from this call stays valid for
+					// the next stage retry.
+					return nil, status.Errorf(codes.Internal,
+						"NodeStageVolume: volume %q: %v", volumeID, deadErr)
+				}
+				deadDropped = deadDropped || !alreadyMounted
+			}
+		}
 		if !alreadyMounted {
 			if protocolType == ProtocolNFS {
 				mountErr := n.mounter.Mount(attachResult.MountSource, stagingPath, fsType, mountFlags)
@@ -1037,6 +1131,19 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 						"NodeStageVolume: format-and-mount %q → %q (fs=%s): %v",
 						devicePath, stagingPath, fsType, formatErr))
 				}
+			}
+		}
+		if protocolType != ProtocolNFS && !stagedRO {
+			// Verify the staged filesystem after every (re)mount: a mount
+			// that re-attached a still-pinned dead superblock reports
+			// success at mount(2) yet fails every write (issue #168).  A
+			// filesystem staged with "ro" skips the probe: EROFS is its
+			// expected answer.
+			healthErr := n.mounter.CheckMountHealth(stagingPath)
+			if healthErr != nil {
+				return nil, failStaged(status.Errorf(codes.Internal,
+					"NodeStageVolume: staged filesystem %q for volume %q failed its health probe: %v",
+					stagingPath, volumeID, healthErr))
 			}
 		}
 
@@ -1097,8 +1204,12 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	// All staging work (connect + mount + state file) completed successfully.
 	// Force the SM directly to NodeStaged regardless of whether we entered
 	// from ControllerPublished (→ NodeStagePartial via Step 1 above) or from
-	// NodeStagePartial (retry).
-	if n.sm != nil {
+	// NodeStagePartial (retry).  Entered from NodePublished, the state is left
+	// alone unless this call dropped a dead staged filesystem: only the drop
+	// (gated by HasOtherMounts) proves no publish bind still references the
+	// staged superblock, so a re-adopted healthy mount must not demote a
+	// volume whose binds are still live (issue #168).
+	if n.sm != nil && (deadDropped || n.sm.GetState(volumeID) != StateNodePublished) {
 		n.sm.ForceState(volumeID, StateNodeStaged)
 	}
 
@@ -1310,6 +1421,54 @@ func (n *NodeServer) NodeUnstageVolume(
 	return &csi.NodeUnstageVolumeResponse{}, nil
 }
 
+// dropUnusableStagedMount health-checks the filesystem mounted at target
+// and, when the kernel has shut it down (ErrMountUnhealthy), unmounts it so
+// the caller can re-stage from scratch.  It must not run against a mount
+// that is read-only by request — the probe write answers EROFS, which is
+// the expected outcome, not a death signature; callers gate it off via
+// stagedMountReadOnly.
+//
+// Return value: usable is true when the filesystem passed the probe — the
+// mount is kept and the caller should take its "already mounted" path.  A
+// nil error with usable=false means the dead mount was removed and nothing
+// is mounted at target anymore.
+//
+// A dead filesystem is only dropped when no other mount references it.  Pod
+// bind mounts share the staged superblock: while one survives, unmounting
+// the staging path does not detach the filesystem and a fresh mount(2) just
+// re-attaches the same dead superblock (verified with xfs_io shutdown on
+// kernel 7.0).  In that case the mount is left in place and an error is
+// returned — kubelet retries, and recovery proceeds once teardown removes
+// the binds (pod deletion drives NodeUnpublishVolume for each target).
+//
+// Probe failures that are not ErrMountUnhealthy are inconclusive: the mount
+// is never dropped on an inconclusive probe.
+func (n *NodeServer) dropUnusableStagedMount(volumeID, target string) (usable bool, err error) {
+	healthErr := n.mounter.CheckMountHealth(target)
+	if healthErr == nil {
+		return true, nil
+	}
+	if !errors.Is(healthErr, ErrMountUnhealthy) {
+		return false, fmt.Errorf("health-check staged filesystem %q: %w", target, healthErr)
+	}
+	others, mountsErr := n.mounter.HasOtherMounts(target)
+	if mountsErr != nil {
+		return false, fmt.Errorf("volume %q: check mounts sharing the dead filesystem at %q: %w",
+			volumeID, target, mountsErr)
+	}
+	if others {
+		return false, fmt.Errorf("volume %q: staged filesystem at %q is dead but still referenced "+
+			"by other mounts; it cannot be re-staged until pod teardown removes them",
+			volumeID, target)
+	}
+	unmountErr := n.mounter.Unmount(target)
+	if unmountErr != nil {
+		return false, fmt.Errorf("volume %q: unmount dead staged filesystem %q: %w",
+			volumeID, target, unmountErr)
+	}
+	return false, nil
+}
+
 // checkUnstagedWithoutState verifies that nothing is still mounted for a
 // volume whose stage state file is missing.  It returns nil only when neither
 // staged surface is mounted; a live mount or a failed probe yields an error.
@@ -1463,9 +1622,22 @@ func (n *NodeServer) NodePublishVolume(
 	volumeID := req.GetVolumeId()
 	volCap := req.GetVolumeCapability()
 
+	// Serialize with NodeStageVolume / NodeUnstageVolume / NodeExpandVolume
+	// of the same volume: a stage that drops a dead staged filesystem and
+	// re-mounts it must not race a publish bind-mount (issue #168).  The
+	// ordering guard runs under the lock so an unstage completing between
+	// the check and the bind cannot leave a bind of the reaped directory.
+	unlock := n.volumeLocks.lock(volumeID)
+	defer unlock()
+
 	err = n.validateNodePublishState(volumeID)
 	if err != nil {
 		return nil, err
+	}
+
+	probeHealth, probePath, probeErr := nodePublishProbePlan(volumeID, stagingPath, targetPath, req)
+	if probeErr != nil {
+		return nil, probeErr
 	}
 
 	alreadyMounted, mountCheckErr := n.mounter.IsMounted(targetPath)
@@ -1474,7 +1646,18 @@ func (n *NodeServer) NodePublishVolume(
 			"NodePublishVolume: check if %q is mounted: %v", targetPath, mountCheckErr)
 	}
 	if alreadyMounted {
-		return &csi.NodePublishVolumeResponse{}, nil
+		usable, usableErr := n.ensureUsablePublishBind(volumeID, targetPath, probePath, probeHealth)
+		if usableErr != nil {
+			return nil, usableErr
+		}
+		if usable {
+			return &csi.NodePublishVolumeResponse{}, nil
+		}
+		// The dead bind was dropped; re-bind below so a staged filesystem
+		// that was repaired since is re-published.  A still-dead staged
+		// filesystem fails the post-bind probe.  The SM stays NodePublished
+		// (it is a per-volume aggregate and other targets may still be
+		// bound); NodeStageVolume accepts that state for repair (issue #168).
 	}
 
 	fsType, mountOptions, mountErr := resolveNodePublishMount(req)
@@ -1491,10 +1674,101 @@ func (n *NodeServer) NodePublishVolume(
 		return nil, err
 	}
 
+	if probeHealth {
+		// Verify the fresh bind: bind-mounting a dead staged filesystem
+		// succeeds on kernels that accept it, so mounting is not proof of
+		// health (issue #168).  Report the dead filesystem instead of
+		// publishing it; kubelet retries while NodeStageVolume re-stages.
+		// Read-only binds are probed through the staged mount (probePath).
+		healthErr := n.mounter.CheckMountHealth(probePath)
+		if healthErr != nil {
+			cleanupErr := n.mounter.Unmount(targetPath)
+			//nolint:wrapcheck // both operands are annotated; Join preserves the gRPC code
+			return nil, errors.Join(status.Errorf(codes.Internal,
+				"NodePublishVolume: bind-mounted filesystem at %q for volume %q failed its health probe: %v",
+				targetPath, volumeID, healthErr), cleanupErr)
+		}
+	}
+
 	if n.sm != nil {
 		n.sm.ForceState(volumeID, StateNodePublished)
 	}
 	return &csi.NodePublishVolumeResponse{}, nil
+}
+
+// nodePublishProbePlan decides whether NodePublishVolume verifies mount
+// health and which path the probe runs against (issue #168).
+//
+// Two configurations must not be write-probed: filesystem protocols without
+// a staged filesystem (NFS, block access) have none to probe, and a
+// filesystem staged with the "ro" mount flag answers the write probe with
+// EROFS — the expected outcome there, not the remount-ro shutdown
+// signature.  Every other mount publish probes the filesystem serving the
+// bind: the bind itself for a writable publish, the read-write staged
+// mount for a read-only one — a read-only bind would answer every write
+// probe with EROFS while sharing the probed superblock.
+func nodePublishProbePlan(
+	volumeID, stagingPath, targetPath string, req *csi.NodePublishVolumeRequest,
+) (probeHealth bool, probePath string, err error) {
+	volCap := req.GetVolumeCapability()
+	if volCap.GetMount() == nil ||
+		resolveProtocolType(volumeID, req.GetVolumeContext()) == ProtocolNFS {
+		return false, "", nil
+	}
+	stagedRO, roErr := stagedMountReadOnly(req.GetVolumeContext(), volCap)
+	if roErr != nil {
+		return false, "", status.Errorf(codes.InvalidArgument,
+			"NodePublishVolume: volume %q: %v", volumeID, roErr)
+	}
+	if stagedRO {
+		return false, "", nil
+	}
+	if req.GetReadonly() {
+		return true, stagingPath, nil
+	}
+	return true, targetPath, nil
+}
+
+// ensureUsablePublishBind health-checks an existing publish bind mount and
+// drops it when it references a kernel-shutdown filesystem (issue #168).
+//
+// A bind mount of a dead filesystem is itself dead, yet still passes the
+// mount check.  Usable is true only when the mount passed the probe (or the
+// volume type does not probe at all); a nil error with usable=false means
+// the dead bind was unmounted and the caller may bind afresh.  Unlike
+// dropUnusableStagedMount there is no HasOtherMounts gate: the bind only
+// references the dead superblock — the pod's own mount-namespace copy is
+// unaffected by removing it here — and dropping it never makes repair
+// harder.  Probe failures that are not ErrMountUnhealthy are inconclusive
+// and returned without touching the mount.
+//
+// ProbePath is the mount the health probe runs against: the bind itself
+// for a writable publish, the staged mount for a read-only one — a
+// read-only bind answers every write probe with EROFS, so its verdict is
+// taken from the read-write mount that shares the superblock.
+func (n *NodeServer) ensureUsablePublishBind(
+	volumeID, targetPath, probePath string, probeHealth bool,
+) (usable bool, err error) {
+	if !probeHealth {
+		return true, nil
+	}
+	healthErr := n.mounter.CheckMountHealth(probePath)
+	switch {
+	case healthErr == nil:
+		return true, nil
+	case errors.Is(healthErr, ErrMountUnhealthy):
+		unmountErr := n.mounter.Unmount(targetPath)
+		if unmountErr != nil {
+			return false, status.Errorf(codes.Internal,
+				"NodePublishVolume: unmount dead bind %q for volume %q: %v",
+				targetPath, volumeID, unmountErr)
+		}
+		return false, nil
+	default:
+		return false, status.Errorf(codes.Internal,
+			"NodePublishVolume: health-check bind %q for volume %q: %v",
+			targetPath, volumeID, healthErr)
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1532,6 +1806,11 @@ func (n *NodeServer) NodeUnpublishVolume(
 
 	targetPath := req.GetTargetPath()
 	volumeID := req.GetVolumeId()
+
+	// Serialize with NodeStageVolume, which may drop and re-mount the staged
+	// filesystem while deciding whether pod binds still pin it (issue #168).
+	unlock := n.volumeLocks.lock(volumeID)
+	defer unlock()
 
 	// ── State machine ordering guard ────────────────────────────────────────
 	if n.sm != nil {

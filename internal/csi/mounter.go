@@ -40,6 +40,18 @@ import (
 // exchange-range and parent-pointer features, which need Linux 6.10 and 6.12).
 const xfsCompatProfile = "/usr/share/xfsprogs/mkfs/lts_5.15.conf"
 
+// ErrMountUnhealthy reports that a mounted filesystem can no longer serve
+// I/O: the kernel has shut the filesystem down (XFS forced shutdown after a
+// log I/O error, reported as EIO) or has aborted it read-only (ext4
+// errors=remount-ro, reported as EROFS) while its mount table entry still
+// looks perfectly mounted.
+//
+// Callers must test this sentinel with errors.Is before treating a
+// CheckMountHealth error as "dead mount, recoverable by re-staging"; any
+// other probe failure is inconclusive and must surface as an ordinary
+// error.
+var ErrMountUnhealthy = errors.New("mounted filesystem is dead")
+
 // KubeMounter is the production Mounter implementation backed by
 // k8s.io/utils/mount.SafeFormatAndMount.  It shells out to the host
 // mount(8)/umount(8) binaries and uses blkid to detect existing

@@ -978,6 +978,16 @@ func (m *mkdirMounter) IsMounted(target string) (bool, error) {
 	return m.wrapped.IsMounted(target)
 }
 
+// CheckMountHealth delegates to the wrapped Mounter unchanged.
+func (m *mkdirMounter) CheckMountHealth(target string) error {
+	return m.wrapped.CheckMountHealth(target)
+}
+
+// HasOtherMounts delegates to the wrapped Mounter unchanged.
+func (m *mkdirMounter) HasOtherMounts(target string) (bool, error) {
+	return m.wrapped.HasOtherMounts(target)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────

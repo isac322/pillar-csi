@@ -1272,6 +1272,13 @@ func (m *localMockConnector) GetDevicePath(_ context.Context, subsysNQN string) 
 
 type localMockMounter struct {
 	mounted map[string]bool
+	// mountSource records the mount source of every mounted path so bind
+	// mounts share the filesystem identity of their origin, like the
+	// shared device number the real mounter reads from mountinfo.
+	mountSource map[string]string
+
+	checkHealthErr    error
+	hasOtherMountsErr error
 
 	formatAndMountErr error
 	mountErr          error
@@ -1298,7 +1305,10 @@ type localMountCall struct {
 }
 
 func newLocalMockMounter() *localMockMounter {
-	return &localMockMounter{mounted: make(map[string]bool)}
+	return &localMockMounter{
+		mounted:     make(map[string]bool),
+		mountSource: make(map[string]string),
+	}
 }
 
 var _ csidrv.Mounter = (*localMockMounter)(nil)
@@ -1312,6 +1322,7 @@ func (m *localMockMounter) FormatAndMount(_ context.Context, source, target, fsT
 		return m.formatAndMountErr
 	}
 	m.mounted[target] = true
+	m.mountSource[target] = source
 	return nil
 }
 
@@ -1324,6 +1335,7 @@ func (m *localMockMounter) Mount(source, target, fsType string, options []string
 		return m.mountErr
 	}
 	m.mounted[target] = true
+	m.mountSource[target] = source
 	return nil
 }
 
@@ -1333,6 +1345,7 @@ func (m *localMockMounter) Unmount(target string) error {
 		return m.unmountErr
 	}
 	delete(m.mounted, target)
+	delete(m.mountSource, target)
 	return nil
 }
 
@@ -1341,6 +1354,49 @@ func (m *localMockMounter) IsMounted(target string) (bool, error) {
 		return false, m.isMountedErr
 	}
 	return m.mounted[target], nil
+}
+
+// CheckMountHealth reports mounted paths as healthy unless checkHealthErr
+// was programmed; local-attach e2e tests do not simulate shutdowns by
+// default.
+func (m *localMockMounter) CheckMountHealth(target string) error {
+	if m.checkHealthErr != nil {
+		return m.checkHealthErr
+	}
+	if !m.mounted[target] {
+		return fmt.Errorf("%q is not a mount point", target)
+	}
+	return nil
+}
+
+// resolveSource walks bind chains to the ultimate device source of the
+// filesystem mounted at path, mirroring mountinfo's shared device number.
+func (m *localMockMounter) resolveSource(path string) string {
+	source := m.mountSource[path]
+	for m.mounted[source] {
+		source = m.mountSource[source]
+	}
+	return source
+}
+
+// HasOtherMounts reports whether another mounted path shares target's
+// ultimate mount source, mirroring the bind-mount device sharing the real
+// mounter detects via mountinfo.  An error is inconclusive.
+func (m *localMockMounter) HasOtherMounts(target string) (bool, error) {
+	if m.hasOtherMountsErr != nil {
+		return false, m.hasOtherMountsErr
+	}
+	if !m.mounted[target] {
+		return false, fmt.Errorf("%q is not a mount point", target)
+	}
+	source := m.resolveSource(target)
+	count := 0
+	for path := range m.mounted {
+		if m.resolveSource(path) == source {
+			count++
+		}
+	}
+	return count > 1, nil
 }
 
 type localMockResizer struct {
