@@ -1848,11 +1848,57 @@ func (n *NodeServer) NodeUnpublishVolume(
 	}
 
 	// ── Revert state machine to NodeStaged ──────────────────────────────────
-	if n.sm != nil {
+	// The state machine aggregates every publish target of the volume: it
+	// may demote to NodeStaged only when this unpublish removed the last
+	// mount sharing the staged filesystem.  While another target's bind
+	// still references it the volume stays NodePublished — demoting anyway
+	// would make the surviving bind's own NodeUnpublishVolume return early
+	// without unmounting it, pinning a dead staged superblock forever so
+	// the stage repair could never proceed (issue #168).
+	if n.sm != nil && n.lastPublishRemoved(volumeID) {
 		n.sm.ForceState(volumeID, StateNodeStaged)
 	}
 
 	return &csi.NodeUnpublishVolumeResponse{}, nil
+}
+
+// lastPublishRemoved reports whether the unpublish that just completed
+// removed the last mount sharing the volume's staged filesystem: with no
+// mounts left, the volume's per-volume aggregate state may revert from
+// NodePublished to NodeStaged.  A surviving bind of another publish target
+// keeps the answer false.
+//
+// The check mirrors dropUnusableStagedMount's pinning test and reads the
+// staged surface from the stage record: the staged mount itself for a
+// Filesystem-mode volume, the device-file bind inside it for Block mode.
+// Whenever sharing cannot be proven the answer is true — the pre-existing
+// unconditional demotion: no stage record (or one without a staging path)
+// leaves no staged surface to compare against, and HasOtherMounts errs
+// only when the staged surface is no longer mounted or the mount table is
+// unreadable; holding NodePublished on an unprovable bind would block
+// NodeUnstageVolume instead.
+func (n *NodeServer) lastPublishRemoved(volumeID string) bool {
+	state, stateErr := n.readStageState(volumeID)
+	if stateErr != nil || state == nil || state.StagingPath == "" {
+		// No record (or a legacy record without a staging path): the staged
+		// surface cannot be identified, so nothing provably shares it.
+		return true
+	}
+	stagedSurface := state.StagingPath
+	if state.AccessType == AccessTypeBlock {
+		// Block-mode binds the raw device onto a regular file inside the
+		// staging directory; publish targets bind that file, so the shared
+		// device number lives on the file's mount, not the directory's.
+		stagedSurface = blockStagingDevicePath(state.StagingPath)
+	}
+	others, mountsErr := n.mounter.HasOtherMounts(stagedSurface)
+	if mountsErr != nil {
+		// The staged surface is not mounted (or mountinfo is unreadable):
+		// nothing shares the record's filesystem that the mount table can
+		// prove, so demotion cannot strand a live bind.
+		return true
+	}
+	return !others
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

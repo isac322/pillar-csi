@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
--**총 테스트 케이스: 435** (실제 실행 spec 435개; strict TC 라벨 426개: 기존 default-profile 413개 + E37 dedicated NFS lane 13개; 라벨 없는 teardown 보장 9개 포함. 전체 문서 inventory는 **717개**이며 비기본 E33·E36·F27–F31 및 reference 항목을 포함하며 strict gate에서 별도로 보고한다.)
+-**총 테스트 케이스: 435** (실제 실행 spec 435개; strict TC 라벨 426개: 기존 default-profile 413개 + E37 dedicated NFS lane 13개; 라벨 없는 teardown 보장 9개 포함. 전체 문서 inventory는 **721개**이며 비기본 E33·E36·F27–F31 및 reference 항목을 포함하며 strict gate에서 별도로 보고한다.)
 
 ---
 
@@ -1311,7 +1311,7 @@ shutdown, ext4 `errors=remount-ro`)에 들어간 경우 — 마운트 테이블 
 
 **소스 파일:** `internal/csi/node_stage_test.go`, `internal/csi/node_publish_test.go`, `internal/csi/mounter_health_linux_test.go`
 
-**CI 실행 가능 여부:** ✅ 가능 (실제 마운트 없음; mock 기반)
+**CI 실행 가능 여부:** ✅ 가능 (mock 기반; 223·224는 root 없이 프로브 syscall 주입 및 호스트에 이미 있는 읽기 전용 마운트만 사용)
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
@@ -1331,6 +1331,10 @@ shutdown, ext4 `errors=remount-ro`)에 들어간 경우 — 마운트 테이블 
 | 220 | `TestKubeMounter_HasOtherMounts_NotMountPoint` | 비-마운트 경로 → 오류 반환 (조용한 false 금지: 실패한 검사가 마운트 제거를 허용하지 않음) | `NewKubeMounter()`; `t.TempDir()` (마운트 포인트 아님) | 1) `HasOtherMounts(target)` 호출 | 오류 반환 | `Mnt` |
 | 221 | `TestNodeStageVolume_ReadonlyMountSkipsProbe` | `ro` 마운트 플래그로 스테이징된 파일시스템은 쓰기 프로브 생략 (EROFS는 기대 응답; 1차·멱등 모두) | `newNodeTestEnv(t)`; `mountCapRO("ext4")` | 1) NodeStageVolume; 2) 동일 요청 재전송 | 두 호출 모두 성공; `CheckMountHealth`·`Unmount` 미호출; `FormatAndMount` 1회 | `CSI-N`, `Mnt` |
 | 222 | `TestNodePublishVolume_ReadonlyBindProbesStagedFilesystem` | 읽기 전용 바인드는 쓰기 프로브 불가 → RW 스테이징 마운트로 헬스 판정; 데드면 바인드 제거 + Internal | NodeStage+Readonly NodePublish 성공; `markUnhealthy` | 1) `CheckMountHealth(stagingPath)` 호출 확인; 2) NodePublishVolume 재전송 | `checkHealthCalls`에 stagingPath 포함; 2단계 gRPC `Internal`; targetPath 비마운트 | `CSI-N`, `Mnt` |
+| 223 | `TestKubeMounter_CheckMountHealth_ShutdownErrno` | 프로브 syscall 주입으로 errno → 판정 매핑 고정: O_TMPFILE 경로와 폴백(EOPNOTSUPP/EISDIR → 이름 있는 파일) 경로 모두에서 EIO·EROFS → `ErrMountUnhealthy`, EACCES → 비결정적 오류 | `checkMountHealth(target, open, create)`에 `*os.PathError{Err: errno}` 주입 | 1) O_TMPFILE EIO/EROFS/EACCES; 2) 폴백 EIO/EROFS/EACCES | EIO·EROFS는 `ErrMountUnhealthy` + 원본 errno 래핑; EACCES는 `ErrMountUnhealthy` 아님; 폴백 프로브는 EOPNOTSUPP/EISDIR일 때만 1회 호출 | `Mnt` |
+| 224 | `TestKubeMounter_CheckMountHealth_ReadonlyFilesystem` | 실제 읽기 전용 마운트에 수정 없는 프로브 실행 → 커널의 EROFS가 `ErrMountUnhealthy`로 분류됨 (root 불필요) | `/proc/self/mountinfo`에서 최상위 항목이 `ro`인 마운트 포인트 수집 | 1) 각 읽기 전용 마운트 포인트에 `NewKubeMounter().CheckMountHealth` 호출 | EROFS를 반환한 모든 마운트가 `ErrMountUnhealthy`; EROFS 응답 마운트가 하나도 없으면 Skip | `Mnt` |
+| 225 | `TestKubeMounter_HasOtherMounts_SubdirBindCountsAsPinning` | 같은 디바이스의 하위 디렉터리 바인드(mountinfo root `/subdir`)도 스테이징 슈퍼블록 고정(pinning)으로 판정 | mountinfo 픽스처를 `readMountInfoFile`로 파싱 → `hasOtherMounts` | 1) 하위 디렉터리 바인드; 2) 전체 FS 바인드; 3) 다른 디바이스 마운트; 4) 스테이징 마운트 단독 | 1·2 → true; 3·4 → false | `Mnt` |
+| 226 | `TestNodePublishVolume_MultiTargetRepairAfterBothUnpublish` | 두 publish 타깃이 공유하는 스테이징 FS 셧다운: 바인드가 하나라도 남아 있으면 상태 머신 NodePublished 유지 + 재스테이지 거부; 두 타깃 모두 unpublish 후에만 NodeStaged 강등 및 복구 | `NewNodeServerWithStateMachine`; ControllerPublished → NodeStage → 타깃 A·B NodePublish; `markUnhealthy` | 1) NodeStageVolume; 2) NodeUnpublishVolume(A); 3) NodeStageVolume; 4) NodeUnpublishVolume(B); 5) NodeStageVolume; 6) 새 타깃 NodePublishVolume | 1·3단계 gRPC `Internal`; 1~3단계 상태 `NodePublished`; 4단계 후 B 비마운트 + 상태 `NodeStaged`; 5단계 성공 + `CheckMountHealth` 정상; 6단계 성공 | `CSI-N`, `Mnt`, `State` |
 
 
 ---
