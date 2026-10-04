@@ -170,13 +170,7 @@ func (e Export) options() string {
 	case squashAll:
 		squash = "all_squash"
 	}
-	options := mode + ",sync,no_subtree_check,secure,sec=sys,fsid=" + e.fsid() + "," + squash
-	// Only validated adopted child mounts need nohide for NFSv4 traversal.
-	// The pseudoroot must not inherit child access through crossmnt.
-	if e.VolumeID != rootVolumeID && e.SourceKey != "" && e.FenceUID != "" {
-		options += ",nohide"
-	}
-	return options
+	return mode + ",sync,no_subtree_check,secure,sec=sys,fsid=" + e.fsid() + "," + squash
 }
 
 type entry struct{ Path, Client, Options string }
@@ -812,46 +806,35 @@ func optionValue(options, key string) string {
 	return ""
 }
 
-func optionsTraversalMatches(actual, wanted []string) bool {
-	return slices.Contains(actual, "crossmnt") == slices.Contains(wanted, "crossmnt") &&
-		slices.Contains(actual, "nohide") == slices.Contains(wanted, "nohide")
-}
-
-func optionConflictPresent(option string, flags []string) bool {
-	var opposite string
-	switch option {
-	case "ro":
-		opposite = "rw"
-	case "rw":
-		opposite = "ro"
-	case optionRootSquash:
-		opposite = optionNoSquash
-	case optionNoSquash:
-		opposite = optionRootSquash
-	case "all_squash":
-		opposite = "no_all_squash"
-	case "secure":
-		opposite = "insecure"
-	case "sync":
-		opposite = "async"
-	case "no_subtree_check":
-		opposite = "subtree_check"
-	case "crossmnt":
-		opposite = "nocrossmnt"
-	case "nohide":
-		opposite = "hide"
-	}
-	return opposite != "" && slices.Contains(flags, opposite)
-}
-
 func optionsMatch(actual, wanted string) bool {
 	flags := strings.Split(actual, ",")
-	wantedFlags := strings.Split(wanted, ",")
-	if !optionsTraversalMatches(flags, wantedFlags) {
+	if slices.Contains(flags, "crossmnt") || slices.Contains(flags, "nohide") {
 		return false
 	}
 	for option := range strings.SplitSeq(wanted, ",") {
-		if !slices.Contains(flags, option) || optionConflictPresent(option, flags) {
+		if !slices.Contains(flags, option) {
+			return false
+		}
+		var opposite string
+		switch option {
+		case "ro":
+			opposite = "rw"
+		case "rw":
+			opposite = "ro"
+		case optionRootSquash:
+			opposite = optionNoSquash
+		case optionNoSquash:
+			opposite = optionRootSquash
+		case "all_squash":
+			opposite = "no_all_squash"
+		case "secure":
+			opposite = "insecure"
+		case "sync":
+			opposite = "async"
+		case "no_subtree_check":
+			opposite = "subtree_check"
+		}
+		if opposite != "" && slices.Contains(flags, opposite) {
 			return false
 		}
 	}

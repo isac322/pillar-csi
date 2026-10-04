@@ -365,7 +365,9 @@ func ensureDirectoryPath(path string) error {
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
 		if errors.Is(err, os.ErrNotExist) {
-			createErr := os.Mkdir(current, 0o750)
+			//nolint:gosec // G301: NFS clients need execute traversal.
+			// Owned proxy intermediates contain only protected mount targets; targets remain 0750.
+			createErr := os.Mkdir(current, 0o755)
 			if createErr != nil {
 				return fmt.Errorf("create filesystem proxy directory %q: %w", current, createErr)
 			}

@@ -144,7 +144,7 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		Expect(err).NotTo(HaveOccurred())
 	})
 	It("[TC-E71.3] reads and writes the pre-existing tree from host and an ordinary pod without changing source ownership", func() {
-		node := workers[0]
+		node := f.StorageNode
 		pod := "e71-owner"
 		e71ApplyPod(ctx, f, pod, f.PVCName, node, false, 1234, 2345)
 		Expect(f.Must(ctx, "-n", f.Namespace, "exec", pod, "--", "sh", "-ceu", "cat /data/tree/preexisting; printf pod-writer > /data/pod-file; sync")).To(ContainSubstring("native-source"))
@@ -159,8 +159,8 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 	})
 	It("[TC-E71.4] proves true local bind sharing between same-node pods and rejects block or format paths", func() {
 		podA, podB := "e71-local-a", "e71-local-b"
-		e71ApplyPod(ctx, f, podA, f.PVCName, workers[0], false, 1234, 2345)
-		e71ApplyPod(ctx, f, podB, f.PVCName, workers[0], false, 1234, 2345)
+		e71ApplyPod(ctx, f, podA, f.PVCName, f.StorageNode, false, 1234, 2345)
+		e71ApplyPod(ctx, f, podB, f.PVCName, f.StorageNode, false, 1234, 2345)
 		Expect(f.Must(ctx, "-n", f.Namespace, "exec", podA, "--", "sh", "-ceu", "printf shared > /data/local-share; sync")).To(Equal(""))
 		Expect(f.Must(ctx, "-n", f.Namespace, "exec", podB, "--", "cat", "/data/local-share")).To(Equal("shared"))
 		mounts := f.Must(ctx, "-n", f.Namespace, "exec", podB, "--", "cat", "/proc/mounts")
@@ -171,7 +171,7 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 	})
 	It("[TC-E71.5] observes an independent kernel EDQUOT or ENOSPC on fsynced writes beyond the bound", func() {
 		pod := "e71-overflow"
-		e71ApplyPod(ctx, f, pod, f.PVCName, workers[0], false, 1234, 2345)
+		e71ApplyPod(ctx, f, pod, f.PVCName, f.StorageNode, false, 1234, 2345)
 		out, err := f.Kubectl(ctx, "", "-n", f.Namespace, "exec", pod, "--", "sh", "-ceu", "dd if=/dev/zero of=/data/overflow bs=1M count=96 conv=fsync")
 		Expect(err).To(HaveOccurred())
 		Expect(strings.ToLower(out + err.Error())).To(Or(ContainSubstring("edquot"), ContainSubstring("enospc")))
@@ -184,8 +184,16 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		for i, source := range bad {
 			e71Rejected(ctx, f, fmt.Sprintf("bad-%d", i), e71ZFSAnnotation, source, f.LocalStorageClass, e71Quota)
 		}
+		wrongNode := ""
+		for _, worker := range workers {
+			if worker != f.StorageNode {
+				wrongNode = worker
+				break
+			}
+		}
+		Expect(wrongNode).NotTo(BeEmpty())
 		wrong := "e71-wrong-node"
-		_, err := f.Kubectl(ctx, f.PodManifest(wrong, f.PVCName, workers[1], false, 1234, 2345), "apply", "-f", "-")
+		_, err := f.Kubectl(ctx, f.PodManifest(wrong, f.PVCName, wrongNode, false, 1234, 2345), "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(func() string {
 			return f.Must(ctx, "-n", f.Namespace, "get", "pod", wrong, "-o", "jsonpath={.status.phase}")
@@ -204,7 +212,7 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 	})
 	It("[TC-E71.8] preserves UID, GID, modes, and source properties with fsGroup 5555 and reports mismatched access by kernel", func() {
 		pod := "e71-fsgroup"
-		e71ApplyPod(ctx, f, pod, f.PVCName, workers[0], false, 1234, 2345)
+		e71ApplyPod(ctx, f, pod, f.PVCName, f.StorageNode, false, 1234, 2345)
 		Expect(f.Must(ctx, "-n", f.Namespace, "exec", pod, "--", "stat", "-c", "%u:%g:%a", "/data/tree/preexisting")).To(Equal(fmt.Sprintf("%d:%d:640", before.UID, before.GID)))
 		e71Delete(ctx, f, "pod", pod)
 		s, _ := f.Snapshot(ctx)
@@ -254,7 +262,7 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		e71Command(ctx, f, "-n", resolveHelmNamespace(), "rollout", "restart", "daemonset/pillar-csi-node")
 		e71Command(ctx, f, "-n", resolveHelmNamespace(), "rollout", "status", "daemonset/pillar-csi-node", "--timeout=4m")
 		pod := "e71-recovery"
-		e71ApplyPod(ctx, f, pod, f.PVCName, workers[0], false, 1234, 2345)
+		e71ApplyPod(ctx, f, pod, f.PVCName, f.StorageNode, false, 1234, 2345)
 		Expect(f.Must(ctx, "-n", f.Namespace, "exec", pod, "--", "cat", "/data/tree/preexisting")).To(Equal("native-source"))
 		e71Delete(ctx, f, "pod", pod)
 	})
@@ -294,7 +302,7 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 	})
 	It("[TC-E71.15] refuses read-only and incompatible multi-node access while preserving source", func() {
 		pod := "e71-readonly"
-		e71ApplyPod(ctx, f, pod, f.PVCName, workers[0], true, 1234, 2345)
+		e71ApplyPod(ctx, f, pod, f.PVCName, f.StorageNode, true, 1234, 2345)
 		Expect(f.Must(ctx, "-n", f.Namespace, "exec", pod, "--", "cat", "/data/tree/preexisting")).To(Equal("native-source"))
 		_, err := f.Kubectl(ctx, "", "-n", f.Namespace, "exec", pod, "--", "sh", "-ceu", "printf denied > /data/readonly")
 		Expect(err).To(HaveOccurred())
@@ -310,7 +318,7 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 	})
 	It("[TC-E71.16] refuses a nonmatching workload identity without chown or DAC bypass", func() {
 		pod := "e71-denied"
-		manifest := f.PodManifest(pod, f.PVCName, workers[0], false, 9876, 9877)
+		manifest := f.PodManifest(pod, f.PVCName, f.StorageNode, false, 9876, 9877)
 		_, err := f.Kubectl(ctx, manifest, "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(func() string {
@@ -352,7 +360,7 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 			Expect(after).To(Equal(before))
 
 			pod := "e71-expansion-" + strings.ToLower(strings.ReplaceAll(f.BackendKind, "-", ""))
-			e71ApplyPod(ctx, f, pod, f.PVCName, workers[0], false, 1234, 2345)
+			e71ApplyPod(ctx, f, pod, f.PVCName, f.StorageNode, false, 1234, 2345)
 			Expect(f.Must(ctx, "-n", f.Namespace, "exec", pod, "--", "cat", "/data/tree/preexisting")).To(Equal("native-source"))
 			e71Delete(ctx, f, "pod", pod)
 		}

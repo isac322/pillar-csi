@@ -108,6 +108,39 @@ func TestEnsurePrivateEtabCreatesAndPreservesTable(t *testing.T) {
 	if err := ensurePrivateEtab(path); err != nil {
 		t.Fatal(err)
 	}
+	assertPrivateEtab(t, path, 0o600)
+
+	const content = "/data 192.0.2.10(ro,fsid=1)\n"
+	writePermissiveEtab(t, path, content)
+	assertPrivateEtab(t, path, 0o644)
+
+	if err := ensurePrivateEtab(path); err != nil {
+		t.Fatal(err)
+	}
+	assertPrivateEtab(t, path, 0o600)
+	got, err := fs.ReadFile(os.DirFS(dir), "etab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Fatalf("private admission table content = %q, want %q", got, content)
+	}
+}
+
+func writePermissiveEtab(t *testing.T, path, content string) {
+	t.Helper()
+	//nolint:gosec // Deliberately permissive setup verifies ensurePrivateEtab tightens mode.
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	//nolint:gosec // Deliberately permissive setup verifies ensurePrivateEtab tightens mode.
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertPrivateEtab(t *testing.T, path string, wantPerm fs.FileMode) {
+	t.Helper()
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -119,24 +152,8 @@ func TestEnsurePrivateEtabCreatesAndPreservesTable(t *testing.T) {
 	if !ok || stat.Uid != 0 {
 		t.Fatalf("private admission table owner = %#v, want root", info.Sys())
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("private admission table mode = %o, is group/world accessible", info.Mode().Perm())
-	}
-	const content = "/data 192.0.2.10(ro,fsid=1)\n"
-	writeErr := os.WriteFile(path, []byte(content), 0o600)
-	if writeErr != nil {
-		t.Fatal(writeErr)
-	}
-	ensureErr := ensurePrivateEtab(path)
-	if ensureErr != nil {
-		t.Fatal(ensureErr)
-	}
-	got, readErr := fs.ReadFile(os.DirFS(dir), "etab")
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if string(got) != content {
-		t.Fatalf("private admission table content = %q, want %q", got, content)
+	if info.Mode().Perm() != wantPerm {
+		t.Fatalf("private admission table mode = %o, want %o", info.Mode().Perm(), wantPerm)
 	}
 }
 

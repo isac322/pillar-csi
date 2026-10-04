@@ -1204,22 +1204,43 @@ func ensurePrivateEtab(path string) error {
 	if err != nil {
 		return fmt.Errorf("open private NFS admission table %q: %w", path, err)
 	}
-	info, statErr := file.Stat()
-	closeErr := file.Close()
-	if statErr != nil {
-		return fmt.Errorf("stat private NFS admission table %q: %w", path, errors.Join(statErr, closeErr))
+	closeFile := func(operationErr error) error {
+		closeErr := file.Close()
+		if closeErr == nil {
+			return operationErr
+		}
+		closeContext := fmt.Errorf("close private NFS admission table %q: %w", path, closeErr)
+		if operationErr == nil {
+			return closeContext
+		}
+		return errors.Join(operationErr, closeContext)
 	}
-	if closeErr != nil {
-		return fmt.Errorf("close private NFS admission table %q: %w", path, closeErr)
+	info, statErr := file.Stat()
+	if statErr != nil {
+		return closeFile(fmt.Errorf("stat private NFS admission table %q: %w", path, statErr))
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("private NFS admission table %q is not a regular file", path)
+		return closeFile(fmt.Errorf("private NFS admission table %q is not a regular file", path))
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != 0 {
-		return fmt.Errorf("private NFS admission table %q must be root-owned", path)
+		return closeFile(fmt.Errorf("private NFS admission table %q must be root-owned", path))
 	}
-	return nil
+	if info.Mode().Perm() != 0o600 {
+		chmodErr := file.Chmod(0o600)
+		if chmodErr != nil {
+			return closeFile(fmt.Errorf("chmod private NFS admission table %q: %w", path, chmodErr))
+		}
+		verified, verifyErr := file.Stat()
+		if verifyErr != nil {
+			return closeFile(fmt.Errorf("stat private NFS admission table %q after chmod: %w", path, verifyErr))
+		}
+		if verified.Mode().Perm() != 0o600 {
+			return closeFile(fmt.Errorf("private NFS admission table %q mode after chmod = %o, want 600",
+				path, verified.Mode().Perm()))
+		}
+	}
+	return closeFile(nil)
 }
 
 func (*kernelRuntime) list(_ context.Context) ([]entry, error) {

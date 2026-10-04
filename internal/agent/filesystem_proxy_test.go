@@ -414,3 +414,32 @@ func TestFilesystemProxyRejectsSourceTargetAndPreservesEmptyDirectory(t *testing
 		t.Fatalf("source-target directory was changed: %d entries", len(entries))
 	}
 }
+
+func TestEnsureProxyTargetUsesTraversableParentsAndPrivateTarget(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(canonicalTempDir(t), "proxies")
+	target := filepath.Join(root, "filesystem", "native")
+	created, err := ensureProxyTarget(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("new filesystem proxy target was not created")
+	}
+	for _, path := range []string{root, filepath.Dir(target)} {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		if mode := info.Mode().Perm(); mode != 0o755 {
+			t.Fatalf("proxy intermediate directory %q mode = %04o, want 0755", path, mode)
+		}
+	}
+	info, statErr := os.Stat(target)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if mode := info.Mode().Perm(); mode != 0o750 {
+		t.Fatalf("proxy target mode = %04o, want 0750", mode)
+	}
+}
