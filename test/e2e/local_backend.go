@@ -1399,6 +1399,14 @@ func (m *localMockMounter) HasOtherMounts(target string) (bool, error) {
 	return count > 1, nil
 }
 
+// MountSource reports the recorded mount source like mountinfo does.
+func (m *localMockMounter) MountSource(target string) (string, error) {
+	if !m.mounted[target] {
+		return "", fmt.Errorf("%q is not a mount point", target)
+	}
+	return m.mountSource[target], nil
+}
+
 type localMockResizer struct {
 	calls []localResizeCall
 	err   error

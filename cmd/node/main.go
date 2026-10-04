@@ -988,6 +988,11 @@ func (m *mkdirMounter) HasOtherMounts(target string) (bool, error) {
 	return m.wrapped.HasOtherMounts(target)
 }
 
+// MountSource delegates to the wrapped Mounter unchanged.
+func (m *mkdirMounter) MountSource(target string) (string, error) {
+	return m.wrapped.MountSource(target)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────

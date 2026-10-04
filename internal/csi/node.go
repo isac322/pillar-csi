@@ -358,6 +358,12 @@ type Mounter interface {
 	// target does not detach the filesystem — a fresh mount would silently
 	// re-attach the same superblock.  An error is inconclusive.
 	HasOtherMounts(target string) (bool, error)
+
+	// MountSource returns the mountinfo source of the filesystem mounted at
+	// target — the device path NodePublishVolume needs to re-mount a staged
+	// filesystem whose stage record predates the DevicePath field.  An error
+	// is inconclusive.
+	MountSource(target string) (string, error)
 }
 
 // NodeServer implements csi.NodeServer.  It handles the per-node portion of
@@ -1188,6 +1194,7 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		stageState = stageStateFromAttachResult(protocolType, accessType, targetID, address, port, attachResult)
 	}
 	stageState.FsType = fsType
+	stageState.DevicePath = devicePath
 	stageState.VolumeID = volumeID
 	stageState.StagingPath = stagingPath
 	stageState.PeriodicTrim = periodicTrim
@@ -1469,6 +1476,137 @@ func (n *NodeServer) dropUnusableStagedMount(volumeID, target string) (usable bo
 	return false, nil
 }
 
+// ensureHealthyStagedMount guarantees the staged filesystem at stagingPath
+// is mounted and writable before NodePublishVolume bind-mounts it (issue
+// #172).  Kubelet retries NodePublishVolume — never NodeStageVolume — while
+// the VolumeAttachment persists, so the repair must live here or a pod
+// whose filesystem entered kernel shutdown stays ContainerCreating forever.
+// Called only for configurations nodePublishProbePlan marks probeable
+// (filesystem access, non-NFS protocol, not staged read-only), under the
+// per-volume lock, so it cannot race a stage repair or another publish.
+//
+// A nil return means the staged filesystem answers writes.  A staged mount
+// that is
+// dead (ErrMountUnhealthy) and unpinned is dropped and re-mounted from the
+// device the stage state file recorded — mount re-attaching a still-pinned
+// dead superblock would report success yet stay dead, so a pinned mount is
+// never touched and an Internal error asks the CO to retry until teardown
+// removes the binds.  Any probe, read, or mount failure is an Internal
+// error; nothing is unmounted on an inconclusive result.
+func (n *NodeServer) ensureHealthyStagedMount(
+	ctx context.Context, volumeID, stagingPath string,
+	volCtx map[string]string, volCap *csi.VolumeCapability,
+) error {
+	staged, fsErr := stageFilesystem(volCtx, volCap)
+	if fsErr != nil {
+		return status.Errorf(codes.InvalidArgument,
+			"NodePublishVolume: volume %q: %v", volumeID, fsErr)
+	}
+	mounted, mountCheckErr := n.mounter.IsMounted(stagingPath)
+	if mountCheckErr != nil {
+		return status.Errorf(codes.Internal,
+			"NodePublishVolume: volume %q: check if staged path %q is mounted: %v",
+			volumeID, stagingPath, mountCheckErr)
+	}
+	if mounted {
+		healthErr := n.mounter.CheckMountHealth(stagingPath)
+		if healthErr == nil {
+			return nil
+		}
+		if !errors.Is(healthErr, ErrMountUnhealthy) {
+			return status.Errorf(codes.Internal,
+				"NodePublishVolume: volume %q: health-check staged filesystem %q: %v",
+				volumeID, stagingPath, healthErr)
+		}
+	}
+	state, stateErr := n.readStageState(volumeID)
+	if stateErr != nil {
+		return status.Errorf(codes.Internal,
+			"NodePublishVolume: read stage state for %q: %v", volumeID, stateErr)
+	}
+	if !mounted && state == nil {
+		// No stage record: the volume was never staged on this node (unit
+		// tests and out-of-band flows bind the path directly).  Preserve the
+		// historical behavior — bind whatever is there.
+		return nil
+	}
+	return n.repairDeadStagedMount(ctx, volumeID, stagingPath, mounted, state, staged)
+}
+
+// repairDeadStagedMount re-mounts the staged filesystem at stagingPath:
+// when mounted is true the staged mount is known dead (ErrMountUnhealthy)
+// and is dropped first; a missing mount goes straight to the re-mount so a
+// previous repair attempt that already unmounted still completes.  The
+// device comes from the stage record's DevicePath, or — for state files
+// written before the field existed — the staged mount's mountinfo source.
+//
+// A dead mount still referenced by other mounts (pod binds that share the
+// superblock) is never unmounted: the re-mount would re-attach the same
+// dead filesystem, so an Internal error asks the CO to retry after
+// teardown.  The re-mount runs formatAndMount, which detects the existing
+// filesystem signature and mounts without mkfs, letting the journal replay
+// — the same repair NodeStageVolume performs.  A filesystem that still
+// fails its health probe after the re-mount is reported rather than
+// silently bound.
+func (n *NodeServer) repairDeadStagedMount(
+	ctx context.Context, volumeID, stagingPath string, mounted bool,
+	state *nodeStageState, staged stagedFilesystem,
+) error {
+	device := ""
+	if state != nil {
+		device = state.DevicePath
+	}
+	if mounted {
+		others, mountsErr := n.mounter.HasOtherMounts(stagingPath)
+		if mountsErr != nil {
+			return status.Errorf(codes.Internal,
+				"NodePublishVolume: volume %q: check mounts sharing the dead filesystem at %q: %v",
+				volumeID, stagingPath, mountsErr)
+		}
+		if others {
+			return status.Errorf(codes.Internal,
+				"NodePublishVolume: volume %q: staged filesystem at %q is dead but still "+
+					"referenced by other mounts; it cannot be repaired until pod teardown removes them",
+				volumeID, stagingPath)
+		}
+		if device == "" {
+			source, sourceErr := n.mounter.MountSource(stagingPath)
+			if sourceErr != nil {
+				return status.Errorf(codes.Internal,
+					"NodePublishVolume: volume %q: no device path in the stage record and the "+
+						"mountinfo source of %q is unreadable: %v",
+					volumeID, stagingPath, sourceErr)
+			}
+			device = source
+		}
+		unmountErr := n.mounter.Unmount(stagingPath)
+		if unmountErr != nil {
+			return status.Errorf(codes.Internal,
+				"NodePublishVolume: unmount dead staged filesystem %q for volume %q: %v",
+				stagingPath, volumeID, unmountErr)
+		}
+	}
+	if device == "" {
+		return status.Errorf(codes.Internal,
+			"NodePublishVolume: volume %q: staged filesystem at %q is %s but the stage "+
+				"record has no device path to re-mount",
+			volumeID, stagingPath, map[bool]string{true: "dead", false: "not mounted"}[mounted])
+	}
+	formatErr := n.formatAndMount(ctx, device, stagingPath, staged.fsType, staged.mountFlags, staged.mkfsOptions)
+	if formatErr != nil {
+		return status.Errorf(codes.Internal,
+			"NodePublishVolume: re-mount staged filesystem %q -> %q for volume %q: %v",
+			device, stagingPath, volumeID, formatErr)
+	}
+	healthErr := n.mounter.CheckMountHealth(stagingPath)
+	if healthErr != nil {
+		return status.Errorf(codes.Internal,
+			"NodePublishVolume: re-mounted staged filesystem %q for volume %q failed its "+
+				"health probe: %v", stagingPath, volumeID, healthErr)
+	}
+	return nil
+}
+
 // checkUnstagedWithoutState verifies that nothing is still mounted for a
 // volume whose stage state file is missing.  It returns nil only when neither
 // staged surface is mounted; a live mount or a failed probe yields an error.
@@ -1585,6 +1723,42 @@ func (n *NodeServer) mountNodePublish(
 	}
 }
 
+// bindWithStagedRepair probes the staged filesystem before bind-mounting it
+// and, when the staged filesystem entered kernel shutdown, repairs it in
+// place (unmount + re-mount so the journal replays) before the bind
+// proceeds (issue #172).
+//
+// The probe belongs here, not only in NodeStageVolume: while a
+// VolumeAttachment persists kubelet retries NodePublishVolume without ever
+// re-issuing NodeStageVolume, so a repair gated on the stage RPC is
+// unreachable during the pod-delete flow.  On kernels that reject
+// bind-mounting a shut-down superblock the bind fails before any post-bind
+// health check could run — a bind error also triggers one repair-and-retry
+// before the error is reported.
+func (n *NodeServer) bindWithStagedRepair(
+	ctx context.Context, volumeID, stagingPath, targetPath, fsType string,
+	volCap *csi.VolumeCapability, mountOptions []string, probeHealth bool,
+	volCtx map[string]string,
+) error {
+	if probeHealth {
+		healthErr := n.ensureHealthyStagedMount(ctx, volumeID, stagingPath, volCtx, volCap)
+		if healthErr != nil {
+			return healthErr
+		}
+	}
+	err := n.mountNodePublish(stagingPath, targetPath, fsType, volCap, mountOptions)
+	if err == nil || !probeHealth {
+		return err
+	}
+	// The staged filesystem may have died between the probe and the bind.
+	healthErr := n.ensureHealthyStagedMount(ctx, volumeID, stagingPath, volCtx, volCap)
+	if healthErr != nil {
+		//nolint:wrapcheck // both operands are annotated; Join preserves the gRPC code
+		return errors.Join(err, healthErr)
+	}
+	return n.mountNodePublish(stagingPath, targetPath, fsType, volCap, mountOptions)
+}
+
 // NodePublishVolume bind-mounts the staged volume from the staging path to the
 // pod-specific target path.
 //
@@ -1621,6 +1795,7 @@ func (n *NodeServer) NodePublishVolume(
 	targetPath := req.GetTargetPath()
 	volumeID := req.GetVolumeId()
 	volCap := req.GetVolumeCapability()
+	volCtx := req.GetVolumeContext()
 
 	// Serialize with NodeStageVolume / NodeUnstageVolume / NodeExpandVolume
 	// of the same volume: a stage that drops a dead staged filesystem and
@@ -1669,9 +1844,10 @@ func (n *NodeServer) NodePublishVolume(
 		mountOptions = append(mountOptions, "ro")
 	}
 
-	err = n.mountNodePublish(stagingPath, targetPath, fsType, volCap, mountOptions)
-	if err != nil {
-		return nil, err
+	bindErr := n.bindWithStagedRepair(ctx, volumeID, stagingPath, targetPath,
+		fsType, volCap, mountOptions, probeHealth, volCtx)
+	if bindErr != nil {
+		return nil, bindErr
 	}
 
 	if probeHealth {

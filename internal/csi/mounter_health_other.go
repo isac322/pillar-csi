@@ -35,3 +35,8 @@ func (*KubeMounter) CheckMountHealth(target string) error {
 func (*KubeMounter) HasOtherMounts(target string) (bool, error) {
 	return false, fmt.Errorf("HasOtherMounts %s: unsupported on %s", target, runtime.GOOS)
 }
+
+// MountSource is only implemented on Linux: it parses /proc/self/mountinfo.
+func (*KubeMounter) MountSource(target string) (string, error) {
+	return "", fmt.Errorf("MountSource %s: unsupported on %s", target, runtime.GOOS)
+}
