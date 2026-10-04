@@ -449,7 +449,7 @@ tc_id,group_id,type,in_437_scope,test_func,description
 "E195","E3.21","A",true,"TestNodePublishVolume_MissingTargetPath","`TargetPath` 누락 시 `InvalidArgument` 반환"
 "E196","E3.21","A",true,"TestNodePublishVolume_MissingVolumeCapability","`VolumeCapability` 누락 시 `InvalidArgument` 반환"
 "E197","E3.21","A",true,"TestNodePublishVolume_MountError","`Mounter.Mount` 오류 발생 시 `Internal` 반환"
-"E198","E3.21","A",true,"TestNodePublishVolume_IsMountedError","`Mounter.IsMounted` 오류 발생 시 `Internal` 반환"
+"E198","E3.21","A",true,"TestNodePublishVolume_MountEntryExistsError","마운트 테이블 조회(`Mounter.MountEntryExists`) 오류 발생 시 `Internal` 반환"
 "E199","E3.22","A",true,"TestNodeUnpublishVolume_Unmounts","NodePublishVolume으로 마운트한 타깃 경로를 NodeUnpublishVolume이 정확히 해제"
 "E200","E3.22","A",true,"TestNodeUnpublishVolume_Idempotent","타깃 경로가 이미 마운트 해제된 상태에서 NodeUnpublishVolume 호출 시 성공 (no-op)"
 "E201","E3.22","A",true,"TestNodeUnpublishVolume_TwiceMountsOnce","Publish→Unpublish→Unpublish 사이클에서 Unmount는 정확히 1회"

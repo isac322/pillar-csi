@@ -1219,7 +1219,7 @@ NodeStageVolume을 재호출할 때의 동작을 검증한다. 이 시나리오�
 |----|------------|------|----------|------|----------|---------|
 | 183 | `TestCSINode_NodeUnstage_CorruptStateFile` | stateDir에 유효하지 않은 JSON(`"not valid json {{{"`) 상태 파일 직접 기록 후 NodeUnstageVolume 호출 | `volumeID`에 대응하는 `stateDir/<safeID>.json`에 corrupt bytes 기록 | 1) NodeUnstageVolumeRequest 전송 | 비-OK gRPC 상태 반환; 패닉 없음; `Disconnect` 미호출 | `CSI-N`, `State` |
 | 184 | `TestCSINode_NodeStage_StateDirUnwritable` | stateDir을 `0555`(읽기 전용)로 변경 후 NodeStageVolume — 상태 파일 쓰기 실패 | `os.Chmod(stateDir, 0o555)`; root가 아닌 사용자 실행 시에만 유효 (`t.Skip if root`) | 1) NodeStageVolumeRequest 전송 | 오류 반환(non-nil); 패닉 없음; `FormatAndMount` 호출 성공 후 상태 파일 쓰기 단계에서 실패 | `CSI-N`, `State` |
-| 185 | `TestCSINode_NodeUnstage_StateFileMissingIsOK` | 상태 파일 없음 + 스테이징 경로 언마운트 → NodeUnstageVolume 성공 (no-op) | stateDir에 해당 volumeID 상태 파일 없음; `mounter.IsMounted` 항상 `false` 반환 | 1) NodeUnstageVolumeRequest 전송 | 성공; `Disconnect` 0회; `Unmount` 0회 | `CSI-N`, `State` |
+| 185 | `TestCSINode_NodeUnstage_StateFileMissingIsOK` | 상태 파일 없음 + 스테이징 경로 언마운트 → NodeUnstageVolume 성공 (no-op) | stateDir에 해당 volumeID 상태 파일 없음; `mounter.MountEntryExists`(마운트 테이블) 항상 `false` 반환 | 1) NodeUnstageVolumeRequest 전송 | 성공; `Disconnect` 0회; `Unmount` 0회 | `CSI-N`, `State` |
 | 186 | `TestStageState_WriteReadDelete` | 상태 파일 쓰기 → 읽기 → 삭제 → 삭제 후 읽기 단위 기능 라운드트립 | `NewNodeServerWithStateDir("n", nil, nil, stateDir)`; 쓰기 가능 stateDir | 1) `writeStageState(volumeID, {SubsysNQN:"nqn.test:..."})` 호출; 2) `readStageState(volumeID)` 호출; 3) `deleteStageState(volumeID)` 호출; 4) `readStageState` 재호출 | 2단계: SubsysNQN 동일; 4단계: nil 반환; 오류 없음 | `CSI-N`, `State` |
 | 187 | `TestStageState_DeleteIdempotent` | 존재하지 않는 상태 파일 삭제 → `ErrNotExist` 무시하고 성공 | `NewNodeServerWithStateDir`; stateDir에 해당 volumeID 파일 없음 | 1) `deleteStageState("pool/nonexistent")` 호출 | 오류 없음(nil 반환); 패닉 없음 | `CSI-N`, `State` |
 | 188 | `TestStageState_VolumeIDSanitization` | VolumeID에 슬래시(`/`) 포함 시 상태 파일명 안전하게 변환 — 경로 탈출(path traversal) 방지 | `["pool/vol-a", "pool/vol-b", "other-pool/vol-c"]` 각 ID에 대해 `writeStageState` 호출 | 1) 각 volumeID로 `writeStageState` 호출; 2) `readStageState` 호출; 3) stateDir 파일 목록 확인 | 각 ID에 대해 독립적으로 상태 읽기 성공; stateDir의 파일명에 `/` 없음; 파일 간 데이터 혼동 없음 | `CSI-N`, `State` |
@@ -1238,8 +1238,8 @@ NodeStageVolume을 재호출할 때의 동작을 검증한다. 이 시나리오�
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 189 | `TestNodePublishVolume_MountAccess` | MOUNT 접근 유형에서 NodePublishVolume이 스테이징 경로 → 타깃 경로로 바인드 마운트를 수행 | `newNodeTestEnv(t)` 초기화; `stagingPath=t.TempDir()`; `targetPath=t.TempDir()`; VolumeCapability=`mountCap("ext4")` | 1) `NodePublishVolumeRequest{VolumeId, StagingTargetPath, TargetPath, VolumeCapability}` 전송 | 성공(nil 오류); `mounter.IsMounted(targetPath)=true`; `mounter.mountCalls` 길이=1; `mountCalls[0].source=stagingPath`; `mountCalls[0].options`에 `"bind"` 포함 | `CSI-N`, `Mnt` |
-| 190 | `TestNodePublishVolume_BlockAccess` | BLOCK 접근 유형에서 NodePublishVolume이 스테이징 경로를 타깃 경로로 바인드 마운트 | `newNodeTestEnv(t)` 초기화; VolumeCapability=`blockCap()` | 1) `NodePublishVolumeRequest{VolumeCapability: blockCap()}` 전송 | 성공; `mounter.IsMounted(targetPath)=true`; `mountCalls[0].source=stagingPath`; Mount 1회 호출 | `CSI-N`, `Mnt` |
+| 189 | `TestNodePublishVolume_MountAccess` | MOUNT 접근 유형에서 NodePublishVolume이 스테이징 경로 → 타깃 경로로 바인드 마운트를 수행 | `newNodeTestEnv(t)` 초기화; `stagingPath=t.TempDir()`; `targetPath=t.TempDir()`; VolumeCapability=`mountCap("ext4")` | 1) `NodePublishVolumeRequest{VolumeId, StagingTargetPath, TargetPath, VolumeCapability}` 전송 | 성공(nil 오류); `mounter.MountEntryExists(targetPath)=true`; `mounter.mountCalls` 길이=1; `mountCalls[0].source=stagingPath`; `mountCalls[0].options`에 `"bind"` 포함 | `CSI-N`, `Mnt` |
+| 190 | `TestNodePublishVolume_BlockAccess` | BLOCK 접근 유형에서 NodePublishVolume이 스테이징 경로를 타깃 경로로 바인드 마운트 | `newNodeTestEnv(t)` 초기화; VolumeCapability=`blockCap()` | 1) `NodePublishVolumeRequest{VolumeCapability: blockCap()}` 전송 | 성공; `mounter.MountEntryExists(targetPath)=true`; `mountCalls[0].source=stagingPath`; Mount 1회 호출 | `CSI-N`, `Mnt` |
 | 191 | `TestNodePublishVolume_Readonly` | `Readonly=true`인 요청에서 마운트 옵션에 `"ro"`가 추가됨 | `newNodeTestEnv(t)` 초기화; `Readonly: true`; VolumeCapability=`mountCap("ext4")` | 1) `NodePublishVolumeRequest{Readonly: true}` 전송 | 성공; `mountCalls[0].options`에 `"ro"` 포함 | `CSI-N`, `Mnt` |
 | 192 | `TestNodePublishVolume_Idempotent` | 동일 요청을 2회 호출하면 두 번째는 마운트를 수행하지 않음 (멱등성) | `newNodeTestEnv(t)` 초기화; 동일 `NodePublishVolumeRequest` 객체 준비 | 1) 1차 `NodePublishVolume` 호출; 2) 동일 인수로 2차 호출 | 두 호출 모두 성공; `mounter.mountCalls` 길이=1 (중복 마운트 없음) | `CSI-N`, `Mnt` |
 | 193 | `TestNodePublishVolume_MissingVolumeID` | `VolumeId` 누락 시 `InvalidArgument` 반환 | `newNodeTestEnv(t)` 초기화 | 1) `VolumeId=""` 로 `NodePublishVolumeRequest` 전송 | gRPC `InvalidArgument`; 마운터 미호출 | `CSI-N` |
@@ -1247,7 +1247,7 @@ NodeStageVolume을 재호출할 때의 동작을 검증한다. 이 시나리오�
 | 195 | `TestNodePublishVolume_MissingTargetPath` | `TargetPath` 누락 시 `InvalidArgument` 반환 | `newNodeTestEnv(t)` 초기화 | 1) `TargetPath=""` 로 `NodePublishVolumeRequest` 전송 | gRPC `InvalidArgument` | `CSI-N` |
 | 196 | `TestNodePublishVolume_MissingVolumeCapability` | `VolumeCapability` 누락 시 `InvalidArgument` 반환 | `newNodeTestEnv(t)` 초기화 | 1) `VolumeCapability=nil` 로 `NodePublishVolumeRequest` 전송 | gRPC `InvalidArgument` | `CSI-N` |
 | 197 | `TestNodePublishVolume_MountError` | `Mounter.Mount` 오류 발생 시 `Internal` 반환 | `newNodeTestEnv(t)` 초기화; `env.mounter.mountErr = errors.New("mount failed")` | 1) 정상 파라미터로 `NodePublishVolumeRequest` 전송 | gRPC `Internal`; 패닉 없음 | `CSI-N`, `Mnt` |
-| 198 | `TestNodePublishVolume_IsMountedError` | `Mounter.IsMounted` 오류 발생 시 `Internal` 반환 | `newNodeTestEnv(t)` 초기화; `env.mounter.isMountedErr = errors.New("isMounted failed")` | 1) 정상 파라미터로 `NodePublishVolumeRequest` 전송 | gRPC `Internal`; Mount 미호출 | `CSI-N`, `Mnt` |
+| 198 | `TestNodePublishVolume_MountEntryExistsError` | 마운트 테이블 조회(`Mounter.MountEntryExists`) 오류 발생 시 `Internal` 반환 | `newNodeTestEnv(t)` 초기화; `env.mounter.mountEntryExistsErr = errors.New("mountinfo unreadable")` | 1) 정상 파라미터로 `NodePublishVolumeRequest` 전송 | gRPC `Internal`; Mount 미호출 | `CSI-N`, `Mnt` |
 
 ---
 
@@ -1267,7 +1267,7 @@ NodeStageVolume을 재호출할 때의 동작을 검증한다. 이 시나리오�
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 199 | `TestNodeUnpublishVolume_Unmounts` | NodePublishVolume으로 마운트한 타깃 경로를 NodeUnpublishVolume이 정확히 해제 | `newNodeTestEnv(t)` 초기화; `NodePublishVolume` 선행 호출로 타깃 경로 마운트 | 1) `NodePublishVolume` 호출 (stagingPath→targetPath); 2) `IsMounted(targetPath)=true` 확인; 3) `NodeUnpublishVolume{VolumeId, TargetPath}` 전송; 4) `IsMounted(targetPath)` 재확인 | `NodeUnpublishVolume` 성공; `IsMounted=false`; `unmountCalls` 길이=1; `unmountCalls[0]=targetPath` | `CSI-N`, `Mnt` |
+| 199 | `TestNodeUnpublishVolume_Unmounts` | NodePublishVolume으로 마운트한 타깃 경로를 NodeUnpublishVolume이 정확히 해제 | `newNodeTestEnv(t)` 초기화; `NodePublishVolume` 선행 호출로 타깃 경로 마운트 | 1) `NodePublishVolume` 호출 (stagingPath→targetPath); 2) `MountEntryExists(targetPath)=true` 확인; 3) `NodeUnpublishVolume{VolumeId, TargetPath}` 전송; 4) `MountEntryExists(targetPath)` 재확인 | `NodeUnpublishVolume` 성공; `MountEntryExists=false`; `unmountCalls` 길이=1; `unmountCalls[0]=targetPath` | `CSI-N`, `Mnt` |
 | 200 | `TestNodeUnpublishVolume_Idempotent` | 타깃 경로가 이미 마운트 해제된 상태에서 NodeUnpublishVolume 호출 시 성공 (no-op) | `newNodeTestEnv(t)` 초기화; `targetPath=t.TempDir()`; 마운트 없이 직접 `NodeUnpublishVolume` 호출 | 1) 마운트되지 않은 `targetPath`로 `NodeUnpublishVolumeRequest` 전송 | 성공(nil 오류); `Unmount`는 멱등성 계약상 직접 호출되며 no-op으로 성공 | `CSI-N`, `Mnt` |
 | 201 | `TestNodeUnpublishVolume_TwiceMountsOnce` | Publish→Unpublish→Unpublish 사이클에서 두 번째 Unpublish는 멱등 수렴 | `newNodeTestEnv(t)` 초기화; NodePublishVolume 1회 완료 | 1) `NodePublishVolume` 호출; 2) `NodeUnpublishVolume` 1차 호출; 3) 동일 인수로 `NodeUnpublishVolume` 2차 호출 | 두 `NodeUnpublishVolume` 모두 성공; 타깃 경로 최종 비마운트 | `CSI-N`, `Mnt` |
 | 202 | `TestNodeUnpublishVolume_MissingVolumeID` | `VolumeId` 누락 시 `InvalidArgument` 반환 | `newNodeTestEnv(t)` 초기화 | 1) `VolumeId=""` 로 `NodeUnpublishVolumeRequest` 전송 | gRPC `InvalidArgument`; 언마운터 미호출 | `CSI-N` |
@@ -1290,28 +1290,32 @@ NodeStageVolume → NodePublishVolume → NodeUnpublishVolume → NodeUnstageVol
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
-| 206 | `TestNodeFullLifecycle` | Stage → Publish → Unpublish → Unstage 전체 노드 라이프사이클 단위 검증 | `newNodeTestEnv(t)` 초기화; `env.connector.devicePath="/dev/nvme0n1"`; `stagingPath=t.TempDir()`; `targetPath=t.TempDir()`; `VolumeContext`: `nqn`, `addr="192.0.2.10"`, `port="4420"` | 1) `NodeStageVolume{VolumeId, stagingPath, VolumeContext, mountCap("ext4")}` 전송; 2) `NodePublishVolume{VolumeId, stagingPath, targetPath, mountCap("ext4")}` 전송; 3) `IsMounted(targetPath)=true` 확인; 4) `NodeUnpublishVolume{VolumeId, targetPath}` 전송; 5) `IsMounted(targetPath)=false` 확인; 6) `NodeUnstageVolume{VolumeId, stagingPath}` 전송 | 전 단계 성공; Stage 후 스테이징 경로 마운트; Publish 후 타깃 경로 마운트; Unpublish 후 타깃 경로 해제; Unstage 후 스테이징 경로 해제; `disconnectCalls` 길이=1 | `CSI-N`, `Conn`, `Mnt`, `State` |
+| 206 | `TestNodeFullLifecycle` | Stage → Publish → Unpublish → Unstage 전체 노드 라이프사이클 단위 검증 | `newNodeTestEnv(t)` 초기화; `env.connector.devicePath="/dev/nvme0n1"`; `stagingPath=t.TempDir()`; `targetPath=t.TempDir()`; `VolumeContext`: `nqn`, `addr="192.0.2.10"`, `port="4420"` | 1) `NodeStageVolume{VolumeId, stagingPath, VolumeContext, mountCap("ext4")}` 전송; 2) `NodePublishVolume{VolumeId, stagingPath, targetPath, mountCap("ext4")}` 전송; 3) `MountEntryExists(targetPath)=true` 확인; 4) `NodeUnpublishVolume{VolumeId, targetPath}` 전송; 5) `MountEntryExists(targetPath)=false` 확인; 6) `NodeUnstageVolume{VolumeId, stagingPath}` 전송 | 전 단계 성공; Stage 후 스테이징 경로 마운트; Publish 후 타깃 경로 마운트; Unpublish 후 타깃 경로 해제; Unstage 후 스테이징 경로 해제; `disconnectCalls` 길이=1 | `CSI-N`, `Conn`, `Mnt`, `State` |
 
 ---
 
 ### E3.24 NodeStage/NodePublish — 커널 셧다운 파일시스템 감지 및 복구 (단위 테스트)
 
 **설명:** 스테이징된 파일시스템이 디바이스는 멀쩡한 채 커널 셧다운(XFS forced
-shutdown, ext4 `errors=remount-ro`)에 들어간 경우 — 마운트 테이블 항목과
-`stat(2)`는 그대로 정상이라 `IsMounted`로는 감지할 수 없다 — `NodeStageVolume`의
-멱등 경로가 성공을 반환해선 안 된다(이슈 #168). 다른 마운트가 없는 죽은
-파일시스템은 언마운트 후 재마운트로 복구하고, 포드 바인드 마운트가 죽은
-슈퍼블록을 고정(pinning)하고 있는 동안에는 마운트를 유지한 채 오류를 반환한다.
-`NodePublishVolume`의 멱등 경로도 같은 사각지대를 검증한다.
+shutdown, ext4 `errors=remount-ro`)에 들어간 경우 — 마운트 테이블 항목은 그대로
+남지만 `stat(2)`는 EIO를 반환한다 — `NodeStageVolume`의 멱등 경로가 성공을 반환해선
+안 된다(이슈 #168). "마운트 여부"는 mountinfo 기반 `Mounter.MountEntryExists`로만
+판정한다 — stat 기반 판정은 바로 복구가 필요한 죽은 마운트에서 EIO로 실패해 복구를
+영구히 막았다(이슈 #175; stat 기반 `IsMounted`는 인터페이스에서 제거). 쓰기 프로브를
+생략하는 구성(`ro` 스테이지, NFS, 블록 바인드)은 비쓰기 stat 프로브
+`CheckMountReadable`로 죽은 마운트를 성공으로 보고하지 않는다. 다른 마운트가 없는 죽은
+파일시스템은 언마운트 후 재마운트로 복구하고, 포드 바인드 마운트가 죽은 슈퍼블록을
+고정(pinning)하고 있는 동안에는 마운트를 유지한 채 오류를 반환한다.
+`NodePublishVolume`도 같은 복구를 수행한다(이슈 #172).
 
 > **시그니처 근거:** Lima VM(linux 7.0)에서 `xfs_io -x -c shutdown`으로 재현 —
 > 셧다운 XFS는 `stat→EIO`, `statfs→OK`, `access(W_OK)→OK`, `O_TMPFILE→EIO`;
 > ext4 remount-ro는 `O_TMPFILE→EROFS`. 동일 디바이스의 다른 마운트가 남아
 > 있는 동안의 재마운트는 같은 죽은 슈퍼블록을 재부착한다.
 
-**소스 파일:** `internal/csi/node_stage_test.go`, `internal/csi/node_publish_test.go`, `internal/csi/mounter_health_linux_test.go`
+**소스 파일:** `internal/csi/node_stage_test.go`, `internal/csi/node_publish_test.go`, `internal/csi/mounter_health_linux_test.go`, `test/component/csi_node_test.go`, `internal/csi/node_kernel_shutdown_linux_test.go`
 
-**CI 실행 가능 여부:** ✅ 가능 (mock 기반; 223·224는 root 없이 프로브 syscall 주입 및 호스트에 이미 있는 읽기 전용 마운트만 사용)
+**CI 실행 가능 여부:** ✅ 가능 (mock 기반; 223·224는 root 없이 프로브 syscall 주입 및 호스트에 이미 있는 읽기 전용 마운트만 사용). ❌ 232는 CI 제외 — `kernel_integration` 빌드 태그 + root + 루프 디바이스 + xfsprogs 필요 (`sudo -E go test -tags=kernel_integration -run TestKernel ./internal/csi/`)
 
 | ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
 |----|------------|------|----------|------|----------|---------|
@@ -1335,9 +1339,15 @@ shutdown, ext4 `errors=remount-ro`)에 들어간 경우 — 마운트 테이블 
 | 224 | `TestKubeMounter_CheckMountHealth_ReadonlyFilesystem` | 실제 읽기 전용 마운트에 수정 없는 프로브 실행 → 커널의 EROFS가 `ErrMountUnhealthy`로 분류됨 (root 불필요) | `/proc/self/mountinfo`에서 최상위 항목이 `ro`인 마운트 포인트 수집 | 1) 각 읽기 전용 마운트 포인트에 `NewKubeMounter().CheckMountHealth` 호출 | EROFS를 반환한 모든 마운트가 `ErrMountUnhealthy`; EROFS 응답 마운트가 하나도 없으면 Skip | `Mnt` |
 | 225 | `TestKubeMounter_HasOtherMounts_SubdirBindCountsAsPinning` | 같은 디바이스의 하위 디렉터리 바인드(mountinfo root `/subdir`)도 스테이징 슈퍼블록 고정(pinning)으로 판정 | mountinfo 픽스처를 `readMountInfoFile`로 파싱 → `hasOtherMounts` | 1) 하위 디렉터리 바인드; 2) 전체 FS 바인드; 3) 다른 디바이스 마운트; 4) 스테이징 마운트 단독 | 1·2 → true; 3·4 → false | `Mnt` |
 | 226 | `TestNodePublishVolume_MultiTargetRepairAfterBothUnpublish` | 두 publish 타깃이 공유하는 스테이징 FS 셧다운: 바인드가 하나라도 남아 있으면 상태 머신 NodePublished 유지 + 재스테이지 거부; 두 타깃 모두 unpublish 후에만 NodeStaged 강등 및 복구 | `NewNodeServerWithStateMachine`; ControllerPublished → NodeStage → 타깃 A·B NodePublish; `markUnhealthy` | 1) NodeStageVolume; 2) NodeUnpublishVolume(A); 3) NodeStageVolume; 4) NodeUnpublishVolume(B); 5) NodeStageVolume; 6) 새 타깃 NodePublishVolume | 1·3단계 gRPC `Internal`; 1~3단계 상태 `NodePublished`; 4단계 후 B 비마운트 + 상태 `NodeStaged`; 5단계 성공 + `CheckMountHealth` 정상; 6단계 성공 | `CSI-N`, `Mnt`, `State` |
-| 227 | `TestNodePublishVolume_PodDeleteRepairsDeadStage` | pod 삭제 흐름 전체 재현 (이슈 #172 라이브 증거): NodeUnpublishVolume 후 데드 스테이징 마운트만 남은 상태에서 kubelet의 NodePublishVolume 재시도가 NodeStageVolume 없이 스테이징을 제자리 복구하고 바인드 | NodeStage+타깃A NodePublish 성공; `markUnhealthy`; 타깃A NodeUnpublishVolume | 1) 신규 타깃B로 NodePublishVolume 전송 | 성공; 타깃B 마운트; `FormatAndMount` 2회(스테이지+재마운트); 스테이징 FS `CheckMountHealth` 정상 | `CSI-N`, `Mnt` |
+| 227 | ~~`TestNodePublishVolume_PodDeleteRepairsDeadStage`~~ (230으로 통합) | pod 삭제 흐름 전체 재현은 230이 stat EIO 사전 조건과 함께 커버 | — | — | — | `CSI-N`, `Mnt` |
 | 228 | `TestNodePublishVolume_BindFailureRepairsDeadStage` | 커널이 데드 슈퍼블록의 바인드를 거부하는 경우 (mount exit 32, 라이브 커널 6.12): 실패한 바인드 → 동일한 스테이징 복구 후 바인드 1회 재시도 | NodeStage 성공; `markUnhealthy`; `mountErrOnce`=mount(8) 거부 오류 | 1) NodePublishVolume 전송 | 성공; `Mount` 2회(거부+재시도); targetPath 마운트 | `CSI-N`, `Mnt` |
 | 229 | `TestNodePublishVolume_DeadStagePinnedByBindFails` | 다른 타깃의 바인드가 데드 슈퍼블록을 고정 중이면 publish는 스테이징 마운트를 절대 언마운트하지 않고 재시도 가능 `Internal` 반환 (teardown 후 해소) | NodeStage+타깃A NodePublish 성공; `markUnhealthy` | 1) 타깃B로 NodePublishVolume 전송 | gRPC `Internal`; stagingPath 마운트 유지; targetB 비마운트 | `CSI-N`, `Mnt` |
+| 230 | `TestNodePublishVolume_RepairDespiteStatEIO` | pod 삭제 흐름 전체 재현 (이슈 #172·#175): 셧다운 FS(마운트 항목 유지, stat EIO — mock이 커널 동작 재현)에서 NodeUnpublishVolume 후 kubelet의 NodePublishVolume 재시도가 NodeStageVolume 없이 mountinfo 판정으로 스테이징을 제자리 복구하고 바인드 | NodeStage+타깃A NodePublish 성공; `markUnhealthy`; `CheckMountReadable(stagingPath)`가 EIO + `MountEntryExists=true` 선확인; 타깃A NodeUnpublishVolume | 1) 신규 타깃B로 NodePublishVolume 전송 | 성공; 스테이징 FS 정상; 타깃B 마운트; `FormatAndMount` 2회(스테이지+재마운트) (v0.5.2 코드에서는 `IsLikelyNotMountPoint ... input/output error`로 실패) | `CSI-N`, `Mnt` |
+| 231 | `TestCSINode_PodDeleteRepairsShutdownStage` | 컴포넌트(블랙박스 NodeServer) 수준 이슈 #175 회귀: 셧다운 FS + 다른 바인드 고정 시 publish는 재시도 가능 `Internal`·언마운트 없음, 바인드 제거 후 publish가 제자리 복구 | `csiMockMounter.markUnhealthy`(마운트 항목 유지, stat EIO, 헬스 `ErrMountUnhealthy`); NodeStage+타깃A NodePublish | 1) 타깃B NodePublishVolume; 2) 타깃A NodeUnpublishVolume; 3) 타깃B NodePublishVolume | 1단계 `Internal` + 스테이징 마운트 유지; 3단계 성공; 스테이징 FS 정상; 타깃B 마운트 | `CSI-N`, `Mnt` |
+| 232 | `TestKernel_PublishRepairsShutdownXFS` | 실제 커널 증명: 루프 디바이스 XFS를 실제 `KubeMounter`+NodeServer로 stage/publish 후 `xfs_io -x -c shutdown` → pod 삭제 흐름 재현. kubelet 경로는 심볼릭 링크 루트를 경유(mountinfo는 해석된 경로 기록) | root; `losetup`·`mkfs.xfs`·`xfs_io`·`blkid`; `kernel_integration` 태그 | 1) stage + 타깃A publish + 데이터 fsync; 2) shutdown; 3) 타깃B publish (A가 고정 중); 4) NodeStage 재시도; 5) 타깃A unpublish; 6) 타깃B publish; 7) unpublish + unstage | 3·4단계 `Internal` + 스테이징 마운트 유지 + B 비마운트; 6단계 성공 + 스테이징 FS 정상 + 1단계 데이터 동일(로그 재생) + B 쓰기 가능; 7단계 후 마운트 없음 | `CSI-N`, `Mnt` |
+| 233 | `TestKubeMounter_MountEntryExists_SymlinkedParent` | 심볼릭 링크를 경유한 경로도 mountinfo 조회(`MountEntryExists`·`MountSource`)가 해석된 마운트 포인트와 일치 — 리터럴 비교 시 살아 있는 마운트를 놓쳐 이중 마운트 위험 | `/`를 가리키는 링크 생성 (root 불필요) | 1) `MountEntryExists(link/proc)`; 2) `MountSource(link/proc)`; 3) `MountEntryExists(link/proc/no-such-mount)` | 1 → true; 2 → `"proc"`; 3 → false | `Mnt` |
+| 234 | `TestNodeStageVolume_ReadonlyDeadStageFails` | `ro` 스테이지는 쓰기 프로브를 생략하지만, 셧다운(마운트 항목 유지, stat EIO) 후 멱등 NodeStageVolume은 비쓰기 프로브 `CheckMountReadable`로 실패 — 죽은 마운트를 스테이지 완료로 보고 금지 | `mountCapRO("xfs")`로 NodeStage 성공; `markUnhealthy` | 1) 동일 요청 재전송 | gRPC `Internal`; `CheckMountHealth` 미호출; `Unmount` 미호출 | `CSI-N`, `Mnt` |
+| 235 | `TestNodePublishVolume_ReadonlyStageDeadBindFails` | `ro` 스테이지의 기존 publish 바인드가 셧다운 FS를 참조하면 멱등 NodePublishVolume은 `CheckMountReadable`로 `Internal` 반환 (성공 보고 금지), 바인드 유지 | `mountCapRO("xfs")`로 NodeStage + NodePublish 성공; `markUnhealthy` | 1) 동일 NodePublishVolume 재전송 | gRPC `Internal`; targetPath 마운트 유지; `CheckMountHealth` 미호출 | `CSI-N`, `Mnt` |
 
 
 ---

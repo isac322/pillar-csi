@@ -133,7 +133,7 @@ func (*KubeMounter) HasOtherMounts(target string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return hasOtherMounts(mounts, target)
+	return hasOtherMounts(mounts, mountTablePath(target))
 }
 
 // hasOtherMounts is HasOtherMounts over an already-parsed mount table: any
@@ -162,9 +162,43 @@ func (*KubeMounter) MountSource(target string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	me, ok := findMount(mounts, target)
+	me, ok := findMount(mounts, mountTablePath(target))
 	if !ok {
 		return "", fmt.Errorf("%q is not a mount point", filepath.Clean(target))
 	}
 	return me.Source, nil
+}
+
+// MountEntryExists reports whether target has a mount table entry in this
+// mount namespace, consulting /proc/self/mountinfo only.  It never touches
+// the mounted filesystem — unlike a stat-based check such as
+// IsLikelyNotMountPoint — so a kernel-shutdown mount whose stat fails with
+// EIO still answers true (issue #175): the mount table entry is what
+// decides whether the dead mount can be probed and repaired.  Stacked
+// mounts count once, matching findMount.
+func (*KubeMounter) MountEntryExists(target string) (bool, error) {
+	mounts, err := readMountInfoFile(procMountInfoPath)
+	if err != nil {
+		return false, err
+	}
+	_, ok := findMount(mounts, mountTablePath(target))
+	return ok, nil
+}
+
+// mountTablePath spells target the way /proc/self/mountinfo does: the
+// kernel records mount points with every symlink resolved, so a kubelet
+// root reached through a symlink (/var/lib/kubelet -> /data/kubelet) would
+// otherwise never match its own mounts — a stat-based check follows
+// symlinks, so the mount-table lookups must too.  Only the parent directory
+// is resolved: the mount point itself may be a kernel-shutdown filesystem
+// whose stat answers EIO, and kubelet never makes it a symlink.  When the
+// parent cannot be resolved (it is itself a dead mount, or missing) the
+// cleaned literal path is the best available spelling.
+func mountTablePath(target string) string {
+	clean := filepath.Clean(target)
+	parent, err := filepath.EvalSymlinks(filepath.Dir(clean))
+	if err != nil {
+		return clean
+	}
+	return filepath.Join(parent, filepath.Base(clean))
 }

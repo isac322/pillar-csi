@@ -810,23 +810,25 @@ func TestCSIErrors_NodeUnstage_DisconnectError(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// § 5.13 IsMounted Error Paths (cross-cutting within CSI Node)
+// § 5.13 Mount-table lookup error paths (cross-cutting within CSI Node)
 // TESTCASES.md § 5.13 tests 50–52
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// TestCSIErrors_NodeStage_IsMountedError_MountAccess verifies that an
-// IsMounted failure during NodeStageVolume — specifically the check performed
-// after a successful NVMe-oF Connect and device-path resolution, before
-// FormatAndMount — propagates as codes.Internal (test case 50).
+// TestCSIErrors_NodeStage_IsMountedError_MountAccess verifies that a
+// mount-table lookup (Mounter.MountEntryExists) failure during
+// NodeStageVolume — the check performed after a successful NVMe-oF Connect
+// and device-path resolution, before FormatAndMount — propagates as
+// codes.Internal (test case 50; the name predates the stat-based IsMounted
+// removal in issue #175).
 //
-// In production, this failure can occur when /proc/mounts is inaccessible or
-// the VFS subsystem is temporarily unavailable.  The staging operation must
-// surface the error rather than proceeding with an unknown mount state.
+// In production, this failure occurs when /proc/self/mountinfo is
+// unreadable.  The staging operation must surface the error rather than
+// proceeding with an unknown mount state.
 //
 // Setup:
 //   - Connector.Connect succeeds.
 //   - Connector.GetDevicePath returns "/dev/nvme0n1" (device ready).
-//   - Mounter.IsMounted returns an error (stat failure / proc unavailable).
+//   - Mounter.MountEntryExists returns an error (mountinfo unreadable).
 //
 // Expected: NodeStageVolume returns codes.Internal; FormatAndMount is not
 // called (cannot proceed without mount-state knowledge).
@@ -846,38 +848,41 @@ func TestCSIErrors_NodeStage_IsMountedError_MountAccess(t *testing.T) {
 		return csiTestDevicePath, nil
 	}
 
-	// IsMounted fails — simulates /proc/mounts temporarily inaccessible.
-	const isMountedErr = "IsMounted: open /proc/mounts: no such file or directory"
-	env.mounter.isMountedFn = func(_ string) (bool, error) {
-		return false, errors.New(isMountedErr)
+	// The mount-table lookup fails — simulates /proc/self/mountinfo
+	// temporarily inaccessible.
+	const lookupErr = "MountEntryExists: open /proc/self/mountinfo: no such file or directory"
+	env.mounter.mountEntryExistsFn = func(_ string) (bool, error) {
+		return false, errors.New(lookupErr)
 	}
 
 	_, err := env.node.NodeStageVolume(ctx, baseStageRequest(stagingPath))
 	if err == nil {
-		t.Fatal("expected Internal error from IsMounted failure in NodeStageVolume, got nil")
+		t.Fatal("expected Internal error from a mount-table lookup failure in NodeStageVolume, got nil")
 	}
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Internal {
-		t.Errorf("error code = %v, want Internal (IsMounted failure before FormatAndMount)", st.Code())
+		t.Errorf("error code = %v, want Internal (lookup failure before FormatAndMount)", st.Code())
 	}
 	// FormatAndMount must not be called — cannot proceed without mount state.
 	if env.mounter.formatAndMountCalls != 0 {
-		t.Errorf("FormatAndMount called %d times after IsMounted failure, want 0",
+		t.Errorf("FormatAndMount called %d times after a lookup failure, want 0",
 			env.mounter.formatAndMountCalls)
 	}
-	t.Logf("NodeStageVolume IsMounted error returned Internal: %v", err)
+	t.Logf("NodeStageVolume mount-table lookup error returned Internal: %v", err)
 }
 
-// TestCSIErrors_NodePublish_IsMountedError verifies that an IsMounted failure
-// during the idempotency check in NodePublishVolume propagates as
-// codes.Internal (test case 51).
+// TestCSIErrors_NodePublish_IsMountedError verifies that a mount-table
+// lookup failure during the idempotency check in NodePublishVolume
+// propagates as codes.Internal (test case 51; the name predates the
+// stat-based IsMounted removal in issue #175).
 //
-// NodePublishVolume calls IsMounted on the target path before the bind-mount
-// to determine whether the volume has already been published.  If that check
-// fails the operation must not proceed with an unknown mount state.
+// NodePublishVolume looks up the target path in the mount table before the
+// bind-mount to determine whether the volume has already been published.
+// If that lookup fails the operation must not proceed with an unknown mount
+// state.
 //
 // Setup:
-//   - Mounter.IsMounted returns an error (e.g., stat failure).
+//   - Mounter.MountEntryExists returns an error (mountinfo unreadable).
 //
 // Expected: NodePublishVolume returns codes.Internal; Mounter.Mount is not
 // called.
@@ -891,25 +896,25 @@ func TestCSIErrors_NodePublish_IsMountedError(t *testing.T) {
 	stagingPath := t.TempDir()
 	targetPath := t.TempDir()
 
-	// IsMounted fails — simulates inaccessible /proc/mounts on the target path.
-	const isMountedErr = "IsMounted: open /proc/mounts: operation not permitted"
-	env.mounter.isMountedFn = func(_ string) (bool, error) {
-		return false, errors.New(isMountedErr)
+	// The mount-table lookup fails — simulates inaccessible mountinfo.
+	const lookupErr = "MountEntryExists: open /proc/self/mountinfo: operation not permitted"
+	env.mounter.mountEntryExistsFn = func(_ string) (bool, error) {
+		return false, errors.New(lookupErr)
 	}
 
 	_, err := env.node.NodePublishVolume(ctx, basePublishRequest(stagingPath, targetPath))
 	if err == nil {
-		t.Fatal("expected Internal error from IsMounted failure in NodePublishVolume, got nil")
+		t.Fatal("expected Internal error from a mount-table lookup failure in NodePublishVolume, got nil")
 	}
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Internal {
-		t.Errorf("error code = %v, want Internal (IsMounted failure in NodePublishVolume)", st.Code())
+		t.Errorf("error code = %v, want Internal (lookup failure in NodePublishVolume)", st.Code())
 	}
 	// Mount must not be called — cannot bind-mount without knowing current state.
 	if env.mounter.mountCalls != 0 {
-		t.Errorf("Mount called %d times after IsMounted failure, want 0", env.mounter.mountCalls)
+		t.Errorf("Mount called %d times after a lookup failure, want 0", env.mounter.mountCalls)
 	}
-	t.Logf("NodePublishVolume IsMounted error returned Internal: %v", err)
+	t.Logf("NodePublishVolume mount-table lookup error returned Internal: %v", err)
 }
 
 // Compile-time: ensure csiMockAgent still implements all methods.

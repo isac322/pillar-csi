@@ -43,7 +43,7 @@ type restartTestMode struct {
 	name    string
 	volCap  *csi.VolumeCapability
 	target  func(stagingPath string) string
-	probing func(stagingPath string) []string // IsMounted targets expected when state is lost
+	probing func(stagingPath string) []string // MountEntryExists targets expected when state is lost
 }
 
 func restartTestModes() []restartTestMode {
@@ -52,8 +52,8 @@ func restartTestModes() []restartTestMode {
 			name:   "Filesystem",
 			volCap: mountCap("ext4"),
 			target: func(p string) string { return p },
-			// The Block child sits inside the mounted filesystem; probing it
-			// can return EIO, so a mounted root must stop the probe.
+			// The Block child sits inside the mounted filesystem; the
+			// mounted root short-circuits the loop before it is probed.
 			probing: func(p string) []string { return []string{p} },
 		},
 		{
@@ -100,7 +100,7 @@ func stageThenRestart(
 		stateDir = t.TempDir()
 	}
 	conn := &mockConnector{devicePath: "/dev/nvme0n1"}
-	mnt.isMountedCalls = nil
+	mnt.mountEntryExistsCalls = nil
 	mnt.unmountCalls = nil
 	return &restartFixture{
 		srv:         NewNodeServerWithStateDir("test-node", conn, mnt, stateDir),
@@ -179,8 +179,8 @@ func TestNodeUnstageVolume_AfterNodeRestart_StateLost(t *testing.T) {
 			if len(fx.connector.disconnectCalls) != 0 {
 				t.Errorf("Disconnect calls = %v, want none", fx.connector.disconnectCalls)
 			}
-			if want := mode.probing(fx.stagingPath); !slices.Equal(fx.mounter.isMountedCalls, want) {
-				t.Errorf("IsMounted calls = %v, want %v", fx.mounter.isMountedCalls, want)
+			if want := mode.probing(fx.stagingPath); !slices.Equal(fx.mounter.mountEntryExistsCalls, want) {
+				t.Errorf("MountEntryExists calls = %v, want %v", fx.mounter.mountEntryExistsCalls, want)
 			}
 		})
 	}
@@ -192,7 +192,7 @@ func TestNodeUnstageVolume_AfterNodeRestart_StateLost(t *testing.T) {
 func TestNodeUnstageVolume_NoState_MountProbeErrorFails(t *testing.T) {
 	t.Parallel()
 	env := newNodeTestEnv(t)
-	env.mounter.isMountedErr = errors.New("mountinfo unreadable")
+	env.mounter.mountEntryExistsErr = errors.New("mountinfo unreadable")
 
 	_, err := env.srv.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
 		VolumeId:          "tank/pvc-no-state-probe-err",

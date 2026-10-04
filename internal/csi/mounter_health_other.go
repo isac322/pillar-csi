@@ -40,3 +40,8 @@ func (*KubeMounter) HasOtherMounts(target string) (bool, error) {
 func (*KubeMounter) MountSource(target string) (string, error) {
 	return "", fmt.Errorf("MountSource %s: unsupported on %s", target, runtime.GOOS)
 }
+
+// MountEntryExists is only implemented on Linux: it parses /proc/self/mountinfo.
+func (*KubeMounter) MountEntryExists(target string) (bool, error) {
+	return false, fmt.Errorf("MountEntryExists %s: unsupported on %s", target, runtime.GOOS)
+}

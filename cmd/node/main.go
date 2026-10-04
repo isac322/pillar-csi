@@ -973,9 +973,9 @@ func (m *mkdirMounter) Unmount(target string) error {
 	return m.wrapped.Unmount(target)
 }
 
-// IsMounted delegates to the wrapped Mounter unchanged.
-func (m *mkdirMounter) IsMounted(target string) (bool, error) {
-	return m.wrapped.IsMounted(target)
+// CheckMountReadable delegates to the wrapped Mounter unchanged.
+func (m *mkdirMounter) CheckMountReadable(target string) error {
+	return m.wrapped.CheckMountReadable(target)
 }
 
 // CheckMountHealth delegates to the wrapped Mounter unchanged.
@@ -991,6 +991,11 @@ func (m *mkdirMounter) HasOtherMounts(target string) (bool, error) {
 // MountSource delegates to the wrapped Mounter unchanged.
 func (m *mkdirMounter) MountSource(target string) (string, error) {
 	return m.wrapped.MountSource(target)
+}
+
+// MountEntryExists delegates to the wrapped Mounter unchanged.
+func (m *mkdirMounter) MountEntryExists(target string) (bool, error) {
+	return m.wrapped.MountEntryExists(target)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

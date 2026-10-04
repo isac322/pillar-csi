@@ -29,6 +29,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -150,10 +151,17 @@ func (m *csiMockConnector) GetDevicePath(ctx context.Context, subsysNQN string) 
 //     with MS_BIND | MS_SHARED propagation flags, and the propagation mode
 //     affects VFS visibility across mount namespaces.  The mock treats all
 //     Mount calls identically regardless of fsType or options.
-//   - Idempotency detection: the real IsMounted reads /proc/mounts or calls
-//     the kernel findmnt(8) utility.  The mock consults its in-memory mounted
-//     map, which is only updated by FormatAndMount and Mount calls made
-//     through the mock itself.
+//   - Idempotency detection: the real MountEntryExists reads
+//     /proc/self/mountinfo, and the real CheckMountReadable stats the mount
+//     point.  The mock consults its in-memory mounted map, which is only
+//     updated by FormatAndMount and Mount calls made through the mock itself.
+//   - Kernel shutdown: markUnhealthy(source) models an XFS forced shutdown
+//     of the filesystem mounted from source.  Like the kernel, every mount
+//     and bind of it keeps its table entry (MountEntryExists true) while
+//     the stat probe (CheckMountReadable) fails with EIO and
+//     CheckMountHealth reports ErrMountUnhealthy; the mark clears when the
+//     last mount of the source is unmounted (a fresh mount replays the
+//     journal).
 //   - Error recovery: the real mounter may partially write filesystem metadata
 //     before failing, leaving a partially-formatted device.  The mock is
 //     atomic: a call either fully succeeds or returns the preset error without
@@ -161,31 +169,55 @@ func (m *csiMockConnector) GetDevicePath(ctx context.Context, subsysNQN string) 
 type csiMockMounter struct {
 	mu sync.Mutex
 
-	formatAndMountFn func(source, target, fsType string, options, formatOptions []string) error
-	mountFn          func(source, target, fsType string, options []string) error
-	unmountFn        func(target string) error
-	isMountedFn      func(target string) (bool, error)
-	checkHealthFn    func(target string) error
-	hasOtherMountsFn func(target string) (bool, error)
-	mountSourceFn    func(target string) (string, error)
+	formatAndMountFn   func(source, target, fsType string, options, formatOptions []string) error
+	mountFn            func(source, target, fsType string, options []string) error
+	unmountFn          func(target string) error
+	checkHealthFn      func(target string) error
+	hasOtherMountsFn   func(target string) (bool, error)
+	mountSourceFn      func(target string) (string, error)
+	mountEntryExistsFn func(target string) (bool, error)
 
 	// call counters
 	formatAndMountCalls int
 	mountCalls          int
 	unmountCalls        int
-	isMountedCalls      int
 
 	// mounted tracks which paths are currently "mounted" by default behavior.
 	mounted map[string]bool
 	// mountSource records each mount's source so MountSource mirrors mountinfo.
 	mountSource map[string]string
+	// unhealthy holds device sources whose filesystem entered kernel shutdown.
+	unhealthy map[string]bool
 }
 
 // Verify csiMockMounter implements the full Mounter interface.
 var _ pillarcsi.Mounter = (*csiMockMounter)(nil)
 
 func newCsiMockMounter() *csiMockMounter {
-	return &csiMockMounter{mounted: make(map[string]bool), mountSource: make(map[string]string)}
+	return &csiMockMounter{
+		mounted:     make(map[string]bool),
+		mountSource: make(map[string]string),
+		unhealthy:   make(map[string]bool),
+	}
+}
+
+// markUnhealthy models a kernel shutdown of the filesystem mounted from
+// source: every mount and bind of it stays in the mount table but fails
+// stat (CheckMountReadable -> EIO) and the health probe.
+func (m *csiMockMounter) markUnhealthy(source string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.unhealthy[source] = true
+}
+
+// resolveSourceLocked walks bind chains to the device the filesystem at
+// path is mounted from.  Callers hold m.mu.
+func (m *csiMockMounter) resolveSourceLocked(path string) string {
+	source := m.mountSource[path]
+	for m.mounted[source] {
+		source = m.mountSource[source]
+	}
+	return source
 }
 
 func (m *csiMockMounter) FormatAndMount(
@@ -229,24 +261,30 @@ func (m *csiMockMounter) Unmount(target string) error {
 		return fn(target)
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	source := m.resolveSourceLocked(target)
 	delete(m.mounted, target)
 	delete(m.mountSource, target)
-	m.mu.Unlock()
+	// The superblock dies with its last mount: the next mount replays the
+	// journal and starts clean.
+	for path := range m.mounted {
+		if m.resolveSourceLocked(path) == source {
+			return nil
+		}
+	}
+	delete(m.unhealthy, source)
 	return nil
 }
 
-func (m *csiMockMounter) IsMounted(target string) (bool, error) {
+// CheckMountReadable mirrors KubeMounter's stat probe: a kernel-shutdown
+// filesystem keeps its mount entry but answers stat with EIO (issue #175).
+func (m *csiMockMounter) CheckMountReadable(target string) error {
 	m.mu.Lock()
-	m.isMountedCalls++
-	fn := m.isMountedFn
-	m.mu.Unlock()
-	if fn != nil {
-		return fn(target)
+	defer m.mu.Unlock()
+	if m.mounted[target] && m.unhealthy[m.resolveSourceLocked(target)] {
+		return fmt.Errorf("stat %s: %w: %w", target, pillarcsi.ErrMountUnhealthy, syscall.EIO)
 	}
-	m.mu.Lock()
-	v := m.mounted[target]
-	m.mu.Unlock()
-	return v, nil
+	return nil
 }
 
 func (m *csiMockMounter) CheckMountHealth(target string) error {
@@ -255,6 +293,11 @@ func (m *csiMockMounter) CheckMountHealth(target string) error {
 	m.mu.Unlock()
 	if fn != nil {
 		return fn(target)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.mounted[target] && m.unhealthy[m.resolveSourceLocked(target)] {
+		return fmt.Errorf("probe %q: %w: %w", target, pillarcsi.ErrMountUnhealthy, syscall.EIO)
 	}
 	return nil
 }
@@ -265,6 +308,17 @@ func (m *csiMockMounter) HasOtherMounts(target string) (bool, error) {
 	m.mu.Unlock()
 	if fn != nil {
 		return fn(target)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.mounted[target] {
+		return false, fmt.Errorf("%q is not a mount point", target)
+	}
+	source := m.resolveSourceLocked(target)
+	for path := range m.mounted {
+		if path != target && m.resolveSourceLocked(path) == source {
+			return true, nil
+		}
 	}
 	return false, nil
 }
@@ -282,6 +336,19 @@ func (m *csiMockMounter) MountSource(target string) (string, error) {
 		return "", fmt.Errorf("%q is not a mount point", target)
 	}
 	return m.mountSource[target], nil
+}
+
+func (m *csiMockMounter) MountEntryExists(target string) (bool, error) {
+	m.mu.Lock()
+	fn := m.mountEntryExistsFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(target)
+	}
+	m.mu.Lock()
+	v := m.mounted[target]
+	m.mu.Unlock()
+	return v, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1248,8 +1315,8 @@ func TestCSINode_NodeUnstage_StateFileMissingIsOK(t *testing.T) {
 	const volumeID = "storage-node-1/nvmeof-tcp/zfs-zvol/tank/pvc-no-state"
 	stagingPath := t.TempDir()
 
-	// Mounter reports the staging path is not mounted.
-	env.mounter.isMountedFn = func(_ string) (bool, error) {
+	// The mount table has no entry at the staging path.
+	env.mounter.mountEntryExistsFn = func(_ string) (bool, error) {
 		return false, nil
 	}
 
@@ -1493,5 +1560,63 @@ func TestCSINode_NodeUnpublishVolume_MissingVolumeID(t *testing.T) {
 	st, _ := status.FromError(err)
 	if st.Code() != codes.InvalidArgument {
 		t.Errorf("error code = %v, want %v", st.Code(), codes.InvalidArgument)
+	}
+}
+
+// TestCSINode_PodDeleteRepairsShutdownStage drives the live pod-delete
+// sequence of issue #175 through the black-box NodeServer: the staged
+// filesystem enters kernel shutdown (mount entries kept, stat -> EIO), the old
+// pod's bind is unpublished, and the replacement pod's NodePublishVolume —
+// the only RPC kubelet retries while the VolumeAttachment persists — must
+// repair the staged mount in place and bind it.  The same publish while the
+// old bind still pins the dead superblock must fail retryably without
+// unmounting anything.
+func TestCSINode_PodDeleteRepairsShutdownStage(t *testing.T) {
+	t.Parallel()
+	env := newCSINodeTestEnv(t)
+	ctx := context.Background()
+	stagingPath := t.TempDir()
+	oldTarget := t.TempDir()
+	newTarget := t.TempDir()
+
+	stageReq := baseStageRequest(stagingPath)
+	if _, err := env.node.NodeStageVolume(ctx, stageReq); err != nil {
+		t.Fatalf("NodeStageVolume: %v", err)
+	}
+	publish := func(target string) error {
+		req := basePublishRequest(stagingPath, target)
+		req.VolumeContext = stageReq.GetVolumeContext()
+		_, err := env.node.NodePublishVolume(ctx, req)
+		return err
+	}
+	if err := publish(oldTarget); err != nil {
+		t.Fatalf("old pod NodePublishVolume: %v", err)
+	}
+
+	env.mounter.markUnhealthy(csiTestDevicePath)
+
+	// Pinned: the old bind still holds the dead superblock.
+	err := publish(newTarget)
+	if st, _ := status.FromError(err); st.Code() != codes.Internal {
+		t.Fatalf("publish while pinned: got %v, want Internal", err)
+	}
+	if ok, _ := env.mounter.MountEntryExists(stagingPath); !ok { //nolint:errcheck // default mock never errors
+		t.Fatal("dead staged mount unmounted while another bind pins it")
+	}
+
+	// Pod deletion removes the old bind; kubelet retries publish only.
+	if _, err := env.node.NodeUnpublishVolume(ctx, &csipb.NodeUnpublishVolumeRequest{
+		VolumeId: stageReq.GetVolumeId(), TargetPath: oldTarget,
+	}); err != nil {
+		t.Fatalf("NodeUnpublishVolume: %v", err)
+	}
+	if err := publish(newTarget); err != nil {
+		t.Fatalf("replacement pod NodePublishVolume after teardown: %v", err)
+	}
+	if err := env.mounter.CheckMountHealth(stagingPath); err != nil {
+		t.Errorf("staged filesystem not repaired: %v", err)
+	}
+	if ok, err := env.mounter.MountEntryExists(newTarget); err != nil || !ok {
+		t.Errorf("replacement bind: mounted=%v err=%v, want mounted", ok, err)
 	}
 }

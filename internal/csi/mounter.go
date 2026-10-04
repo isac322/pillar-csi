@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 
 	utilexec "k8s.io/utils/exec"
 	"k8s.io/utils/mount"
@@ -167,23 +168,20 @@ func (m *KubeMounter) Unmount(target string) error {
 	return nil
 }
 
-// IsMounted returns true if target currently has an active mount.
-//
-// Unlike Unmount this probe stays strict: a corrupted mount (EIO on stat)
-// is reported as an error rather than "mounted".  Reporting true would let
-// NodeStageVolume/NodePublishVolume treat a dead filesystem as healthy;
-// reporting false would let teardown paths skip the unmount and leak the
-// mount.  Callers that only want to remove a mount must call the
-// idempotent Unmount directly instead of gating on IsMounted.
-func (m *KubeMounter) IsMounted(target string) (bool, error) {
-	notMnt, err := m.inner.IsLikelyNotMountPoint(target)
-	if err != nil {
-		if isNotExistError(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("IsLikelyNotMountPoint %s: %w", target, err)
+// CheckMountReadable stats target: nil when the kernel answers, an error
+// wrapping ErrMountUnhealthy when the mounted filesystem is dead (EIO from
+// a kernel-shutdown XFS or ext4, ESTALE/ENOTCONN from a lost NFS or FUSE
+// server), and any other stat error as an inconclusive probe failure.  It
+// never writes, so it is safe on mounts that are read-only by request.
+func (*KubeMounter) CheckMountReadable(target string) error {
+	_, err := os.Stat(target)
+	if err == nil {
+		return nil
 	}
-	return !notMnt, nil
+	if errors.Is(err, syscall.EIO) || errors.Is(err, syscall.ESTALE) || errors.Is(err, syscall.ENOTCONN) {
+		return fmt.Errorf("stat %s: %w: %w", target, ErrMountUnhealthy, err)
+	}
+	return fmt.Errorf("stat %s: %w", target, err)
 }
 
 // Compile-time check that KubeMounter satisfies the Mounter interface.

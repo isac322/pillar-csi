@@ -262,26 +262,3 @@ func TestKubeMounter_Unmount_WrappedCorruptedProbeFails(t *testing.T) {
 		t.Errorf("umount attempts = %d, want 0", unmountLogCount(fake))
 	}
 }
-
-// TestKubeMounter_IsMounted_CorruptedProbeStaysStrict verifies that
-// IsMounted does not adopt the corrupted-mount fast path: a stat EIO must
-// surface as an error so NodeStageVolume/NodePublishVolume cannot mistake
-// an aborted filesystem for a healthy staged mount (false-healthy) or for
-// no mount at all (leak).
-func TestKubeMounter_IsMounted_CorruptedProbeStaysStrict(t *testing.T) {
-	t.Parallel()
-
-	target := t.TempDir()
-	km, fake := newFakeKubeMounter([]mount.MountPoint{
-		{Device: "/dev/nvme0n1", Path: target, Type: "xfs"},
-	})
-	fake.MountCheckErrors[target] = statPathError(target, syscall.EIO)
-
-	mounted, err := km.IsMounted(target)
-	if err == nil {
-		t.Fatal("IsMounted on corrupted mount: expected error, got nil")
-	}
-	if mounted {
-		t.Error("IsMounted on corrupted mount = true, want false with error")
-	}
-}

@@ -1283,7 +1283,6 @@ type localMockMounter struct {
 	formatAndMountErr error
 	mountErr          error
 	unmountErr        error
-	isMountedErr      error
 
 	formatAndMountCalls []localFormatAndMountCall
 	mountCalls          []localMountCall
@@ -1349,11 +1348,10 @@ func (m *localMockMounter) Unmount(target string) error {
 	return nil
 }
 
-func (m *localMockMounter) IsMounted(target string) (bool, error) {
-	if m.isMountedErr != nil {
-		return false, m.isMountedErr
-	}
-	return m.mounted[target], nil
+// CheckMountReadable reports every path as readable: local-attach e2e tests
+// do not simulate dead mounts.
+func (m *localMockMounter) CheckMountReadable(_ string) error {
+	return nil
 }
 
 // CheckMountHealth reports mounted paths as healthy unless checkHealthErr
@@ -1405,6 +1403,13 @@ func (m *localMockMounter) MountSource(target string) (string, error) {
 		return "", fmt.Errorf("%q is not a mount point", target)
 	}
 	return m.mountSource[target], nil
+}
+
+// MountEntryExists mirrors the mount table: the fake records one entry per
+// mount, so it equals the mounted map without any filesystem stat — the
+// distinction that matters for kernel-shutdown mounts (issue #175).
+func (m *localMockMounter) MountEntryExists(target string) (bool, error) {
+	return m.mounted[target], nil
 }
 
 type localMockResizer struct {

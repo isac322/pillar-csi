@@ -4527,8 +4527,8 @@
       "category": "E3: CSI Node — NodeStage / NodePublish / NodeUnpublish / NodeUnstage",
       "type": "A",
       "in_437_scope": true,
-      "test_func": "TestNodePublishVolume_IsMountedError",
-      "description": "`Mounter.IsMounted` 오류 발생 시 `Internal` 반환"
+      "test_func": "TestNodePublishVolume_MountEntryExistsError",
+      "description": "마운트 테이블 조회(`Mounter.MountEntryExists`) 오류 발생 시 `Internal` 반환"
     },
     {
       "tc_id": "E199",
