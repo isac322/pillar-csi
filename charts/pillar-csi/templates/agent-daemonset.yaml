@@ -7,6 +7,12 @@
     {{- end -}}
   {{- end -}}
 {{- end -}}
+{{/* A fileDriver.proxyRoot equal to or below the fixed agent-state hostPath
+is already covered by that mount's Bidirectional propagation; a dedicated
+file-proxy-root mount there would stack a nested Bidirectional mount on the
+same host tree, which the agent's VerifyMount rejects. */}}
+{{- $agentStatePath := "/var/lib/pillar-csi/agent" -}}
+{{- $proxyUnderAgentState := and .Values.fileDriver.enabled (or (eq .Values.fileDriver.proxyRoot $agentStatePath) (hasPrefix (printf "%s/" $agentStatePath) .Values.fileDriver.proxyRoot)) -}}
 {{- if and $nfsEnabled (not .Values.agent.hostNetwork) -}}
   {{- fail "agent.hostNetwork must be true for dataset/NFS backends" -}}
 {{- end -}}
@@ -247,23 +253,29 @@ spec:
               mountPath: /dev
             # Persistent fencing/export recovery state and ZFS dataset mounts.
             # Bidirectional propagation preserves server dataset mounts across
-            # pod restarts and makes them visible in the storage host namespace.
+            # pod restarts and makes them visible in the storage host
+            # namespace; a fileDriver.proxyRoot nested under this tree inherits
+            # the same propagation instead of stacking a second mount.
             # Never use a PVC here: the agent cannot depend on volumes it serves.
             - name: agent-state
-              mountPath: /var/lib/pillar-csi/agent
+              mountPath: {{ $agentStatePath }}
               {{- if or $nfsEnabled .Values.fileDriver.enabled }}
               mountPropagation: Bidirectional
               {{- end }}
             {{- if .Values.fileDriver.enabled }}
             # File adoption resolves source identities below a read-only host
             # root and creates owned bind/NFS proxies below a host-backed root.
+            # A proxy root disjoint from agent-state gets its own Bidirectional
+            # mount; a nested one inherits the agent-state propagation above.
             - name: file-source-host-root
               mountPath: {{ .Values.fileDriver.sourceHostRoot }}
               readOnly: true
               mountPropagation: HostToContainer
+            {{- if not $proxyUnderAgentState }}
             - name: file-proxy-root
               mountPath: {{ .Values.fileDriver.proxyRoot }}
               mountPropagation: Bidirectional
+            {{- end }}
             {{- end }}
             {{- if $nfsEnabled }}
             # nfs-utils owns etab and NFSv4 recovery beneath this private
@@ -298,17 +310,19 @@ spec:
         # Durable agent state (fencing generations); see the volumeMount.
         - name: agent-state
           hostPath:
-            path: /var/lib/pillar-csi/agent
+            path: {{ $agentStatePath }}
             type: DirectoryOrCreate
         {{- if .Values.fileDriver.enabled }}
         - name: file-source-host-root
           hostPath:
             path: /
             type: Directory
+        {{- if not $proxyUnderAgentState }}
         - name: file-proxy-root
           hostPath:
             path: {{ .Values.fileDriver.proxyRoot }}
             type: DirectoryOrCreate
+        {{- end }}
         {{- end }}
         # /lib/modules — read-only access for the modprobe init container.
         - name: lib-modules

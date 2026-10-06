@@ -561,7 +561,7 @@ Type: `bool`. Default: `false`
 
 Type: `string`. Default: `"/var/lib/pillar-csi/agent/datasets"`
 
-Dedicated host-backed proxy/export root. The same absolute path is mounted in the agent (Bidirectional) and file node (HostToContainer).
+Dedicated host-backed proxy/export root. The same absolute path is mounted in the file node (HostToContainer) and seen Bidirectionally by the agent: the default lives below the agent-state hostPath and inherits that mount's Bidirectional propagation, while a path outside /var/lib/pillar-csi/agent gets its own Bidirectional agent mount. A path that is a parent of /var/lib/pillar-csi/agent is rejected because the proxy root must never swallow agent state.
 
 ### <code>fileDriver.<wbr>sourceHostRoot</code>
 

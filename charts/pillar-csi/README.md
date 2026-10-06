@@ -118,7 +118,7 @@ Kubernetes: `>=1.24.0-0`
 | fileDriver.node.metricsPort | int | `9503` | File node metrics port; distinct from block node metrics. |
 | fileDriver.nodeSocketPath | string | `"/var/lib/kubelet/plugins/files.pillar-csi.bhyoo.com/csi.sock"` | Node CSI socket and kubelet registration path on worker hosts. |
 | fileDriver.podInfoOnMount | bool | `false` |  |
-| fileDriver.proxyRoot | string | `"/var/lib/pillar-csi/agent/datasets"` | Dedicated host-backed proxy/export root.  The same absolute path is mounted in the agent (Bidirectional) and file node (HostToContainer). |
+| fileDriver.proxyRoot | string | `"/var/lib/pillar-csi/agent/datasets"` | Dedicated host-backed proxy/export root.  The same absolute path is mounted in the file node (HostToContainer) and seen Bidirectionally by the agent: the default lives below the agent-state hostPath and inherits that mount's Bidirectional propagation, while a path outside /var/lib/pillar-csi/agent gets its own Bidirectional agent mount.  A path that is a parent of /var/lib/pillar-csi/agent is rejected because the proxy root must never swallow agent state. |
 | fileDriver.sourceHostRoot | string | `"/host"` | Read-only host root used to resolve source filesystems in the agent. |
 | fullnameOverride | string | `""` | Full name override for resource naming. |
 | imagePullPolicy | string | `"IfNotPresent"` | Global image pull policy applied to all containers unless overridden per component. |

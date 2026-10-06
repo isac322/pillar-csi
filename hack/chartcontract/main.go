@@ -26,7 +26,12 @@ limitations under the License.
 //   - a CRD shortName that shadows a built-in Kubernetes shortName;
 //   - a chart Role/ClusterRole granting a pillar-csi.bhyoo.com resource that no
 //     controller-gen CRD serves (this breaks installs that apply CRDs separately);
-//   - a controller-gen RBAC permission missing from the chart controller role.
+//   - a controller-gen RBAC permission missing from the chart controller role;
+//   - with -file-driver, the file CSI consumer contract: both CSIDriver
+//     identities keep their fsGroupPolicy, socket/registrar routes stay paired,
+//     and no container stacks Bidirectional mounts on nested host or mount
+//     paths — the --nfs-export-root tree must be covered by exactly one
+//     Bidirectional mount (a nested proxy root inherits the agent-state mount).
 //
 // Usage (see charts/pillar-csi/test_render.sh):
 //
@@ -75,14 +80,26 @@ type options struct {
 	fileDriverBlockPolicy string
 }
 
+// renderedMount is one container volumeMount resolved only as far as the
+// propagation contract needs: the backing volume name (to look up the host
+// path), the container path, an optional subPath, and mountPropagation.
+type renderedMount struct {
+	volume      string
+	mountPath   string
+	subPath     string
+	propagation string
+}
+
 type renderedContainer struct {
-	name string
-	args []string
+	name   string
+	args   []string
+	mounts []renderedMount
 }
 
 type renderedWorkload struct {
 	kind       string
 	name       string
+	hostPaths  map[string]string // volume name → hostPath.path, hostPath volumes only
 	containers []renderedContainer
 }
 
@@ -263,32 +280,114 @@ func decodeWorkload(doc []byte, kind string) (renderedWorkload, error) {
 	if err != nil {
 		return renderedWorkload{}, fmt.Errorf("rendered %s metadata: %w", kind, err)
 	}
-	workload := renderedWorkload{kind: kind, name: name}
+	workload := renderedWorkload{kind: kind, name: name, hostPaths: map[string]string{}}
+	err = decodeWorkloadVolumes(&workload, podSpec)
+	if err != nil {
+		return renderedWorkload{}, err
+	}
 	for i, raw := range rawContainers {
-		container, ok := raw.(map[string]any)
-		if !ok {
-			return renderedWorkload{}, fmt.Errorf("rendered %s container %d must be an object", kind, i)
-		}
-		containerName, err := requiredStringField(container, "name")
+		container, err := decodeWorkloadContainer(raw, kind, i)
 		if err != nil {
-			return renderedWorkload{}, fmt.Errorf("rendered %s container %d: %w", kind, i, err)
+			return renderedWorkload{}, err
 		}
-		rawArgs, err := optionalSliceField(container, "args")
-		if err != nil {
-			return renderedWorkload{}, fmt.Errorf("rendered %s container %s args: %w", kind, containerName, err)
-		}
-		current := renderedContainer{name: containerName}
-		for _, rawArg := range rawArgs {
-			arg, ok := rawArg.(string)
-			if !ok {
-				return renderedWorkload{}, fmt.Errorf(
-					"rendered %s container %s args must contain only strings", kind, containerName)
-			}
-			current.args = append(current.args, arg)
-		}
-		workload.containers = append(workload.containers, current)
+		workload.containers = append(workload.containers, container)
 	}
 	return workload, nil
+}
+
+// decodeWorkloadVolumes records every hostPath volume's backing host path so
+// volumeMounts can be resolved to the mounts they create on the node.
+func decodeWorkloadVolumes(w *renderedWorkload, podSpec map[string]any) error {
+	rawVolumes, err := optionalSliceField(podSpec, "volumes")
+	if err != nil {
+		return fmt.Errorf("rendered %s volumes: %w", w.kind, err)
+	}
+	for i, raw := range rawVolumes {
+		volume, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("rendered %s volume %d must be an object", w.kind, i)
+		}
+		volumeName, err := requiredStringField(volume, "name")
+		if err != nil {
+			return fmt.Errorf("rendered %s volume %d: %w", w.kind, i, err)
+		}
+		hostPath, ok := volume["hostPath"].(map[string]any)
+		if !ok {
+			continue // only hostPath volumes resolve to host mount targets
+		}
+		hostPathPath, err := requiredStringField(hostPath, "path")
+		if err != nil {
+			return fmt.Errorf("rendered %s volume %s hostPath: %w", w.kind, volumeName, err)
+		}
+		w.hostPaths[volumeName] = hostPathPath
+	}
+	return nil
+}
+
+// decodeWorkloadContainer decodes one rendered container's name, args and
+// volumeMounts; propagation-relevant mount fields are kept verbatim.
+func decodeWorkloadContainer(raw any, kind string, index int) (renderedContainer, error) {
+	container, ok := raw.(map[string]any)
+	if !ok {
+		return renderedContainer{}, fmt.Errorf("rendered %s container %d must be an object", kind, index)
+	}
+	containerName, err := requiredStringField(container, "name")
+	if err != nil {
+		return renderedContainer{}, fmt.Errorf("rendered %s container %d: %w", kind, index, err)
+	}
+	rawArgs, err := optionalSliceField(container, "args")
+	if err != nil {
+		return renderedContainer{}, fmt.Errorf("rendered %s container %s args: %w", kind, containerName, err)
+	}
+	current := renderedContainer{name: containerName}
+	for _, rawArg := range rawArgs {
+		arg, ok := rawArg.(string)
+		if !ok {
+			return renderedContainer{}, fmt.Errorf(
+				"rendered %s container %s args must contain only strings", kind, containerName)
+		}
+		current.args = append(current.args, arg)
+	}
+	rawMounts, err := optionalSliceField(container, "volumeMounts")
+	if err != nil {
+		return renderedContainer{}, fmt.Errorf("rendered %s container %s volumeMounts: %w", kind, containerName, err)
+	}
+	for i, raw := range rawMounts {
+		mount, err := decodeVolumeMount(raw, kind, containerName, i)
+		if err != nil {
+			return renderedContainer{}, err
+		}
+		current.mounts = append(current.mounts, mount)
+	}
+	return current, nil
+}
+
+// decodeVolumeMount decodes the propagation-relevant fields of one rendered
+// container volumeMount.
+func decodeVolumeMount(raw any, kind, containerName string, index int) (renderedMount, error) {
+	mount, ok := raw.(map[string]any)
+	if !ok {
+		return renderedMount{}, fmt.Errorf(
+			"rendered %s container %s volumeMount %d must be an object", kind, containerName, index)
+	}
+	mountName, err := requiredStringField(mount, "name")
+	if err != nil {
+		return renderedMount{}, fmt.Errorf(
+			"rendered %s container %s volumeMount %d: %w", kind, containerName, index, err)
+	}
+	mountPath, err := requiredStringField(mount, "mountPath")
+	if err != nil {
+		return renderedMount{}, fmt.Errorf(
+			"rendered %s container %s volumeMount %s: %w", kind, containerName, mountName, err)
+	}
+	entry := renderedMount{volume: mountName, mountPath: mountPath}
+	if subPath, ok := mount["subPath"].(string); ok {
+		entry.subPath = subPath
+	}
+	if propagation, ok := mount["mountPropagation"].(string); ok {
+		entry.propagation = propagation
+	}
+	return entry, nil
 }
 
 func requiredMapField(parent map[string]any, field string) (map[string]any, error) {
@@ -350,7 +449,8 @@ func checkFileDriver(r rendered, blockPolicy string) []string {
 	violations := checkFileDriverResources(r.csiDrivers, blockPolicy, blockName, fileName)
 	routes := inspectFileDriverRoutes(r.workloads, fileName,
 		blockNodeSocket, fileNodeSocket, blockControllerSock)
-	return append(violations, fileDriverRouteViolations(routes)...)
+	violations = append(violations, fileDriverRouteViolations(routes)...)
+	return append(violations, checkFileDriverMounts(r.workloads)...)
 }
 
 func checkFileDriverResources(drivers []*storagev1.CSIDriver, blockPolicy, blockName, fileName string) []string {
@@ -469,6 +569,135 @@ func fileDriverRouteViolations(routes fileDriverRoutes) []string {
 		violations = append(violations, "fileDriver.enabled must render a file registrar --kubelet-registration-path")
 	}
 	return violations
+}
+
+// checkFileDriverMounts enforces the agent's mount-propagation contract:
+// no two Bidirectional mounts in one container may stack on equal or nested
+// host paths or mount paths (the agent VerifyMount rejects stacked mountinfo
+// records, and stacked propagation loses the nested mount's lifecycle), and
+// the container that owns --nfs-export-root must see that host path through
+// exactly one Bidirectional mount — either a dedicated hostPath equal to the
+// root, or an enclosing mount (agent-state) that covers it by the same
+// relative path on both sides.
+func checkFileDriverMounts(workloads []renderedWorkload) []string {
+	var violations []string
+	for _, workload := range workloads {
+		for _, container := range workload.containers {
+			violations = append(violations, containerFileMountViolations(workload, container)...)
+		}
+	}
+	return violations
+}
+
+// containerFileMountViolations applies both mount-propagation invariants to
+// one container's mounts.
+func containerFileMountViolations(workload renderedWorkload, container renderedContainer) []string {
+	var bidirectional []renderedMount
+	for _, mount := range container.mounts {
+		if mount.propagation == "Bidirectional" {
+			bidirectional = append(bidirectional, mount)
+		}
+	}
+	violations := bidirectionalOverlapViolations(workload, container, bidirectional)
+	return append(violations, exportRootCoverageViolations(workload, container, bidirectional)...)
+}
+
+// bidirectionalOverlapViolations reports every pair of one container's
+// Bidirectional mounts that stacks on equal or nested mount paths or backing
+// host paths — two mounts propagating events on the same tree.
+func bidirectionalOverlapViolations(workload renderedWorkload, container renderedContainer,
+	bidirectional []renderedMount) []string {
+	var violations []string
+	for i, left := range bidirectional {
+		for _, right := range bidirectional[i+1:] {
+			leftHost := workload.mountHostPath(left)
+			rightHost := workload.mountHostPath(right)
+			if relatedPaths(left.mountPath, right.mountPath) ||
+				leftHost != "" && rightHost != "" && relatedPaths(leftHost, rightHost) {
+				violations = append(violations, fmt.Sprintf(
+					"%s %s container %s stacks Bidirectional mounts %s and %s on equal or nested paths",
+					workload.kind, workload.name, container.name, left.mountPath, right.mountPath))
+			}
+		}
+	}
+	return violations
+}
+
+// exportRootCoverageViolations requires the container owning
+// --nfs-export-root to see that host path through exactly one Bidirectional
+// mount: a dedicated hostPath equal to the root, or an enclosing mount such
+// as agent-state covering it by the same relative path on both sides.
+func exportRootCoverageViolations(workload renderedWorkload, container renderedContainer,
+	bidirectional []renderedMount) []string {
+	exportRoot := argValue(container.args, "--nfs-export-root")
+	if exportRoot == "" {
+		return nil
+	}
+	covers := 0
+	for _, mount := range bidirectional {
+		if mountCoversHostPath(mount, workload.mountHostPath(mount), exportRoot) {
+			covers++
+		}
+	}
+	if covers != 1 {
+		return []string{fmt.Sprintf(
+			"%s %s container %s must cover --nfs-export-root %s with exactly one Bidirectional mount, got %d",
+			workload.kind, workload.name, container.name, exportRoot, covers)}
+	}
+	return nil
+}
+
+// mountHostPath resolves a volumeMount to its effective host path: the
+// backing hostPath.path plus any subPath offset. Non-hostPath volumes have no
+// host mount target and resolve to "".
+func (w renderedWorkload) mountHostPath(mount renderedMount) string {
+	hostPath := w.hostPaths[mount.volume]
+	if hostPath == "" {
+		return ""
+	}
+	if mount.subPath != "" {
+		return filepath.Join(hostPath, mount.subPath)
+	}
+	return hostPath
+}
+
+// childRel returns path's relative path beneath base, "." for equality, or
+// ".." when path is not beneath base (also when either path is empty).
+func childRel(base, path string) string {
+	rel, err := filepath.Rel(base, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ".."
+	}
+	return rel
+}
+
+// relatedPaths reports whether two paths are equal or one is a parent of the
+// other — the stacked-mount relation, independent of mount order.
+func relatedPaths(a, b string) bool {
+	return childRel(a, b) != ".." || childRel(b, a) != ".."
+}
+
+// mountCoversHostPath reports whether a mount exposes host path root: root
+// must sit at the same relative path beneath both the mountPath and the
+// backing host path (equal paths included, e.g. an exact file-proxy-root or a
+// proxy root nested under agent-state).
+func mountCoversHostPath(mount renderedMount, hostPath, root string) bool {
+	fromMount := childRel(mount.mountPath, root)
+	return fromMount != "" && fromMount != ".." && fromMount == childRel(hostPath, root)
+}
+
+// argValue returns the value of a --flag=value or --flag value pair, "" when
+// the flag is absent.
+func argValue(args []string, flagName string) string {
+	for i, arg := range args {
+		if arg == flagName && i+1 < len(args) {
+			return args[i+1]
+		}
+		if value, ok := strings.CutPrefix(arg, flagName+"="); ok {
+			return value
+		}
+	}
+	return ""
 }
 
 func hasArgValue(args []string, flagName, want string) bool {

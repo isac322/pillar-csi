@@ -222,6 +222,9 @@ crash-looping DaemonSet:
 {{- fail (printf "fileDriver.%s must be a canonical absolute path other than /" $field) }}
 {{- end }}
 {{- end }}
+{{- if hasPrefix (printf "%s/" .Values.fileDriver.proxyRoot) "/var/lib/pillar-csi/agent" }}
+{{- fail "fileDriver.proxyRoot must not be a parent directory of the agent-state hostPath /var/lib/pillar-csi/agent" }}
+{{- end }}
 {{- $controllerPorts := dict "controller.healthProbePort" .Values.controller.healthProbePort "controller.metricsPort" .Values.controller.metricsPort "controller.livenessPort" .Values.controller.livenessPort "fileDriver.controller.healthProbePort" .Values.fileDriver.controller.healthProbePort "fileDriver.controller.metricsPort" .Values.fileDriver.controller.metricsPort }}
 {{- if .Values.webhook.enabled }}
 {{- $_ := set $controllerPorts "webhook.port" .Values.webhook.port }}
