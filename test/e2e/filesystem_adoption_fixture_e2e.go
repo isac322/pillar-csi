@@ -490,7 +490,7 @@ if [ "$found" = 1 ]; then
 		replacement || exit 1
 		zfs destroy "$src"
 	fi
-	zfs rename "$backup" "$src"
+	zfs rename -u "$backup" "$src"
 fi
 original "$src" || exit 1
 `
@@ -531,7 +531,7 @@ rollback() {
 			fi
 		fi
 		if [ "$failed" = 0 ]; then
-			zfs rename "$backup" "$src" || printf 'ROLLBACK FAILED: rename %s back to %s\n' "$backup" "$src" >&2
+			zfs rename -u "$backup" "$src" || printf 'ROLLBACK FAILED: rename %s back to %s\n' "$backup" "$src" >&2
 		fi
 	fi
 	exit "$status"
@@ -543,7 +543,7 @@ if [ "$found" = 1 ]; then
 	exit 1
 fi
 original "$src" || exit 1
-zfs rename "$src" "$backup"
+zfs rename -u "$src" "$backup"
 renamed=1
 original "$backup" || exit 1
 zfs create -o mountpoint="$repl" -o quota="$quota" -o refquota="$refquota" "$src"
