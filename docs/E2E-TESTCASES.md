@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
--**총 테스트 케이스: 464** (등록 spec 464개; strict TC 라벨 455개: 기존 default-profile 413개 + dedicated NFS lane의 E37 13개와 E71 29개; 라벨 없는 teardown 보장 9개 포함. 전체 문서 inventory는 **750개**이며 비기본 E33·E36·F27–F31 및 reference 항목을 포함하며 strict gate에서 별도로 보고한다. 등록 수는 통과 결과를 의미하지 않는다.)
+-**총 테스트 케이스: 464** (등록 spec 464개; strict TC 라벨 455개: 기존 default-profile 413개 + dedicated NFS lane의 E37 13개와 E71 29개; 라벨 없는 teardown 보장 9개 포함. 전체 문서 inventory는 **758개**이며 비기본 E33·E36·F27–F31 및 reference 항목을 포함하며 strict gate에서 별도로 보고한다. 등록 수는 통과 결과를 의미하지 않는다.)
 
 ---
 
