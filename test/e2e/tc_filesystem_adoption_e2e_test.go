@@ -10,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	pillarv1 "github.com/isac322/pillar-csi/api/v1alpha1"
+	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
+	agentbackend "github.com/isac322/pillar-csi/internal/agent/backend"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -165,6 +168,62 @@ func e71Attachment(ctx context.Context, f *FilesystemAdoptionFixture, field stri
 	return f.Must(ctx, "get", "volumeattachment", "-o", `jsonpath={.items[?(@.spec.source.persistentVolumeName=="`+f.PVName+`")]`+field+`}`)
 }
 
+// e71Reservations lists every PillarVolumeReservation in the cluster.
+func e71Reservations(ctx context.Context, f *FilesystemAdoptionFixture) []pillarv1.PillarVolumeReservation {
+	var list pillarv1.PillarVolumeReservationList
+	Expect(json.Unmarshal([]byte(f.Must(ctx, "get", "pillarvolumereservation", "-o", "json")), &list)).To(Succeed())
+	return list.Items
+}
+
+// e71Reservation returns the one reservation held by the adopted lifecycle
+// f.PVName. The owner predicate comes from the PillarVolumeState the
+// controller recorded (owner volume, agent, backend routing identity, claim),
+// its native key is the driver's exported FilesystemFenceID of that recorded
+// adoption descriptor, and no other reservation on the same agent may hold
+// that key, whatever logical pool alias asked.
+func e71Reservation(ctx context.Context, f *FilesystemAdoptionFixture) pillarv1.PillarVolumeReservation {
+	var state pillarv1.PillarVolumeState
+	Expect(json.Unmarshal([]byte(f.Must(ctx, "get", "pillarvolumestate", f.PVName, "-o", "json")), &state)).To(Succeed())
+	Expect(state.Spec.FilesystemAdoption).NotTo(BeNil())
+	Expect(state.Spec.FilesystemAdoption.CanonicalSource).To(Equal(f.CanonicalSource))
+	Expect(state.Spec.ClaimRef).NotTo(BeNil())
+	items := e71Reservations(ctx, f)
+	var owned []pillarv1.PillarVolumeReservation
+	for _, r := range items {
+		if r.Spec.OwnerVolume == f.PVName {
+			owned = append(owned, r)
+		}
+	}
+	Expect(owned).To(HaveLen(1), "PillarVolumeState %s must hold exactly one reservation", f.PVName)
+	r := owned[0]
+	Expect(r.Spec.AgentRef).To(Equal(state.Spec.AgentRef))
+	Expect(r.Spec.BackendType).To(Equal(state.Spec.BackendType))
+	Expect(r.Spec.AgentVolumeID).To(Equal(state.Spec.AgentVolumeID))
+	a := state.Spec.FilesystemAdoption
+	var inode uint64
+	if a.Inode != "" {
+		var err error
+		inode, err = pillarv1.ParseFilesystemAdoptionInode(a.Inode)
+		Expect(err).NotTo(HaveOccurred())
+	}
+	native := agentbackend.FilesystemFenceID(&agentv1.FilesystemAdoption{
+		Kind: string(a.Kind), CanonicalSource: a.CanonicalSource, ResourceId: a.ResourceID,
+		HostPath: a.HostPath, FilesystemType: a.FilesystemType, FilesystemId: a.FilesystemID,
+		Inode: inode, ProjectId: a.ProjectID,
+	})
+	Expect(native).NotTo(BeEmpty(), "recorded adoption descriptor must have a native resource key")
+	Expect(r.Spec.FilesystemResourceID).To(Equal(native))
+	Expect(r.Spec.ClaimRef).To(Equal(state.Spec.ClaimRef))
+	var holders []string
+	for _, other := range items {
+		if other.Spec.AgentRef == r.Spec.AgentRef && other.Spec.FilesystemResourceID == r.Spec.FilesystemResourceID {
+			holders = append(holders, other.Name)
+		}
+	}
+	Expect(holders).To(Equal([]string{r.Name}), "native resource %s must have exactly one reservation", r.Spec.FilesystemResourceID)
+	return r
+}
+
 var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "filesystem", "nfs"), Ordered, func() {
 	var ctx context.Context
 	var f *FilesystemAdoptionFixture
@@ -190,7 +249,31 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		if f != nil {
 			cleanup, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 			defer cancel()
-			Expect(f.Cleanup(cleanup)).To(Succeed())
+			err := f.Cleanup(cleanup)
+			if err != nil {
+				// Bounded teardown facts for the failing cleanup: the PVS,
+				// VolumeAttachments, file-node stage records and mounts on the
+				// storage node and workers, and agent/controller logs. Optional
+				// PV metadata failures are recorded, never asserted.
+				var handle, target string
+				if f.PVName != "" {
+					metadataCtx, metadataCancel := context.WithTimeout(context.Background(), time.Minute)
+					for _, field := range []struct {
+						Into *string
+						Path string
+					}{{&handle, "{.spec.csi.volumeHandle}"}, {&target, "{.spec.csi.volumeAttributes.target_id}"}} {
+						value, readErr := f.Kubectl(metadataCtx, "", "get", "pv", f.PVName, "--ignore-not-found=true", "-o", "jsonpath="+field.Path)
+						if readErr != nil {
+							fmt.Fprintf(GinkgoWriter, "E71 diagnostic read of pv %s %s failed: %v\n", f.PVName, field.Path, readErr)
+							continue
+						}
+						*field.Into = strings.TrimSpace(value)
+					}
+					metadataCancel()
+				}
+				fmt.Fprintf(GinkgoWriter, "E71 AfterAll cleanup of %s failed: %v\n%s\n", f.PVName, err, f.teardownDiagnostics(handle, target, append(append([]string{}, workers...), f.StorageNode)...)())
+			}
+			Expect(err).To(Succeed())
 		}
 	})
 
@@ -276,14 +359,49 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		e71Delete(ctx, f, "pod", wrong)
 	})
 	It("[TC-E71.7] shares one native reservation for aliases and refuses a second owner across logical pools", func() {
+		// Two agent logical pools, e71-files-alias and e71-files, share one
+		// hostRoot, so both fixtures address the same native directory.
 		a := NewFilesystemAdoptionFixture("E71.7-alias")
 		Expect(a.PrepareDirectory(ctx, "xfs", e71Quota)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+			defer cancel()
+			Expect(a.Cleanup(cleanupCtx)).To(Succeed())
+		})
 		a.Pool = "e71-files-alias"
 		Expect(a.ApplyObjects(ctx, false)).To(Succeed())
 		Expect(a.AdoptPVC(ctx, e71DirectoryAnnotation, "ReadWriteMany", e71Quota)).To(Succeed())
-		e71Rejected(ctx, a, "alias-owner", e71DirectoryAnnotation, a.CanonicalSource, a.RemoteStorageClass, e71Quota)
-		Expect(f.Must(ctx, "get", "pillarvolumereservation", f.PVName, "--ignore-not-found=true", "-o", "name")).NotTo(BeEmpty())
-		Expect(a.Cleanup(ctx)).To(Succeed())
+		e71WaitBound(ctx, a)
+		held := e71Reservation(ctx, a)
+
+		b := NewFilesystemAdoptionFixture("E71.7-second")
+		Expect(b.PrepareDirectory(ctx, "xfs", e71Quota)).To(Succeed())
+		DeferCleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+			defer cancel()
+			Expect(b.Cleanup(cleanupCtx)).To(Succeed())
+		})
+		Expect(b.CanonicalSource).To(Equal(a.CanonicalSource))
+		Expect(b.Pool).NotTo(Equal(a.Pool))
+		// Same agent as the owner, so only the logical pool differs.
+		b.AgentName = a.AgentName
+		Expect(b.ApplyObjects(ctx, false)).To(Succeed())
+		Expect(b.AgentName).To(Equal(a.AgentName))
+		Expect(b.AdoptPVC(ctx, e71DirectoryAnnotation, "ReadWriteMany", e71Quota)).To(Succeed())
+		// The controller's refusal names the owning lifecycle, whether the
+		// native ownership scan or the reservation itself stops the alias.
+		Eventually(func() string {
+			return b.Must(ctx, "-n", b.Namespace, "get", "events", "--field-selector", "involvedObject.kind=PersistentVolumeClaim,involvedObject.name="+b.PVCName+",reason=ProvisioningFailed", "-o", "jsonpath={.items[*].message}")
+		}, 2*time.Minute, 2*time.Second).Should(ContainSubstring(a.PVName))
+		Expect(b.Must(ctx, "-n", b.Namespace, "get", "pvc", b.PVCName, "-o", "jsonpath={.status.phase}/{.spec.volumeName}")).To(Equal("Pending/"))
+		after := e71Reservation(ctx, a)
+		Expect(after.UID).To(Equal(held.UID))
+		Expect(after.Spec).To(Equal(held.Spec))
+		for _, r := range e71Reservations(ctx, a) {
+			if r.Spec.ClaimRef != nil {
+				Expect(r.Spec.ClaimRef.Namespace).NotTo(Equal(b.Namespace), "second owner %s/%s must not hold a reservation", b.Namespace, b.PVCName)
+			}
+		}
 	})
 	It("[TC-E71.8] preserves UID, GID, modes, and source properties with fsGroup 5555 and reports mismatched access by kernel", func() {
 		pod := "e71-fsgroup"
@@ -299,7 +417,7 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		old := f.PVCName
 		state := f.Must(ctx, "get", "pillarvolumestate", f.PVName, "-o", "jsonpath={.metadata.name}")
 		Expect(state).To(Equal(f.PVName))
-		Expect(f.Must(ctx, "get", "pillarvolumereservation", f.PVName, "-o", "name")).NotTo(BeEmpty())
+		held := e71Reservation(ctx, f)
 		e71Command(ctx, f, "-n", f.Namespace, "delete", "pvc", old, "--wait=true", "--timeout=3m")
 		Eventually(func() string { return f.Must(ctx, "get", "pv", f.PVName, "-o", "jsonpath={.status.phase}") }, 2*time.Minute, 2*time.Second).Should(Equal("Released"))
 		e71Command(ctx, f, "patch", "pv", f.PVName, "--type=merge", "-p", `{"spec":{"claimRef":null}}`)
@@ -309,7 +427,10 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		Expect(err).NotTo(HaveOccurred())
 		f.PVCName = replacement
 		e71WaitBound(ctx, f)
-		Expect(f.Must(ctx, "get", "pillarvolumereservation", f.PVName, "-o", "name")).NotTo(BeEmpty())
+		after := e71Reservation(ctx, f)
+		Expect(after.Name).To(Equal(held.Name))
+		Expect(after.UID).To(Equal(held.UID))
+		Expect(after.Spec).To(Equal(held.Spec))
 	})
 	It("[TC-E71.10] deletes only CSI-owned proxy and state while preserving the original source", func() {
 		s := f.PVName
