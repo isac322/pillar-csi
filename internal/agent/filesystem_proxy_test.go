@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -415,9 +418,45 @@ func TestFilesystemProxyRejectsSourceTargetAndPreservesEmptyDirectory(t *testing
 	}
 }
 
-func TestEnsureProxyTargetUsesTraversableParentsAndPrivateTarget(t *testing.T) {
+// TestEnsureProxyTargetAccessBoundaryUnderRestrictiveUmask proves that the
+// access boundary of a newly created proxy path does not depend on the agent's
+// umask: driver-created parents stay traversable by other users (NFS
+// root-squashed clients), the unmounted target denies other users, and a
+// pre-existing private ancestor is not relaxed. The umask is set only inside a
+// re-executed helper process so parallel tests never observe it.
+func TestEnsureProxyTargetAccessBoundaryUnderRestrictiveUmask(t *testing.T) {
 	t.Parallel()
-	root := filepath.Join(canonicalTempDir(t), "proxies")
+	base := canonicalTempDir(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], //nolint:gosec // G204: re-executes own test binary as a helper
+		"-test.run=^TestEnsureProxyTargetRestrictiveUmaskHelper$", "-test.v")
+	cmd.Env = append(os.Environ(),
+		"PILLAR_TEST_PROXY_UMASK_HELPER=1",
+		"PILLAR_TEST_PROXY_UMASK_BASE="+base,
+	)
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("restrictive-umask helper failed: %v\n%s", runErr, out)
+	}
+	if !strings.Contains(string(out), "--- PASS: TestEnsureProxyTargetRestrictiveUmaskHelper") {
+		t.Fatalf("restrictive-umask helper did not run:\n%s", out)
+	}
+}
+
+// TestEnsureProxyTargetRestrictiveUmaskHelper runs only in the subprocess
+// started above; without the marker environment variable it is a no-op.
+func TestEnsureProxyTargetRestrictiveUmaskHelper(t *testing.T) {
+	base := os.Getenv("PILLAR_TEST_PROXY_UMASK_BASE")
+	if os.Getenv("PILLAR_TEST_PROXY_UMASK_HELPER") == "" || base == "" {
+		return
+	}
+	syscall.Umask(0o077)
+	existing := filepath.Join(base, "existing")
+	if err := os.Mkdir(existing, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(existing, "proxies")
 	target := filepath.Join(root, "filesystem", "native")
 	created, err := ensureProxyTarget(target)
 	if err != nil {
@@ -426,20 +465,37 @@ func TestEnsureProxyTargetUsesTraversableParentsAndPrivateTarget(t *testing.T) {
 	if !created {
 		t.Fatal("new filesystem proxy target was not created")
 	}
-	for _, path := range []string{root, filepath.Dir(target)} {
-		info, statErr := os.Stat(path)
-		if statErr != nil {
-			t.Fatal(statErr)
+	assertProxyAccessBoundary(t, existing, []string{root, filepath.Dir(target)}, target)
+	again, againErr := ensureProxyTarget(target)
+	if againErr != nil || again {
+		t.Fatalf("existing proxy target re-ensure = (%v, %v), want (false, nil)", again, againErr)
+	}
+}
+
+// assertProxyAccessBoundary checks that other users can traverse the
+// driver-created parents, cannot access the unmounted target, and that the
+// pre-existing private ancestor kept its 0700 mode.
+func assertProxyAccessBoundary(t *testing.T, existing string, createdParents []string, target string) {
+	t.Helper()
+	const otherTraverse, otherAny, groupWrite = 0o001, 0o007, 0o020
+	for _, path := range createdParents {
+		if perm := lstatPerm(t, path); perm&otherTraverse == 0 {
+			t.Fatalf("driver-created parent %q mode %04o denies traversal to other users", path, perm)
 		}
-		if mode := info.Mode().Perm(); mode != 0o755 {
-			t.Fatalf("proxy intermediate directory %q mode = %04o, want 0755", path, mode)
-		}
 	}
-	info, statErr := os.Stat(target)
-	if statErr != nil {
-		t.Fatal(statErr)
+	if perm := lstatPerm(t, target); perm&otherAny != 0 || perm&groupWrite != 0 {
+		t.Fatalf("unmounted proxy target mode %04o grants access beyond owner and group read", perm)
 	}
-	if mode := info.Mode().Perm(); mode != 0o750 {
-		t.Fatalf("proxy target mode = %04o, want 0750", mode)
+	if perm := lstatPerm(t, existing); perm != 0o700 {
+		t.Fatalf("pre-existing ancestor mode changed to %04o", perm)
 	}
+}
+
+func lstatPerm(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Mode().Perm()
 }

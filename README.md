@@ -470,7 +470,7 @@ spec:
       storage: 20Gi
 ```
 
-The storage node and workers need the host filesystem and NFS kernel support described in [Why pillar-csi](#why-pillar-csi). Keep the chart's host-backed `fileDriver.proxyRoot` and persistent agent state on a filesystem suitable for NFS export filehandles. The source directory itself remains outside that proxy and is never replaced.
+The storage node and workers need the host filesystem and NFS kernel support described in [Why pillar-csi](#why-pillar-csi). Keep the chart's host-backed `fileDriver.proxyRoot` and persistent agent state on a filesystem suitable for NFS export filehandles. The source directory itself remains outside that proxy and is never replaced. Directories the agent creates under the proxy root get fixed modes whatever the agent's umask: intermediate directories are `0755`, so root-squashed NFS clients can traverse them, and each unmounted proxy target is `0750`. The agent does not change the mode of directories that already exist or of the source.
 
 ### ZFS filesystem adoption
 

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 	"github.com/isac322/pillar-csi/internal/agent/backend"
@@ -333,9 +334,13 @@ func ensureProxyTarget(target string) (bool, error) {
 	}
 	info, err := os.Lstat(target)
 	if errors.Is(err, os.ErrNotExist) {
-		createErr := os.Mkdir(target, 0o750)
+		createErr := os.Mkdir(target, filesystemProxyTargetMode)
 		if createErr != nil {
 			return false, fmt.Errorf("create filesystem proxy target: %w", createErr)
+		}
+		modeErr := finishCreatedProxyDirectory(target, filesystemProxyTargetMode)
+		if modeErr != nil {
+			return false, modeErr
 		}
 		return true, nil
 	}
@@ -365,11 +370,14 @@ func ensureDirectoryPath(path string) error {
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
 		if errors.Is(err, os.ErrNotExist) {
-			//nolint:gosec // G301: NFS clients need execute traversal.
-			// Owned proxy intermediates contain only protected mount targets; targets remain 0750.
+			//nolint:gosec // G301: NFS clients need execute traversal; mode is re-applied below past umask.
 			createErr := os.Mkdir(current, 0o755)
 			if createErr != nil {
 				return fmt.Errorf("create filesystem proxy directory %q: %w", current, createErr)
+			}
+			modeErr := finishCreatedProxyDirectory(current, filesystemProxyParentMode)
+			if modeErr != nil {
+				return modeErr
 			}
 			continue
 		}
@@ -382,6 +390,58 @@ func ensureDirectoryPath(path string) error {
 		if !info.IsDir() {
 			return fmt.Errorf("filesystem proxy path component %q is not a directory", current)
 		}
+	}
+	return nil
+}
+
+const (
+	// Driver-created intermediates use this mode so NFS clients, including
+	// root-squashed ones, can traverse them. They contain only protected mount
+	// targets.
+	filesystemProxyParentMode os.FileMode = 0o755
+	// The unmounted proxy target uses this private mode.
+	filesystemProxyTargetMode os.FileMode = 0o750
+)
+
+// finishCreatedProxyDirectory applies mode to a directory this agent just
+// created, because mkdir(2) is subject to the process umask. Pre-existing
+// directories are never passed here, so foreign modes stay untouched. On
+// failure the empty directory is removed so a retry recreates it instead of
+// adopting a directory with the wrong mode.
+func finishCreatedProxyDirectory(path string, mode os.FileMode) error {
+	modeErr := setCreatedProxyDirectoryMode(path, mode)
+	if modeErr == nil {
+		return nil
+	}
+	removeErr := os.Remove(path)
+	if removeErr != nil {
+		return fmt.Errorf("%w; remove created filesystem proxy directory %q: %w", modeErr, path, removeErr)
+	}
+	return modeErr
+}
+
+func setCreatedProxyDirectoryMode(path string, mode os.FileMode) (err error) {
+	//nolint:gosec // G304: validated driver-owned proxy path; O_NOFOLLOW rejects symlinks.
+	dir, err := os.OpenFile(path, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("open created filesystem proxy directory %q: %w", path, err)
+	}
+	defer func() {
+		closeErr := dir.Close()
+		if closeErr != nil {
+			err = fmt.Errorf("%w; close created filesystem proxy directory %q: %w", err, path, closeErr)
+		}
+	}()
+	chmodErr := dir.Chmod(mode)
+	if chmodErr != nil {
+		return fmt.Errorf("chmod created filesystem proxy directory %q: %w", path, chmodErr)
+	}
+	info, statErr := dir.Stat()
+	if statErr != nil {
+		return fmt.Errorf("inspect created filesystem proxy directory %q: %w", path, statErr)
+	}
+	if !info.IsDir() || info.Mode().Perm() != mode {
+		return fmt.Errorf("created filesystem proxy directory %q mode = %v, want directory %04o", path, info.Mode(), mode)
 	}
 	return nil
 }
