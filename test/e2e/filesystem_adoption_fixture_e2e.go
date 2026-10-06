@@ -511,110 +511,168 @@ func fileNodeStageStateFile(handle string) string {
 }
 
 // teardownDiagnostics returns a lazy, bounded collector of the teardown facts
-// a bare PV finalizer timeout hides: live publications and VolumeAttachments,
-// the known PV/PVC phase, finalizers and claimRef, the real file-node stage
-// directory (and the PV's stage record when handle is known) and matching
-// mounts, node volumesInUse/volumesAttached and recent matching kubelet
-// journal lines, and file-node/agent plus block and file controller/sidecar
-// logs — distinguishing a genuinely stuck unpublish from slow asynchronous
-// drain. handle and target are the PV's CSI volumeHandle and export target;
+// a bare PV finalizer timeout hides. A critical-state budget records, first,
+// short jsonpath facts of the known PVS, VolumeAttachment, PV, PVC and pods,
+// then per node (active publications, the storage node, then the rest) the
+// real file-node stage directory and record, matching mounts, kubelet
+// volumesInUse/volumesAttached, and kubelet journal lines naming the volume.
+// A separate log budget holds events and file-node, controller/sidecar and
+// agent log lines naming the volume, so no log volume can displace the state
+// facts. handle and target are the PV's CSI volumeHandle and export target;
 // either may be empty when unknown.
 func (f *FilesystemAdoptionFixture) teardownDiagnostics(handle, target string, nodes ...string) func() string {
 	return func() string {
 		diagnosticCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		var diagnostics strings.Builder
-		capture := func(args ...string) (string, error) {
-			output, diagnosticErr := f.Kubectl(diagnosticCtx, "", args...)
-			const maxDiagnosticBytes = 32 * 1024
-			if len(output) > maxDiagnosticBytes {
-				output = "[earlier output truncated]\n" + output[len(output)-maxDiagnosticBytes:]
+		const (
+			maxCommandBytes = 32 * 1024
+			// Two independent budgets that together stay within 96 KiB: verbose
+			// container logs can never displace the small state facts recorded
+			// first, and within each budget later entries are clipped or
+			// omitted instead of earlier ones being cut.
+			maxSectionBytes = 48*1024 - 256
+			truncated       = "[earlier output truncated]\n"
+		)
+		tail := func(output string, limit int) string {
+			if len(output) <= limit {
+				return output
 			}
-			fmt.Fprintf(&diagnostics, "\n\nkubectl %s:\n%s", strings.Join(args, " "), output)
+			return truncated + output[len(output)-(limit-len(truncated)):]
+		}
+		type section struct {
+			text    strings.Builder
+			omitted int
+		}
+		var critical, logs section
+		record := func(s *section, header, output string, diagnosticErr error) {
+			output = tail(output, maxCommandBytes)
 			if diagnosticErr != nil {
-				fmt.Fprintf(&diagnostics, "\nDiagnostic command failed: %v", diagnosticErr)
+				output += fmt.Sprintf("\nDiagnostic command failed: %v", diagnosticErr)
 			}
+			room := maxSectionBytes - s.text.Len() - len(header)
+			if room <= len(truncated)+64 {
+				s.omitted++
+				return
+			}
+			s.text.WriteString(header)
+			s.text.WriteString(tail(output, room))
+		}
+		capture := func(s *section, args ...string) (string, error) {
+			output, diagnosticErr := f.Kubectl(diagnosticCtx, "", args...)
+			record(s, fmt.Sprintf("\n\nkubectl %s:\n", strings.Join(args, " ")), output, diagnosticErr)
 			return output, diagnosticErr
-		}
-		published, _ := capture("get", "pillarvolumestate", f.PVName, "--ignore-not-found", "-o", `jsonpath={.status.publishedNodes[*].nodeID}`)
-		capture("get", "pillarvolumestate", f.PVName, "--ignore-not-found", "-o", "yaml")
-		capture("get", "volumeattachments", "-o", "yaml")
-		capture("-n", f.Namespace, "get", "pods", "-o", "wide")
-		capture("-n", f.Namespace, "get", "events", "-o", "wide")
-		// Lifecycle facts of the known PV and claim only (never Secrets).
-		if f.PVName != "" {
-			capture("get", "pv", f.PVName, "--ignore-not-found", "-o", `jsonpath=phase={.status.phase} deletionTimestamp={.metadata.deletionTimestamp} finalizers={.metadata.finalizers} claimRef={.spec.claimRef.namespace}/{.spec.claimRef.name}/{.spec.claimRef.uid} reclaim={.spec.persistentVolumeReclaimPolicy}`)
-		}
-		if f.PVCName != "" {
-			capture("-n", f.Namespace, "get", "pvc", f.PVCName, "--ignore-not-found", "-o", `jsonpath=phase={.status.phase} volumeName={.spec.volumeName} deletionTimestamp={.metadata.deletionTimestamp} finalizers={.metadata.finalizers}`)
 		}
 		captureNode := func(node string, args ...string) {
 			output, diagnosticErr := f.NodeExec(diagnosticCtx, node, args...)
-			const maxDiagnosticBytes = 32 * 1024
-			if len(output) > maxDiagnosticBytes {
-				output = "[earlier output truncated]\n" + output[len(output)-maxDiagnosticBytes:]
-			}
-			fmt.Fprintf(&diagnostics, "\n\nnode %s: %s:\n%s", node, strings.Join(args, " "), output)
-			if diagnosticErr != nil {
-				fmt.Fprintf(&diagnostics, "\nDiagnostic command failed: %v", diagnosticErr)
+			record(&critical, fmt.Sprintf("\n\nnode %s: %s:\n", node, strings.Join(args, " ")), output, diagnosticErr)
+		}
+		// Identifiers of this volume; empty ones are dropped because an empty
+		// fixed-string pattern matches every line.
+		var identifiers []string
+		for _, identifier := range []string{f.PVName, handle, target} {
+			if identifier != "" {
+				identifiers = append(identifiers, identifier)
 			}
 		}
-		seen := map[string]bool{}
-		names := append(append([]string{}, strings.Fields(published)...), nodes...)
-		for _, node := range names {
-			if seen[node] {
-				continue
+		// captureLog keeps only container log lines naming this volume (the
+		// last 100 lines when no identifier is known), so RPC dumps of other
+		// volumes do not consume the log budget.
+		captureLog := func(pod, container string) {
+			args := []string{"-n", resolveHelmNamespace(), "logs", pod, "-c", container, "--tail=2000"}
+			output, diagnosticErr := f.Kubectl(diagnosticCtx, "", args...)
+			var lines []string
+			if trimmed := strings.TrimRight(output, "\n"); trimmed != "" {
+				lines = strings.Split(trimmed, "\n")
 			}
-			seen[node] = true
+			var kept []string
+			for _, line := range lines {
+				for _, identifier := range identifiers {
+					if strings.Contains(line, identifier) {
+						kept = append(kept, line)
+						break
+					}
+				}
+			}
+			header := fmt.Sprintf("\n\nkubectl %s (retrieved=%d lines, matched=%d naming %s):\n", strings.Join(args, " "), len(lines), len(kept), strings.Join(identifiers, ", "))
+			body := strings.Join(kept, "\n")
+			if len(identifiers) == 0 {
+				kept = lines[max(0, len(lines)-100):]
+				header = fmt.Sprintf("\n\nkubectl %s (no volume identifiers known; unfiltered last %d of retrieved=%d lines):\n", strings.Join(args, " "), len(kept), len(lines))
+				body = strings.Join(kept, "\n")
+			} else if len(kept) == 0 {
+				body = fmt.Sprintf("[no matching lines (retrieved=%d)]", len(lines))
+			}
+			record(&logs, header, body, diagnosticErr)
+		}
+
+		// Critical state: short jsonpath facts of the known PVS, VA, PV, PVC
+		// and pods first.
+		published, _ := capture(&critical, "get", "pillarvolumestate", f.PVName, "--ignore-not-found", "-o", `jsonpath={.status.publishedNodes[*].nodeID}`)
+		capture(&critical, "get", "pillarvolumestate", f.PVName, "--ignore-not-found", "-o", `jsonpath=phase={.status.phase} deleting={.status.deleting} deletionTimestamp={.metadata.deletionTimestamp} finalizers={.metadata.finalizers} publishedNodes={.status.publishedNodes}`)
+		if f.PVName != "" {
+			capture(&critical, "get", "volumeattachments", "-o", `jsonpath={range .items[?(@.spec.source.persistentVolumeName=="`+f.PVName+`")]}name={.metadata.name} node={.spec.nodeName} attacher={.spec.attacher} attached={.status.attached} attachError={.status.attachError.message} detachError={.status.detachError.message} deletionTimestamp={.metadata.deletionTimestamp} finalizers={.metadata.finalizers}{"\n"}{end}`)
+			capture(&critical, "get", "pv", f.PVName, "--ignore-not-found", "-o", `jsonpath=phase={.status.phase} deletionTimestamp={.metadata.deletionTimestamp} finalizers={.metadata.finalizers} claimRef={.spec.claimRef.namespace}/{.spec.claimRef.name}/{.spec.claimRef.uid} reclaim={.spec.persistentVolumeReclaimPolicy}`)
+		}
+		if f.PVCName != "" {
+			capture(&critical, "-n", f.Namespace, "get", "pvc", f.PVCName, "--ignore-not-found", "-o", `jsonpath=phase={.status.phase} volumeName={.spec.volumeName} deletionTimestamp={.metadata.deletionTimestamp} finalizers={.metadata.finalizers}`)
+		}
+		capture(&critical, "-n", f.Namespace, "get", "pods", "-o", "wide")
+		// Nodes in decision order: active publications, then the storage
+		// node, then the remaining requested nodes.
+		seen := map[string]bool{}
+		var ordered []string
+		for _, node := range append(append(strings.Fields(published), f.StorageNode), nodes...) {
+			if node != "" && !seen[node] {
+				seen[node] = true
+				ordered = append(ordered, node)
+			}
+		}
+		filters := ""
+		for _, filter := range append(append([]string{}, identifiers...), "kubernetes.io~csi/"+f.PVCName) {
+			if filter != "" && filter != "kubernetes.io~csi/" {
+				filters += " -e " + shellQuote(filter)
+			}
+		}
+		for _, node := range ordered {
 			// The real file-node stage record directory, this PV's stage record
-			// when its handle is known, and any mounts still carrying this PV's
-			// staging path, export target, or pod volumes. Empty filters are
-			// omitted: grep -F with an empty pattern matches every line.
+			// when its handle is known, mounts still carrying this volume, what
+			// kubelet reports for the node, and kubelet's recent lines about
+			// this volume (including unpublish/unstage errors).
 			script := "ls -la " + fileNodeStageDir
 			if handle != "" {
 				script += "; cat " + shellQuote(fileNodeStageStateFile(handle)) + " || true"
 			}
-			filters := ""
-			for _, filter := range []string{f.PVName, target, "kubernetes.io~csi/" + f.PVCName} {
-				if filter != "" && filter != "kubernetes.io~csi/" {
-					filters += " -e " + shellQuote(filter)
-				}
-			}
-			captureNode(node, "sh", "-ceu", script+"; grep -F"+filters+" /proc/1/mountinfo || true")
-			// What kubelet still believes about this node's volumes, and its
-			// recent log lines about this PV (bounded to the last 100).
-			capture("get", "node", node, "-o", `jsonpath=volumesInUse={.status.volumesInUse} volumesAttached={.status.volumesAttached}`)
-			journal := "journalctl -u kubelet --no-pager -n 2000 2>&1"
-			if handle != "" {
-				filters += " -e " + shellQuote(handle)
-			}
 			if filters != "" {
-				journal += " | grep -F" + filters
+				script += "; grep -F" + filters + " /proc/1/mountinfo || true"
 			}
-			captureNode(node, "sh", "-ceu", journal+" | tail -n 100 || true")
-			pod, err := capture("-n", resolveHelmNamespace(), "get", "pods", "-l", "app.kubernetes.io/component=node", "--field-selector", "spec.nodeName="+node, "-o", "jsonpath={.items[0].metadata.name}")
-			if err != nil || strings.TrimSpace(pod) == "" {
-				continue
+			captureNode(node, "sh", "-ceu", script)
+			capture(&critical, "get", "node", node, "-o", `jsonpath=volumesInUse={.status.volumesInUse} volumesAttached={.status.volumesAttached}`)
+			if filters != "" {
+				captureNode(node, "sh", "-ceu", "journalctl -u kubelet --no-pager -n 5000 2>&1 | grep -F"+filters+" | tail -n 60 || true")
 			}
-			capture("-n", resolveHelmNamespace(), "logs", strings.TrimSpace(pod), "-c", "file-node", "--tail=100")
 		}
-		pod, err := capture("-n", resolveHelmNamespace(), "get", "pods", "-l", "app.kubernetes.io/component=agent", "--field-selector", "spec.nodeName="+f.StorageNode, "-o", "jsonpath={.items[0].metadata.name}")
+
+		// Verbose evidence, in its own budget: volume-filtered file-node,
+		// controller/sidecar and agent lines first, namespace events last.
+		for _, node := range ordered {
+			pod, err := capture(&logs, "-n", resolveHelmNamespace(), "get", "pods", "-l", "app.kubernetes.io/component=node", "--field-selector", "spec.nodeName="+node, "-o", "jsonpath={.items[0].metadata.name}")
+			if err == nil && strings.TrimSpace(pod) != "" {
+				captureLog(strings.TrimSpace(pod), "file-node")
+			}
+		}
+		pod, err := capture(&logs, "-n", resolveHelmNamespace(), "get", "pods", "-l", "app.kubernetes.io/component=controller", "-o", "jsonpath={.items[0].metadata.name}")
 		if err == nil && strings.TrimSpace(pod) != "" {
-			capture("-n", resolveHelmNamespace(), "logs", strings.TrimSpace(pod), "-c", "agent", "--tail=100")
-		}
-		pod, err = capture("-n", resolveHelmNamespace(), "get", "pods", "-l", "app.kubernetes.io/component=controller", "-o", "jsonpath={.items[0].metadata.name}")
-		if err == nil && strings.TrimSpace(pod) != "" {
-			for _, container := range []string{"controller", "csi-attacher", "file-controller", "file-csi-attacher", "file-csi-provisioner"} {
-				capture("-n", resolveHelmNamespace(), "logs", strings.TrimSpace(pod), "-c", container, "--tail=100")
+			for _, container := range []string{"file-csi-attacher", "file-controller", "file-csi-provisioner", "csi-attacher", "controller"} {
+				captureLog(strings.TrimSpace(pod), container)
 			}
 		}
-		diagnosticText := diagnostics.String()
-		const maxDiagnosticContextBytes = 96 * 1024
-		if len(diagnosticText) > maxDiagnosticContextBytes {
-			const truncationMarker = "[earlier diagnostics truncated]\n"
-			diagnosticText = truncationMarker + diagnosticText[len(diagnosticText)-(maxDiagnosticContextBytes-len(truncationMarker)):]
+		pod, err = capture(&logs, "-n", resolveHelmNamespace(), "get", "pods", "-l", "app.kubernetes.io/component=agent", "--field-selector", "spec.nodeName="+f.StorageNode, "-o", "jsonpath={.items[0].metadata.name}")
+		if err == nil && strings.TrimSpace(pod) != "" {
+			captureLog(strings.TrimSpace(pod), "agent")
 		}
-		return "filesystem teardown diagnostics (bounded):" + diagnosticText
+		capture(&logs, "-n", f.Namespace, "get", "events", "-o", "wide")
+		return fmt.Sprintf("filesystem teardown diagnostics (bounded):\n== critical state (%d later entries omitted) ==%s\n== logs (%d later entries omitted) ==%s",
+			critical.omitted, critical.text.String(), logs.omitted, logs.text.String())
 	}
 }
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
