@@ -5359,8 +5359,40 @@ NFS 물리 profile은 storage control-plane Kind node에만 host `/dev` bind mou
 새로 생성해 소유권을 확인한 NFS Kind 클러스터의 두 client worker는 CSI node Pod 배포 전에 `/sys`를 read-write로 remount하고 readback의 `rw` 옵션을 검증한다. 재사용·외부 클러스터와 default-profile은 변경하지 않는다.
 
 
-NFS 물리 profile의 전체 실행 시간 budget은 20분이며, CLI/context/suite cap과
-일치한다. default profile의 120초 performance budget은 변경하지 않는다.
+NFS 물리 profile의 실행 시간 budget은 `make test-e2e-internal` 호출마다 20분이며,
+CLI/context/suite cap과 일치한다. default profile의 120초 performance budget은
+변경하지 않는다.
+
+PR CI(`.github/workflows/e2e-kind.yml`)는 기존 job과 check 이름을 유지한 채
+`hack/e2e-nfs-shards.sh run`으로 E37 13개와 E71 29개를 아래 6개 shard로 순차
+실행한다. shard마다 `make test-e2e-internal`을 한 번 호출하므로 Kind 클러스터를
+새로 만들고, 20분 Ginkgo suite timeout과 `E2E_TIMEOUT` go test budget을 그대로
+쓴다. TC focus(`go test -run`)는 TestE2E의 20분 cap 경로를 거치지 않으므로
+스크립트가 `-ginkgo.timeout=20m`을 명시한다. Ordered container는 나누지 않는다.
+
+| Shard | TC | 개수 |
+|-------|----|------|
+| `e37-dataset` | E37.1–E37.13 (Ordered) | 13 |
+| `e71-local` | E71.1–E71.16, E71.29 (Ordered) | 17 |
+| `e71-net-basic` | E71.17–E71.21 | 5 |
+| `e71-net-recovery` | E71.22–E71.24 | 3 |
+| `e71-net-lifecycle` | E71.25–E71.26 | 2 |
+| `e71-net-packaging` | E71.27–E71.28 | 2 |
+
+shard 하나가 실패해도 나머지 shard를 모두 실행하고, 하나라도 실패하면 step이
+실패한다. 실행 전 `coverage` 검사가 shard 표의 42개 ID와 `test/e2e`의
+`It("[TC-E37.*]")`/`It("[TC-E71.*]")` 선언이 정확히 일치하는지 확인한다. 각
+shard의 Ginkgo JSON report는 기대 TC ID를 하나씩만 포함하고 모두 passed여야
+하며, `SuiteSucceeded=true`, `SuiteConfig.DryRun=false`, `SuiteConfig.Timeout`
+20분이어야 한다. 기대 TC ID의 누락·중복·skipped·pending·failed·timedout, focus
+밖 spec의 실행, 실행되었지만 passed가 아닌 setup/cleanup node는 모두 실패로
+처리한다. focus 밖이라 실행되지 않은 spec과 container node의 skipped는 허용한다.
+따라서 0개 실행이나 전부 skip된 실행이 통과로 보이지 않는다. shard별 `run.log`와
+`e2e-auto.json`은 `${{ runner.temp }}/e2e-kind-nfs-reports/<shard>/`에 남고 기존 artifact로
+업로드된다. 로컬에서 `bash hack/e2e-nfs-shards.sh run <report-dir>`를 쓰려면 위
+실행 환경 변수, Helm bootstrap에 필요한 이미지, 실제 ZFS/kernel NFS를 갖춘 호스트,
+`jq`가 모두 필요하다. `list`, `ids`, `focus`, `coverage` 하위 명령은 클러스터
+없이 shard 정의만 출력하거나 검사한다.
 
 
 
@@ -5548,6 +5580,9 @@ E2E_NFS_E2E=true E2E_HELM_BOOTSTRAP=true E2E_LABEL_FILTER=nfs \
 E2E_PROCS=1 PILLAR_E2E_SEQUENTIAL=true \
 make E2E_GO_FLAGS='-tags=e2e,e2e_helm ./test/e2e/ -v -timeout=20m' test-e2e-internal
 ```
+
+PR CI는 이 lane을 단일 호출이 아닌 6개 shard로 실행한다. shard 구성과 report
+검증 기준은 [E37](#e37-zfs-dataset--nfs-멀티노드-rwx-e2e) 실행 설명을 따른다.
 
 실제 node 이미지의 filesystem 도구로 소유한 loop-backed XFS/ext4 fixture를
 준비한다. 원본 source allow-root는 Kind storage node의

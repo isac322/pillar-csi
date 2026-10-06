@@ -262,7 +262,14 @@ jobs:
       # image intentionally has no ZFS userspace or host NFS helpers.  The
       # lane still uses the same real Kind+ZFS bootstrap and never installs
       # nfs-utils on the GitHub runner or Kind nodes.
-      - name: Run real ZFS dataset NFS E2E lane
+      #
+      # hack/e2e-nfs-shards.sh runs the E37/E71 TCs as sequential exact-focus
+      # shards, one `make test-e2e-internal` (fresh Kind cluster, 20m Ginkgo
+      # and E2E_TIMEOUT go test budgets) per shard.  Every shard runs even
+      # after a failure; each shard's Ginkgo JSON report must contain exactly
+      # its TC IDs, all passed, in a non-dry-run successful suite.  Per-shard
+      # logs and reports land in e2e-kind-nfs-reports/<shard>/.
+      - name: Run real ZFS dataset NFS E2E shards
         if: ${{ !cancelled() }}
         shell: bash
         env:
@@ -271,22 +278,7 @@ jobs:
           E2E_LABEL_FILTER: "nfs"
           E2E_PROCS: "1"
           PILLAR_E2E_SEQUENTIAL: "true"
-          E2E_RUN: "^TestE2E$$"
-          E2E_REPORT_DIR: "${{ runner.temp }}/e2e-kind-nfs-reports"
-        run: |
-          set -Eeuo pipefail
-          NFS_LOG="${RUNNER_TEMP}/e2e-kind-nfs-run.log"
-          set +e
-          # E71 network consumers use the Helm bootstrap build tag in
-          # addition to the suite's base e2e tag.  Keep the existing Make
-          # setup/teardown and nfs label lane; only widen compilation here.
-          make E2E_GO_FLAGS='-tags=e2e,e2e_helm ./test/e2e/ -v -timeout=$(E2E_TIMEOUT) $(if $(E2E_RUN),-run $(E2E_RUN))' test-e2e-internal 2>&1 | tee "${NFS_LOG}"
-          NFS_RC=${PIPESTATUS[0]}
-          set -e
-          if [ "${NFS_RC}" -ne 0 ]; then
-            echo "::error title=nfs-e2e-failed::make test-e2e-internal exited with status ${NFS_RC}"
-            exit "${NFS_RC}"
-          fi
+        run: bash hack/e2e-nfs-shards.sh run "${RUNNER_TEMP}/e2e-kind-nfs-reports"
 
 
       # Emit a step summary table regardless of pass/fail so the timing is
@@ -340,9 +332,9 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Best-effort: both lane logs plus each lane's Ginkgo JSON report. The
-      # default lane keeps its legacy /tmp report path; the NFS lane uses its
-      # runner-temp-specific E2E_REPORT_DIR.
+      # Best-effort: both lanes' logs and Ginkgo JSON reports. The default
+      # lane keeps its legacy /tmp report path; the NFS lane writes one
+      # run.log and e2e-auto.json per shard under e2e-kind-nfs-reports/.
       - name: Upload e2e run log and reports
         if: always()
         continue-on-error: true
@@ -352,7 +344,6 @@ jobs:
           path: |
             ${{ runner.temp }}/e2e-kind-run.log
             /tmp/pillar-csi-e2e-reports/
-            ${{ runner.temp }}/e2e-kind-nfs-run.log
             ${{ runner.temp }}/e2e-kind-nfs-reports/
           if-no-files-found: ignore
           retention-days: 7
