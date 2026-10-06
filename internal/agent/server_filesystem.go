@@ -875,7 +875,7 @@ func (s *Server) releaseFilesystem(
 		return err
 	}
 	for {
-		owned, err := s.retireFence(ctx, key, token, false)
+		owned, err := s.retireFence(ctx, key, token, false, nil)
 		if err != nil {
 			return err
 		}
@@ -896,7 +896,7 @@ func (s *Server) releaseFilesystem(
 		if err != nil {
 			return err
 		}
-		owned, err = s.retireFence(ctx, key, token, true)
+		owned, err = s.retireFence(ctx, key, token, true, nil)
 		if err != nil {
 			return err
 		}

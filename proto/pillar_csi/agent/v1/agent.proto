@@ -124,7 +124,8 @@ service AgentService {
   // ImportVolume adopts an already-existing backend storage resource into a
   // volume lifecycle instead of creating one.  It backs the CSI CreateVolume
   // path of a PersistentVolumeClaim that carries the
-  // "pillar-csi.bhyoo.com/import-zvol" annotation.
+  // "pillar-csi.bhyoo.com/import-zvol" or "pillar-csi.bhyoo.com/import-lv"
+  // annotation.
   //
   // Import is strictly read-only on the backend: the agent MUST refuse
   // (FAILED_PRECONDITION or INVALID_ARGUMENT) when the resolved volume_id
@@ -132,12 +133,30 @@ service AgentService {
   // its configured layout, when that resource is still in use on the storage
   // node (a target backstore, an nvmet namespace, a mount or an exclusive
   // device claim), or when capacity_bytes exceeds the resource's current
-  // size. It must never create or modify the resource. Filesystem adoption
-  // instead carries a pinned native identity and requires an exact quota bound.
+  // size.  It must never create or modify the resource.  ZFS zvol and LVM
+  // backends implement it; filesystem backends implement it only for
+  // filesystem adoption, which instead carries a pinned native identity and
+  // requires an exact quota bound; other backends return UNIMPLEMENTED.
+  //
+  // LVM imports require expected_lvm_source and are pinned durably to that
+  // identity and to preserve_original: a later import of the same volume_id
+  // naming a different source, or downgrading a preserving adoption, is
+  // refused with FAILED_PRECONDITION.
   //
   // Idempotent: repeated calls for the same volume_id return the same
   // device path and capacity.  The request is fenced like CreateVolume.
   rpc ImportVolume(ImportVolumeRequest) returns (ImportVolumeResponse);
+
+  // InspectVolume reports what the storage node observes about a backend
+  // resource and the agent's own record of it: LVM identity and layout,
+  // filesystem signature, local consumers, the agent's configured exports
+  // and the durable fence mark (including a pinned import source).
+  //
+  // Strictly read-only and unfenced: it never activates, mounts, modifies or
+  // persists anything, never compares or admits a lifecycle, and never
+  // infers ownership.  Only BACKEND_TYPE_LVM is supported; other backends
+  // return UNIMPLEMENTED.  A corrupt fence mark returns INTERNAL.
+  rpc InspectVolume(InspectVolumeRequest) returns (InspectVolumeResponse);
 
   // DeleteVolume destroys the backend storage resource.  The export MUST have
   // been removed (UnexportVolume) before calling this RPC; the agent will
@@ -166,6 +185,42 @@ service AgentService {
   //
   // Idempotent: releasing an already released lifecycle returns success.
   rpc ReleaseVolume(ReleaseVolumeRequest) returns (ReleaseVolumeResponse);
+
+  // ── Ownership recovery ────────────────────────────────────────────────────
+
+  // TransferVolumeOwnership atomically transfers ownership of an adopted
+  // backend resource from a retired lifecycle to a new one.  It is the
+  // recovery path for a PillarVolumeState that was adopted (ImportVolume)
+  // but whose controller record was lost before the adoption was durable:
+  // instead of deleting the pre-existing resource, an operator-authorised
+  // transfer moves the durable fence mark to the new lifecycle.
+  //
+  // The request carries no FencingToken: authority is cryptographic, not
+  // caller-asserted.  The agent accepts the transfer only when ALL of:
+  //   - snapshot.signature verifies under the agent's own configured server
+  //     TLS identity (the snapshot is self-attestation produced while the
+  //     agent was healthy — never an mTLS peer assertion);
+  //   - authorization.signature verifies under an operator public key from
+  //     the configured --recovery-trust-anchor file, is within
+  //     issued_at/expires_at, and its snapshot_digest equals the digest of
+  //     the presented snapshot;
+  //   - the mark's current uid/generation equal old_volume_uid/old_generation
+  //     exactly and the mark's pinned LVM source equals lvm_source;
+  //   - under the per-volume lock the device is provably idle (no exports,
+  //     no ACL entries, no local consumers, O_EXCL claim free) — a stale or
+  //     replayed snapshot cannot override a live observation;
+  //   - authorization.new_volume_uid/new_generation differ from every
+  //     lifecycle already recorded in the mark.
+  //
+  // One atomic mark write then records the new uid/generation, retires the
+  // old uid, and pins the preserve policy and the authorization digest.
+  // If the rename/fsync outcome is uncertain the agent returns
+  // TRANSFER_OUTCOME_UNKNOWN and performs no rollback.  Retrying the exact
+  // same snapshot+authorization is idempotent; retrying with a different
+  // destination uid/generation or a different digest is refused with
+  // FAILED_PRECONDITION.  When no --recovery-trust-anchor is configured the
+  // agent fails closed with UNAVAILABLE.
+  rpc TransferVolumeOwnership(TransferVolumeOwnershipRequest) returns (TransferVolumeOwnershipResponse);
 
   // ── Protocol target (export) lifecycle ────────────────────────────────────
 
@@ -731,8 +786,10 @@ message ImportVolumeRequest {
   // at least this large; it is never resized or truncated.
   int64 capacity_bytes = 2;
 
-  // Backend implementation to use. Legacy zvol import semantics are unchanged.
-  // Filesystem backends require filesystem_adoption and exact capacity.
+  // Backend implementation to use.  BACKEND_TYPE_ZFS_ZVOL and
+  // BACKEND_TYPE_LVM support import; legacy zvol import semantics are
+  // unchanged.  Filesystem backends require filesystem_adoption and exact
+  // capacity.  Other backends return UNIMPLEMENTED.
   BackendType backend_type = 3;
 
   // Fencing token: the PillarVolumeState UID and the publicationGeneration
@@ -748,15 +805,178 @@ message ImportVolumeRequest {
   // different dataset.  Empty disables the check for older controllers.
   string expected_dataset = 5;
 
+  // The LVM logical volume the caller expects volume_id to resolve to, by
+  // name and by stable VG/LV UUIDs.  Required (INVALID_ARGUMENT when unset)
+  // iff backend_type is BACKEND_TYPE_LVM, and INVALID_ARGUMENT when set for
+  // any other backend.  The agent refuses unless the live LV matches all
+  // four fields, and pins the identity into the volume's durable fence mark
+  // on first success; a different source for the same volume_id is refused
+  // with FAILED_PRECONDITION and the pin is never cleared or retargeted.
+  LvmSourceIdentity expected_lvm_source = 6;
+
+  // Adoption policy for an LVM import, pinned into the durable fence mark.
+  // Unset means PreserveOriginal (true), so a caller that omits it never
+  // gets destructive Managed semantics; only an explicit false opts into
+  // Managed.  When preserving, the agent refuses DeleteVolume and
+  // ExpandVolume, and ReleaseVolume retires the lifecycle only after
+  // verifying no local consumer.  Once pinned true it is never downgraded: a
+  // later import with an explicit false is refused with FAILED_PRECONDITION.
+  // Ignored for non-LVM imports; ZFS behavior is unaffected.
+  optional bool preserve_original = 7;
+
   // Resolved native filesystem identity from InspectImport. The agent reopens
   // and pins this source, verifies identity and exact quota under its canonical
   // resource fence, marks ownership, and closes the pin before responding.
-  // Absent for legacy zvol import, whose fields 1..5 retain their semantics.
-  FilesystemAdoption filesystem_adoption = 6;
+  // Absent for legacy zvol and LVM imports, whose fields 1..7 retain their
+  // semantics.
+  FilesystemAdoption filesystem_adoption = 8;
 
   // Stored trusted placement, checked exactly even if the agent config changed
   // since inspection. Filesystem adoption never applies creation properties.
-  BackendParams backend_params = 7;
+  BackendParams backend_params = 9;
+}
+
+// LvmSourceIdentity names a pre-existing LVM logical volume and its stable
+// UUIDs (`lvs -o vg_name,lv_name,vg_uuid,lv_uuid`).
+message LvmSourceIdentity {
+  string volume_group = 1;
+  string logical_volume = 2;
+  string volume_group_uuid = 3;
+  string logical_volume_uuid = 4;
+}
+
+message InspectVolumeRequest {
+  // Unique volume identifier within the agent, as in ImportVolumeRequest.
+  string volume_id = 1;
+
+  // Backend implementation to inspect.  Only BACKEND_TYPE_LVM is supported.
+  BackendType backend_type = 2;
+}
+
+// InspectVolumeResponse is an observation, never an ownership claim.
+message InspectVolumeResponse {
+  // Live LVM observation; unset for non-LVM backends.
+  LvmObservation lvm = 1;
+
+  // Filesystem signature type (blkid -p TYPE); set only when
+  // filesystem_probe_state is "detected".  Empty never by itself means the
+  // device is blank or unformatted.
+  string filesystem_type = 2;
+
+  // Filesystem UUID from the same probe; set only with filesystem_type.
+  string filesystem_uuid = 3;
+
+  // Local consumers of the device observed on the storage node.  The
+  // agent's own exports are reported in exports, not here.
+  repeated DeviceConsumer consumers = 4;
+
+  // The agent's durable fence mark for volume_id, read without persisting.
+  FenceObservation fence = 5;
+
+  // The agent's own configured exports of volume_id.
+  repeated ExportObservation exports = 6;
+
+  // Outcome of the read-only blkid -p signature probe: "detected"
+  // (filesystem_type/filesystem_uuid are the reported signature) or
+  // "unknown" (blkid exited 2 with no output, which util-linux also returns
+  // for a silent low-level read failure; or it reported only a partition
+  // table or other TYPE-less records; or the LV is inactive so no probe
+  // ran).  "unknown" is never evidence that the device is blank and is not
+  // a consumer observation.  A blkid execution failure or malformed output
+  // fails the RPC instead.
+  string filesystem_probe_state = 7;
+
+  // Why the probe is "unknown" (blkid exit status and output, or why no
+  // probe ran); empty when "detected".
+  string filesystem_probe_error = 8;
+
+  // Signed recovery snapshot of this exact observation, populated only when
+  // the agent holds a signing identity (its server TLS key).  The signature
+  // covers the deterministic protobuf encoding of the RecoverySnapshot with
+  // the signature field cleared (SHA-256, RSA PKCS#1 v1.5 or ECDSA).  Unset
+  // when the agent cannot sign; absence never means the volume is safe to
+  // recover.  See RecoverySnapshot and TransferVolumeOwnership.
+  RecoverySnapshot snapshot = 9;
+}
+
+message LvmObservation {
+  // Observed name and UUIDs of the LV.
+  LvmSourceIdentity identity = 1;
+
+  // lvs lv_attr.
+  string lv_attr = 2;
+
+  // lvs segtype (e.g. "linear", "thin").
+  string segtype = 3;
+
+  // lvs pool_lv; empty for non-thin LVs.
+  string pool_lv = 4;
+
+  // LV size in bytes.
+  int64 size_bytes = 5;
+
+  // Whether the LV is active (lv_attr[4] == 'a').
+  bool active = 6;
+
+  // Device path of the LV on the storage node.
+  string device_path = 7;
+
+  // Kernel device number "<major>:<minor>"; empty when inactive.
+  string dev_major_minor = 8;
+
+  // lvs origin; non-empty for snapshots.
+  string origin = 9;
+
+  // Result of one ephemeral O_RDONLY|O_EXCL open (closed immediately, no
+  // data read): "free" (open succeeded), "busy" (EBUSY) or "unknown" (any
+  // other error, or the LV is inactive).
+  string exclusive_claim = 10;
+}
+
+// DeviceConsumer is one observed local consumer of the device.
+message DeviceConsumer {
+  // One of "mount", "holder", "exclusive_open", "foreign_export".
+  string kind = 1;
+
+  // Kind-specific detail (mount point, holder device, export path, ...).
+  string detail = 2;
+}
+
+// ExportObservation is the agent's own configured export of the volume ID.
+// It is configuration, not a consumer: no session inventory exists, so it is
+// never evidence that the volume is idle or in use.
+message ExportObservation {
+  string target_id = 1;
+  bool namespace_enabled = 2;
+  bool acl_enabled = 3;
+  repeated string allowed_hosts = 4;
+}
+
+// FenceObservation is the agent's durable fence mark for the volume ID.
+// volume_uid is the recorded lifecycle, not an ownership claim.
+message FenceObservation {
+  // Whether a mark exists; all other fields are unset when false.
+  bool exists = 1;
+  string volume_uid = 2;
+  uint64 generation = 3;
+  bool ended = 4;
+  repeated string ended_uids = 5;
+
+  // Adoption policy pinned by the first successful LVM import.
+  bool preserve_original = 6;
+
+  // Source identity pinned by the first successful LVM import; unset for
+  // volumes never adopted from an existing LV.
+  LvmSourceIdentity lvm_source = 7;
+  // Durable identity of the recovery transfer that last changed this mark.
+  // A controller may resume a committed transfer after later fencing
+  // generations advance only when all of these fields still identify the
+  // exact operator authorization and lifecycle endpoints.
+  string transfer_authorization_digest = 8;
+  string transfer_from_uid = 9;
+  uint64 transfer_from_generation = 10;
+  string transfer_to_uid = 11;
+  uint64 transfer_to_generation = 12;
 }
 
 message ImportVolumeResponse {
@@ -1153,4 +1373,162 @@ message DrainResponse {
   // state; the current call had no further effect.  False on the first
   // successful Drain after process start.
   bool was_already_drained = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ownership recovery — signed snapshot + operator authorization
+// ─────────────────────────────────────────────────────────────────────────────
+
+// RecoverySnapshot is the agent's signed self-attestation of what it observed
+// about a backend volume while healthy.  signature is produced by the agent's
+// own server TLS identity key over the deterministic protobuf encoding
+// (proto.MarshalOptions{Deterministic: true}) of this message with the
+// signature field cleared, using SHA-256 with RSA PKCS#1 v1.5 or ECDSA; other
+// key types are rejected.  The snapshot is data, not authority: it is only
+// valid when presented together with a RecoveryAuthorization whose
+// snapshot_digest matches, and every observation is re-verified live under
+// the per-volume lock before a transfer commits.
+//
+// The snapshot_digest referenced by RecoveryAuthorization is the SHA-256 of
+// the deterministic encoding of this message with the signature field
+// cleared — the digest of the observation, not of one signature artifact.
+message RecoverySnapshot {
+  // Unique volume identifier within the agent: "<pool>/<volume-name>".
+  string volume_id = 1;
+
+  // Backend implementation the observation describes.  Only
+  // BACKEND_TYPE_LVM participates in ownership recovery.
+  BackendType backend_type = 2;
+
+  // The adopted LVM logical volume's stable identity as observed.
+  LvmSourceIdentity lvm_source = 3;
+
+  // The lifecycle the observation belongs to: the uid and generation the
+  // durable fence mark recorded at observe time.  Both MUST equal
+  // fence.volume_uid and fence.generation respectively; a signer MUST NOT
+  // produce, and a verifier MUST reject, a snapshot where they disagree.
+  string old_volume_uid = 4;
+  uint64 old_generation = 5;
+
+  // The preserve policy pinned in the fence mark at observe time.
+  bool preserve_original = 6;
+
+  // The ephemeral O_RDONLY|O_EXCL claim result at observe time:
+  // "free", "busy" or "unknown" (see LvmObservation.exclusive_claim).
+  // A transfer requires the live re-check to report "free".
+  string exclusive_claim = 7;
+
+  // Local device consumers observed at sign time.  Must be empty for a
+  // transferable volume; the agent re-checks live before committing.
+  repeated DeviceConsumer consumers = 8;
+
+  // The agent's own configured exports observed at sign time.  A disabled
+  // namespace or an enforced empty ACL is stopped evidence and may be
+  // present; a transfer requires that no export admits a remote initiator,
+  // and the agent re-checks live before committing.
+  repeated ExportObservation exports = 9;
+
+  // The durable fence mark read at observe time.
+  FenceObservation fence = 10;
+
+  // Identity of the signing agent: the Subject Common Name (or first DNS
+  // SAN) of the server TLS certificate that produced signature.  A verifier
+  // checking against a certificate MUST require this to match.
+  string agent_identity = 11;
+
+  // Time the snapshot was signed.  Bounded freshness applies on verify;
+  // stale or future-dated snapshots are rejected.
+  google.protobuf.Timestamp issued_at = 12;
+
+  // Signature over the deterministic encoding of this message with this
+  // field cleared.  See the message comment for the exact scheme.
+  bytes signature = 13;
+}
+
+// RecoveryAuthorization is the operator's signed grant to transfer one
+// specific volume's ownership to one specific new lifecycle.  signature is
+// produced by an operator-held private key (the configured
+// --recovery-trust-anchor file holds the corresponding public keys) over the
+// deterministic protobuf encoding of this message with the signature field
+// cleared, using the same digest and signature schemes as RecoverySnapshot.
+//
+// The authorization_digest recorded in the transferred fence mark and in
+// PillarVolumeState.spec.recovery.authorizationDigest is the SHA-256 of the
+// deterministic encoding of this message with the signature field cleared.
+message RecoveryAuthorization {
+  // SHA-256 digest of the presented RecoverySnapshot's deterministic
+  // encoding with its signature field cleared.  Binds this grant to exactly
+  // one observation; a different or re-signed-but-modified snapshot does
+  // not match.
+  bytes snapshot_digest = 1;
+
+  // The volume the grant applies to.  volume_id, backend_type, lvm_source,
+  // old_volume_uid and old_generation MUST equal the corresponding
+  // RecoverySnapshot fields exactly; any mismatch refuses the transfer.
+  string volume_id = 2;
+  BackendType backend_type = 3;
+  LvmSourceIdentity lvm_source = 4;
+  string old_volume_uid = 5;
+
+  // The old lifecycle's exact generation.  Exact equality required: a newer
+  // or older generation on the live mark refuses the transfer.
+  uint64 old_generation = 6;
+
+  // Destination lifecycle: the PillarVolumeState UID (the recovery
+  // PillarVolumeState's metadata.uid, created in phase RecoveryPending) and
+  // the generation written into the transferred mark.
+  string new_volume_uid = 7;
+  uint64 new_generation = 8;
+
+  // The preserve policy the transferred lifecycle adopts.  Explicit
+  // presence required: an unset field is INVALID_ARGUMENT, mirroring
+  // ImportVolumeRequest.preserve_original (unset never yields destructive
+  // Managed semantics silently — here it yields refusal).
+  optional bool preserve_original = 9;
+
+  // Validity window.  A transfer presented before issued_at (beyond clock
+  // skew) or after expires_at is refused; the window length is bounded.
+  google.protobuf.Timestamp issued_at = 10;
+  google.protobuf.Timestamp expires_at = 11;
+
+  // Operator signature over the deterministic encoding of this message
+  // with this field cleared.
+  bytes signature = 12;
+}
+
+// TransferVolumeOwnershipRequest carries the full proof for one transfer:
+// the agent-signed observation and the operator-signed grant bound to it.
+// No FencingToken field exists — the authorization is the authority.
+message TransferVolumeOwnershipRequest {
+  RecoverySnapshot snapshot = 1;
+  RecoveryAuthorization authorization = 2;
+}
+
+// TransferOutcome reports what happened to the atomic mark write.
+enum TransferOutcome {
+  TRANSFER_OUTCOME_UNSPECIFIED = 0;
+
+  // The mark write committed: rename + fsync confirmed.  The new lifecycle
+  // owns the volume ID.
+  TRANSFER_OUTCOME_COMMITTED = 1;
+
+  // An identical transfer (same snapshot digest, same authorization digest,
+  // same destination uid/generation) was already committed; this call was
+  // an idempotent retry.
+  TRANSFER_OUTCOME_ALREADY_COMMITTED = 2;
+
+  // The outcome of the mark write is uncertain (failure after or during the
+  // atomic rename/fsync).  The agent performed NO rollback and the mark may
+  // or may not have committed; the caller must re-inspect.  The operation
+  // remains idempotent for the exact same request.
+  TRANSFER_OUTCOME_UNKNOWN = 3;
+}
+
+message TransferVolumeOwnershipResponse {
+  TransferOutcome outcome = 1;
+
+  // SHA-256 digest of the committed RecoveryAuthorization's deterministic
+  // encoding with its signature field cleared.  Echoed so the controller can
+  // record exactly which grant committed.
+  bytes authorization_digest = 2;
 }

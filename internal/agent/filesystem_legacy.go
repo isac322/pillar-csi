@@ -103,5 +103,5 @@ func (s *Server) fencedLegacyFilesystem(
 	if err != nil {
 		return err
 	}
-	return s.fencedBackend(ctx, volumeID, token, op, b, mutate)
+	return s.fencedChecked(ctx, volumeID, token, op, b, nil, mutate)
 }

@@ -68,9 +68,10 @@ func filesystemLifecycleEnv(t *testing.T, pvs *v1alpha1.PillarVolumeState) *cont
 		pvs = volumeState(t, env, pvs.Name)
 		resourceID, err := filesystemResourceID(pvs.Spec.FilesystemAdoption)
 		lifecycleRequireSuccess(t, err)
-		err = env.srv.reserveBackendVolume(context.Background(), pvs.Name, pvs.Spec.AgentRef,
-			pvs.Spec.BackendType, pvs.Spec.AgentVolumeID, pvs.Spec.FilesystemAdoption.CanonicalSource,
-			pvs.Spec.ClaimRef, resourceID)
+		err = env.srv.reserveBackendVolume(context.Background(), pvs.Name, backendReservation{
+			agent: pvs.Spec.AgentRef, backendType: pvs.Spec.BackendType,
+			key: pvs.Spec.AgentVolumeID, resourceID: resourceID,
+		}, filesystemImportSubject(pvs.Spec.FilesystemAdoption.CanonicalSource), pvs.Spec.ClaimRef)
 		lifecycleRequireSuccess(t, err)
 	}
 	return env

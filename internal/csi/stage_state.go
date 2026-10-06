@@ -157,6 +157,17 @@ type nodeStageState struct {
 	// whatever its outcome.  The next attempt is due one trim interval
 	// later.  Nil until the first attempt.
 	LastTrim *time.Time `json:"last_trim,omitempty"`
+
+	// PreserveOriginal pins a volume adopted from a pre-existing LV whose
+	// data must never be rewritten (issue #163).  NodeStageVolume sets it
+	// when the VolumeContext carries VolumeContextKeyPreserveOriginal="true"
+	// and never clears it: once true the record stays true for the life of
+	// the stage record, so restages after a plugin restart or without the
+	// key keep mounting the existing filesystem instead of formatting,
+	// fscking or resizing the device.  NodeExpandVolume refuses preserved
+	// volumes and the staged-mount repair re-mounts them through
+	// MountExisting.
+	PreserveOriginal bool `json:"preserve_original,omitempty"`
 }
 
 // isLocalAttach reports whether the volume was staged by a local attach.

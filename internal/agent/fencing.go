@@ -68,6 +68,145 @@ type fencingMark struct {
 	FilesystemProxyClaimed bool `json:"filesystemProxyClaimed,omitempty"`
 	// A revoke fences its protocol namespace but cannot claim a native source.
 	LegacyRevokeOnly bool `json:"legacyRevokeOnly,omitempty"`
+	// LVMSource pins the pre-existing LV the first successful LVM import
+	// adopted for the volume ID.  It is sticky: no admission branch,
+	// release or later lifecycle clears or retargets it, so the volume ID
+	// can only ever resolve to that LV.  Nil for zvol, dataset and managed
+	// LV volumes.
+	LVMSource *markLVMSource `json:"lvmSource,omitempty"`
+	// PreserveOriginal pins the adoption policy of LVMSource.  Once true it
+	// is never cleared: DeleteVolume and ExpandVolume are refused and a
+	// release retires the lifecycle only after verifying no local consumer.
+	PreserveOriginal bool `json:"preserveOriginal,omitempty"`
+	// Transfer records the recovery transfer that last changed the owning
+	// lifecycle (see server_recovery.go).  It is what makes a repeated
+	// TransferVolumeOwnership carrying the same authorization idempotent:
+	// the request is answered from this durable record, while any different
+	// destination or authorization digest is refused.  Nil for volume IDs
+	// whose lifecycle never came from a recovery transfer.
+	Transfer *markTransfer `json:"transfer,omitempty"`
+}
+
+// markTransfer is the durable record of one committed ownership transfer.
+// The controller-side authority is the signed RecoveryAuthorization; the
+// mark keeps only what a retry needs to be answered exactly: the source and
+// destination lifecycles and the SHA-256 digest (lowercase hex) of the
+// authorization payload that committed it.
+type markTransfer struct {
+	// AuthorizationDigest is recoveryauth.DigestHex of the committed
+	// authorization payload (signature excluded).
+	AuthorizationDigest string `json:"authorizationDigest"`
+	// FromUID/FromGeneration name the retired lifecycle the transfer
+	// moved the volume ID away from.
+	FromUID        string `json:"fromUID"`
+	FromGeneration uint64 `json:"fromGeneration"`
+	// ToUID/ToGeneration name the lifecycle the transfer committed; ToUID
+	// always equals the mark's VolumeUID.
+	ToUID        string `json:"toUID"`
+	ToGeneration uint64 `json:"toGeneration"`
+}
+
+// markLVMSource is the durable form of an adopted LV's identity.
+type markLVMSource struct {
+	VolumeGroup       string `json:"volumeGroup"`
+	LogicalVolume     string `json:"logicalVolume"`
+	VolumeGroupUUID   string `json:"volumeGroupUUID"`
+	LogicalVolumeUUID string `json:"logicalVolumeUUID"`
+}
+
+// markLVMSourceFromProto converts a request identity; nil stays nil.
+func markLVMSourceFromProto(src *agentv1.LvmSourceIdentity) *markLVMSource {
+	if src == nil {
+		return nil
+	}
+	return &markLVMSource{
+		VolumeGroup:       src.GetVolumeGroup(),
+		LogicalVolume:     src.GetLogicalVolume(),
+		VolumeGroupUUID:   src.GetVolumeGroupUuid(),
+		LogicalVolumeUUID: src.GetLogicalVolumeUuid(),
+	}
+}
+
+// identity returns the backend form of the pinned source.
+func (m *markLVMSource) identity() backend.LVMIdentity {
+	return backend.LVMIdentity{
+		VolumeGroup:       m.VolumeGroup,
+		LogicalVolume:     m.LogicalVolume,
+		VolumeGroupUUID:   m.VolumeGroupUUID,
+		LogicalVolumeUUID: m.LogicalVolumeUUID,
+	}
+}
+
+// proto returns the wire form of the pinned source; nil stays nil.
+func (m *markLVMSource) proto() *agentv1.LvmSourceIdentity {
+	if m == nil {
+		return nil
+	}
+	return &agentv1.LvmSourceIdentity{
+		VolumeGroup:       m.VolumeGroup,
+		LogicalVolume:     m.LogicalVolume,
+		VolumeGroupUuid:   m.VolumeGroupUUID,
+		LogicalVolumeUuid: m.LogicalVolumeUUID,
+	}
+}
+
+// equalLVMSource reports whether a and b pin the same LV (both nil counts).
+func equalLVMSource(a, b *markLVMSource) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// equalTransfer reports whether a and b record the same committed transfer
+// (both nil counts).
+func equalTransfer(a, b *markTransfer) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// equalMarks reports whether two marks serialize to the same state.
+func equalMarks(a, b fencingMark) bool {
+	return a.VolumeUID == b.VolumeUID && a.Generation == b.Generation && a.Ended == b.Ended &&
+		slices.Equal(a.EndedUIDs, b.EndedUIDs) && equalLVMSource(a.LVMSource, b.LVMSource) &&
+		a.PreserveOriginal == b.PreserveOriginal && equalTransfer(a.Transfer, b.Transfer)
+}
+
+// verifyPinnedSource re-verifies, for a mark that pins an adopted LV, that
+// volumeID still resolves to exactly that LV.  The caller MUST hold
+// volumeID's fencing lock (lockFencing); the helper never locks, so it runs
+// inside fenced, recheckFence and retireFence without nesting.  A mark
+// without a pinned source is a no-op.  It fails closed: an identity or
+// missing refusal is FailedPrecondition, a backend that cannot verify LVs
+// is FailedPrecondition (the pinned lifecycle's verification prerequisite
+// cannot be met on this agent), and any other verifier error is Internal.
+func (s *Server) verifyPinnedSource(ctx context.Context, volumeID string, stored fencingMark) error {
+	if stored.LVMSource == nil {
+		return nil
+	}
+	b, err := s.backendForType(volumeID, agentv1.BackendType_BACKEND_TYPE_LVM)
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"volume %q pins LV %s/%s but no LVM backend serves it to verify the source: %v",
+			volumeID, stored.LVMSource.VolumeGroup, stored.LVMSource.LogicalVolume, err)
+	}
+	verifier, ok := b.(backend.LVVerifier)
+	if !ok {
+		return status.Errorf(codes.FailedPrecondition,
+			"volume %q pins LV %s/%s but backend %s cannot verify LV identities; refusing the mutation",
+			volumeID, stored.LVMSource.VolumeGroup, stored.LVMSource.LogicalVolume, b.Type())
+	}
+	err = verifier.VerifyLV(ctx, volumeID, stored.LVMSource.identity())
+	if err == nil {
+		return nil
+	}
+	if refused, isRefused := errors.AsType[*backend.ImportRefusedError](err); isRefused {
+		return status.Errorf(codes.FailedPrecondition,
+			"volume %q no longer resolves to its pinned LV: %v", volumeID, refused)
+	}
+	return status.Errorf(codes.Internal, "verify pinned LV of volume %q: %v", volumeID, err)
 }
 
 // fencingFilename converts a volume ID into a filesystem-safe mark name.
@@ -145,6 +284,11 @@ func recordFenceDecision(ctx context.Context, op fenceOp, decision string) {
 // failure returns Internal; in both cases mutate does not run.  The ended
 // state is written only after a successful deletion: if the deletion fails
 // the lifecycle stays open and no new lifecycle can claim the volume ID.
+//
+// For a mark that pins an adopted LV, every non-revoke operation first
+// re-verifies the LV (verifyPinnedSource) before anything is persisted, so a
+// refusal leaves the mark byte-identical.  Revocations stay exempt: removing
+// access to a replaced LV must still be possible.
 func (s *Server) fenced(
 	ctx context.Context,
 	volumeID string,
@@ -152,15 +296,31 @@ func (s *Server) fenced(
 	op fenceOp,
 	mutate func() error,
 ) error {
-	return s.fencedBackend(ctx, volumeID, token, op, nil, mutate)
+	return s.fencedChecked(ctx, volumeID, token, op, nil, nil, mutate)
 }
 
-func (s *Server) fencedBackend(
+// fencedChecked is fenced with the volume's backend and an extra policy
+// check.  A non-nil b lets the filesystem-adoption guard
+// (guardLegacyFilesystem) refuse a managed dataset or zvol operation that
+// conflicts with an active adopted native owner, and records the
+// revoke-only legacy namespace claim of a ZFS dataset volume.  After
+// admission and before the pinned-source verification, persistence and
+// mutate, check runs on the stored mark (zero when absent) under the
+// fencing lock and may refuse the operation.  Neither check nor the
+// verification runs for a terminal retry of an already ended lifecycle,
+// whose resource is gone.
+//
+// A terminal destroy retry on a mark that pins an adopted LV never runs
+// mutate: the pinned LV was already deleted (or released), and the volume's
+// locator may since name a different LV that a delayed retry must not
+// destroy.  It re-syncs the unchanged mark and reports idempotent success.
+func (s *Server) fencedChecked(
 	ctx context.Context,
 	volumeID string,
 	token *agentv1.FencingToken,
 	op fenceOp,
 	b backend.VolumeBackend,
+	check func(stored fencingMark) error,
 	mutate func() error,
 ) error {
 	unlock := s.lockFencing(volumeID)
@@ -176,6 +336,21 @@ func (s *Server) fencedBackend(
 		recordFenceDecision(ctx, op, adm.decision)
 		return err
 	}
+	if adm.decision == telemetry.FenceAdmitTerminalRetry && op == fenceDestroy && stored.LVMSource != nil {
+		err = s.persistFencingMark(volumeID, stored, false)
+		if err != nil {
+			recordFenceDecision(ctx, op, telemetry.FenceMarkIOError)
+			return err
+		}
+		recordFenceDecision(ctx, op, adm.decision)
+		return nil
+	}
+	if adm.decision != telemetry.FenceAdmitTerminalRetry {
+		err = s.checkFencePreconditions(ctx, volumeID, op, check, stored)
+		if err != nil {
+			return err
+		}
+	}
 	next, err := s.prepareFencingMark(ctx, b, volumeID, token, op, stored, exists, adm)
 	if err != nil {
 		return err
@@ -186,8 +361,15 @@ func (s *Server) fencedBackend(
 		return err
 	}
 	recordFenceDecision(ctx, op, adm.decision)
+	return s.runFencedMutation(volumeID, op, next, mutate)
+}
+
+// runFencedMutation runs fencedChecked's admitted mutate (nil only checks)
+// and, for fenceDestroy, records the lifecycle as ended once it succeeded.
+// The caller holds the fencing lock and has persisted next.
+func (s *Server) runFencedMutation(volumeID string, op fenceOp, next fencingMark, mutate func() error) error {
 	if mutate != nil {
-		err = mutate()
+		err := mutate()
 		if err != nil {
 			return err
 		}
@@ -226,6 +408,29 @@ func (s *Server) prepareFencingMark(
 	return next, nil
 }
 
+// checkFencePreconditions runs fencedChecked's policy check and then, for
+// every operation but a revoke, the pinned-source verification on the
+// stored mark.  The caller holds the fencing lock and has not yet persisted
+// anything, so a refusal leaves the mark untouched.
+func (s *Server) checkFencePreconditions(
+	ctx context.Context,
+	volumeID string,
+	op fenceOp,
+	check func(stored fencingMark) error,
+	stored fencingMark,
+) error {
+	if check != nil {
+		err := check(stored)
+		if err != nil {
+			return err
+		}
+	}
+	if op == fenceRevoke {
+		return nil
+	}
+	return s.verifyPinnedSource(ctx, volumeID, stored)
+}
+
 // fencedImport is the fenced variant for ImportVolume: it validates the
 // token, runs mutate (the backend's read-only import checks), and persists
 // the admitted mark only when mutate succeeded — fenced persists the mark
@@ -243,10 +448,19 @@ func (s *Server) prepareFencingMark(
 // lifecycle after a lost response re-admits idempotently (same UID, same or
 // higher generation).  A refusal leaves a pre-existing mark untouched, so a
 // stale token is still rejected even when the mutation would fail anyway.
+//
+// The src and preserve arguments are the LVM import's expected source and
+// policy (nil and false for ZFS).  A mark that already pins a source admits
+// only that exact source and never a downgrade of PreserveOriginal — for the
+// owning lifecycle and any later one alike — and refuses before mutate runs.
+// On success the mark keeps the stored pin or records src, and
+// PreserveOriginal only ever upgrades.
 func (s *Server) fencedImport(
 	ctx context.Context,
 	volumeID string,
 	token *agentv1.FencingToken,
+	src *markLVMSource,
+	preserve bool,
 	mutate func() error,
 ) error {
 	unlock := s.lockFencing(volumeID)
@@ -262,6 +476,10 @@ func (s *Server) fencedImport(
 		recordFenceDecision(ctx, fenceGrant, adm.decision)
 		return err
 	}
+	next, err := pinImportSource(volumeID, adm.next, stored, src, preserve)
+	if err != nil {
+		return err
+	}
 	if mutate != nil {
 		// The import checks run between admission and persistence: a refusal
 		// leaves no durable trace of this lifecycle on the volume ID.
@@ -271,13 +489,44 @@ func (s *Server) fencedImport(
 			return err
 		}
 	}
-	err = s.persistFencingMark(volumeID, adm.next, adm.changed)
+	changed := !exists || !equalMarks(next, stored)
+	err = s.persistFencingMark(volumeID, next, changed)
 	if err != nil {
 		recordFenceDecision(ctx, fenceGrant, telemetry.FenceMarkIOError)
 		return err
 	}
 	recordFenceDecision(ctx, fenceGrant, adm.decision)
 	return nil
+}
+
+// pinImportSource applies the sticky pin rules of an import to the admitted
+// mark next: a stored pin must equal src exactly and a stored
+// PreserveOriginal cannot be downgraded; otherwise FailedPrecondition.
+func pinImportSource(
+	volumeID string,
+	next, stored fencingMark,
+	src *markLVMSource,
+	preserve bool,
+) (fencingMark, error) {
+	if stored.LVMSource != nil {
+		if !equalLVMSource(stored.LVMSource, src) {
+			return fencingMark{}, status.Errorf(codes.FailedPrecondition,
+				"volume %q is pinned to LV %s/%s (vg_uuid %s, lv_uuid %s); refusing to import another source",
+				volumeID, stored.LVMSource.VolumeGroup, stored.LVMSource.LogicalVolume,
+				stored.LVMSource.VolumeGroupUUID, stored.LVMSource.LogicalVolumeUUID)
+		}
+		if stored.PreserveOriginal && !preserve {
+			return fencingMark{}, status.Errorf(codes.FailedPrecondition,
+				"volume %q is pinned PreserveOriginal; refusing to downgrade the adoption to Managed", volumeID)
+		}
+	}
+	next.LVMSource = stored.LVMSource
+	if next.LVMSource == nil && src != nil {
+		pinned := *src
+		next.LVMSource = &pinned
+	}
+	next.PreserveOriginal = stored.PreserveOriginal || (src != nil && preserve)
+	return next, nil
 }
 
 // retireFence durably retires token's lifecycle from volumeID without any
@@ -288,15 +537,20 @@ func (s *Server) fencedImport(
 //
 // When token's lifecycle currently owns the mark it may hold an export, so
 // the mark is retired only once the caller removed it: with unexported false
-// retireFence then writes nothing and returns owned=true.  A mark owned by a
+// retireFence then writes nothing and returns owned=true.  With unexported
+// true, check (when non-nil) runs on the stored mark under the fencing lock
+// right before the owner's retirement is written; a check error keeps the
+// lifecycle owning the volume ID and writes nothing.  A mark owned by a
 // different lifecycle is left owned by it (only token's UID is added to the
 // retired set); without any mark the lifecycle is recorded as the ended,
-// retired owner.  Releasing an already retired lifecycle is a no-op.
+// retired owner.  Releasing an already retired lifecycle is a no-op.  Every
+// branch keeps a pinned LVM source and policy.
 func (s *Server) retireFence(
 	ctx context.Context,
 	volumeID string,
 	token *agentv1.FencingToken,
 	unexported bool,
+	check func(stored fencingMark) error,
 ) (owned bool, err error) {
 	unlock := s.lockFencing(volumeID)
 	defer unlock()
@@ -331,6 +585,12 @@ func (s *Server) retireFence(
 		if !unexported {
 			return true, nil
 		}
+		if check != nil {
+			err = check(stored)
+			if err != nil {
+				return true, err
+			}
+		}
 		next = adm.next
 		next.Ended = true
 		next.EndedUIDs = append(slices.Clone(stored.EndedUIDs), uid)
@@ -348,7 +608,8 @@ func (s *Server) retireFence(
 // fenced for op and no newer operation superseded it since.  It writes
 // nothing to disk, so a caller can finish a mutation that fenced started
 // (Reconcile links prepared exports this way) without a durable write
-// between consecutive mutations.
+// between consecutive mutations.  Like fenced, a non-revoke operation on a
+// mark that pins an adopted LV re-verifies the LV before mutate.
 func (s *Server) recheckFence(
 	ctx context.Context,
 	volumeID string,
@@ -373,6 +634,12 @@ func (s *Server) recheckFence(
 		recordFenceDecision(ctx, op, telemetry.FenceRejectMarkChanged)
 		return status.Errorf(codes.FailedPrecondition,
 			"fencing mark of volume %q changed since the operation was admitted", volumeID)
+	}
+	if op != fenceRevoke && adm.decision != telemetry.FenceAdmitTerminalRetry {
+		err = s.verifyPinnedSource(ctx, volumeID, stored)
+		if err != nil {
+			return err
+		}
 	}
 	recordFenceDecision(ctx, op, adm.decision)
 	return mutate()
@@ -429,7 +696,12 @@ func admitFencingToken(
 			retired = append(retired, stored.VolumeUID)
 		}
 		return fenceAdmission{
-			next:     fencingMark{VolumeUID: uid, Generation: gen, EndedUIDs: retired},
+			// A new lifecycle inherits the pinned source and policy: the
+			// volume ID stays bound to the adopted LV forever.
+			next: fencingMark{
+				VolumeUID: uid, Generation: gen, EndedUIDs: retired,
+				LVMSource: stored.LVMSource, PreserveOriginal: stored.PreserveOriginal,
+			},
 			changed:  true,
 			decision: telemetry.FenceAdmitNewLifecycle,
 		}, nil
@@ -526,13 +798,32 @@ func (s *Server) readFencingMark(volumeID string) (fencingMark, bool, error) {
 // rename it over the mark, then fsync the generations directory and the state
 // directory containing it.  A reader sees either the old or the new mark.
 func (s *Server) writeFencingMark(volumeID string, mark fencingMark) error {
+	_, err := s.writeFencingMarkOutcome(volumeID, mark)
+	return err
+}
+
+// fencingMarkSyncDirs is the post-rename directory sync of
+// writeFencingMarkOutcome.  It is a package variable so tests can inject the
+// failure that makes a committed rename's durability unknown — a real fsync
+// failure cannot be triggered portably.
+var fencingMarkSyncDirs = syncFencingDirs
+
+// writeFencingMarkOutcome is writeFencingMark that additionally reports
+// whether a failure happened after the rename: renamed is true when the new
+// mark reached the mark path, so its durability is unknown (the rename was
+// applied but the directory fsync may have been lost).  Callers that commit
+// irreversible ownership changes (the recovery transfer) must answer
+// outcome-unknown instead of refusing or rolling back in that case; a nil
+// error means the new mark is durable, and renamed=false with a non-nil
+// error means the old mark (or no mark) is still intact.
+func (s *Server) writeFencingMarkOutcome(volumeID string, mark fencingMark) (renamed bool, err error) {
 	data, err := json.Marshal(mark)
 	if err != nil {
-		return status.Errorf(codes.Internal, "encode fencing mark for %q: %v", volumeID, err)
+		return false, status.Errorf(codes.Internal, "encode fencing mark for %q: %v", volumeID, err)
 	}
 	root, err := s.openFencingRoot()
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer root.Close() //nolint:errcheck // sync errors are returned below
 
@@ -540,13 +831,13 @@ func (s *Server) writeFencingMark(volumeID string, mark fencingMark) error {
 	tmp := name + ".tmp"
 	err = writeFileSynced(root, tmp, data)
 	if err != nil {
-		return status.Errorf(codes.Internal, "write fencing mark %q: %v", tmp, err)
+		return false, status.Errorf(codes.Internal, "write fencing mark %q: %v", tmp, err)
 	}
 	err = root.Rename(tmp, name)
 	if err != nil {
-		return status.Errorf(codes.Internal, "rename fencing mark %q: %v", name, err)
+		return false, status.Errorf(codes.Internal, "rename fencing mark %q: %v", name, err)
 	}
-	return syncFencingDirs(root)
+	return true, fencingMarkSyncDirs(root)
 }
 
 // writeFileSynced writes data to name inside root and fsyncs it.

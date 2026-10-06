@@ -62,26 +62,28 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AgentService_GetCapabilities_FullMethodName = "/pillar_csi.agent.v1.AgentService/GetCapabilities"
-	AgentService_GetCapacity_FullMethodName     = "/pillar_csi.agent.v1.AgentService/GetCapacity"
-	AgentService_ListVolumes_FullMethodName     = "/pillar_csi.agent.v1.AgentService/ListVolumes"
-	AgentService_ListExports_FullMethodName     = "/pillar_csi.agent.v1.AgentService/ListExports"
-	AgentService_HealthCheck_FullMethodName     = "/pillar_csi.agent.v1.AgentService/HealthCheck"
-	AgentService_CreateVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/CreateVolume"
-	AgentService_InspectImport_FullMethodName   = "/pillar_csi.agent.v1.AgentService/InspectImport"
-	AgentService_ImportVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/ImportVolume"
-	AgentService_DeleteVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/DeleteVolume"
-	AgentService_ExpandVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/ExpandVolume"
-	AgentService_ReleaseVolume_FullMethodName   = "/pillar_csi.agent.v1.AgentService/ReleaseVolume"
-	AgentService_ExportVolume_FullMethodName    = "/pillar_csi.agent.v1.AgentService/ExportVolume"
-	AgentService_UnexportVolume_FullMethodName  = "/pillar_csi.agent.v1.AgentService/UnexportVolume"
-	AgentService_AllowInitiator_FullMethodName  = "/pillar_csi.agent.v1.AgentService/AllowInitiator"
-	AgentService_DenyInitiator_FullMethodName   = "/pillar_csi.agent.v1.AgentService/DenyInitiator"
-	AgentService_SetLocalAttach_FullMethodName  = "/pillar_csi.agent.v1.AgentService/SetLocalAttach"
-	AgentService_SendVolume_FullMethodName      = "/pillar_csi.agent.v1.AgentService/SendVolume"
-	AgentService_ReceiveVolume_FullMethodName   = "/pillar_csi.agent.v1.AgentService/ReceiveVolume"
-	AgentService_ReconcileState_FullMethodName  = "/pillar_csi.agent.v1.AgentService/ReconcileState"
-	AgentService_Drain_FullMethodName           = "/pillar_csi.agent.v1.AgentService/Drain"
+	AgentService_GetCapabilities_FullMethodName         = "/pillar_csi.agent.v1.AgentService/GetCapabilities"
+	AgentService_GetCapacity_FullMethodName             = "/pillar_csi.agent.v1.AgentService/GetCapacity"
+	AgentService_ListVolumes_FullMethodName             = "/pillar_csi.agent.v1.AgentService/ListVolumes"
+	AgentService_ListExports_FullMethodName             = "/pillar_csi.agent.v1.AgentService/ListExports"
+	AgentService_HealthCheck_FullMethodName             = "/pillar_csi.agent.v1.AgentService/HealthCheck"
+	AgentService_CreateVolume_FullMethodName            = "/pillar_csi.agent.v1.AgentService/CreateVolume"
+	AgentService_InspectImport_FullMethodName           = "/pillar_csi.agent.v1.AgentService/InspectImport"
+	AgentService_ImportVolume_FullMethodName            = "/pillar_csi.agent.v1.AgentService/ImportVolume"
+	AgentService_InspectVolume_FullMethodName           = "/pillar_csi.agent.v1.AgentService/InspectVolume"
+	AgentService_DeleteVolume_FullMethodName            = "/pillar_csi.agent.v1.AgentService/DeleteVolume"
+	AgentService_ExpandVolume_FullMethodName            = "/pillar_csi.agent.v1.AgentService/ExpandVolume"
+	AgentService_ReleaseVolume_FullMethodName           = "/pillar_csi.agent.v1.AgentService/ReleaseVolume"
+	AgentService_TransferVolumeOwnership_FullMethodName = "/pillar_csi.agent.v1.AgentService/TransferVolumeOwnership"
+	AgentService_ExportVolume_FullMethodName            = "/pillar_csi.agent.v1.AgentService/ExportVolume"
+	AgentService_UnexportVolume_FullMethodName          = "/pillar_csi.agent.v1.AgentService/UnexportVolume"
+	AgentService_AllowInitiator_FullMethodName          = "/pillar_csi.agent.v1.AgentService/AllowInitiator"
+	AgentService_DenyInitiator_FullMethodName           = "/pillar_csi.agent.v1.AgentService/DenyInitiator"
+	AgentService_SetLocalAttach_FullMethodName          = "/pillar_csi.agent.v1.AgentService/SetLocalAttach"
+	AgentService_SendVolume_FullMethodName              = "/pillar_csi.agent.v1.AgentService/SendVolume"
+	AgentService_ReceiveVolume_FullMethodName           = "/pillar_csi.agent.v1.AgentService/ReceiveVolume"
+	AgentService_ReconcileState_FullMethodName          = "/pillar_csi.agent.v1.AgentService/ReconcileState"
+	AgentService_Drain_FullMethodName                   = "/pillar_csi.agent.v1.AgentService/Drain"
 )
 
 // AgentServiceClient is the client API for AgentService service.
@@ -125,7 +127,8 @@ type AgentServiceClient interface {
 	// ImportVolume adopts an already-existing backend storage resource into a
 	// volume lifecycle instead of creating one.  It backs the CSI CreateVolume
 	// path of a PersistentVolumeClaim that carries the
-	// "pillar-csi.bhyoo.com/import-zvol" annotation.
+	// "pillar-csi.bhyoo.com/import-zvol" or "pillar-csi.bhyoo.com/import-lv"
+	// annotation.
 	//
 	// Import is strictly read-only on the backend: the agent MUST refuse
 	// (FAILED_PRECONDITION or INVALID_ARGUMENT) when the resolved volume_id
@@ -133,12 +136,29 @@ type AgentServiceClient interface {
 	// its configured layout, when that resource is still in use on the storage
 	// node (a target backstore, an nvmet namespace, a mount or an exclusive
 	// device claim), or when capacity_bytes exceeds the resource's current
-	// size. It must never create or modify the resource. Filesystem adoption
-	// instead carries a pinned native identity and requires an exact quota bound.
+	// size.  It must never create or modify the resource.  ZFS zvol and LVM
+	// backends implement it; filesystem backends implement it only for
+	// filesystem adoption, which instead carries a pinned native identity and
+	// requires an exact quota bound; other backends return UNIMPLEMENTED.
+	//
+	// LVM imports require expected_lvm_source and are pinned durably to that
+	// identity and to preserve_original: a later import of the same volume_id
+	// naming a different source, or downgrading a preserving adoption, is
+	// refused with FAILED_PRECONDITION.
 	//
 	// Idempotent: repeated calls for the same volume_id return the same
 	// device path and capacity.  The request is fenced like CreateVolume.
 	ImportVolume(ctx context.Context, in *ImportVolumeRequest, opts ...grpc.CallOption) (*ImportVolumeResponse, error)
+	// InspectVolume reports what the storage node observes about a backend
+	// resource and the agent's own record of it: LVM identity and layout,
+	// filesystem signature, local consumers, the agent's configured exports
+	// and the durable fence mark (including a pinned import source).
+	//
+	// Strictly read-only and unfenced: it never activates, mounts, modifies or
+	// persists anything, never compares or admits a lifecycle, and never
+	// infers ownership.  Only BACKEND_TYPE_LVM is supported; other backends
+	// return UNIMPLEMENTED.  A corrupt fence mark returns INTERNAL.
+	InspectVolume(ctx context.Context, in *InspectVolumeRequest, opts ...grpc.CallOption) (*InspectVolumeResponse, error)
 	// DeleteVolume destroys the backend storage resource.  The export MUST have
 	// been removed (UnexportVolume) before calling this RPC; the agent will
 	// return FAILED_PRECONDITION otherwise.
@@ -164,6 +184,39 @@ type AgentServiceClient interface {
 	//
 	// Idempotent: releasing an already released lifecycle returns success.
 	ReleaseVolume(ctx context.Context, in *ReleaseVolumeRequest, opts ...grpc.CallOption) (*ReleaseVolumeResponse, error)
+	// TransferVolumeOwnership atomically transfers ownership of an adopted
+	// backend resource from a retired lifecycle to a new one.  It is the
+	// recovery path for a PillarVolumeState that was adopted (ImportVolume)
+	// but whose controller record was lost before the adoption was durable:
+	// instead of deleting the pre-existing resource, an operator-authorised
+	// transfer moves the durable fence mark to the new lifecycle.
+	//
+	// The request carries no FencingToken: authority is cryptographic, not
+	// caller-asserted.  The agent accepts the transfer only when ALL of:
+	//   - snapshot.signature verifies under the agent's own configured server
+	//     TLS identity (the snapshot is self-attestation produced while the
+	//     agent was healthy — never an mTLS peer assertion);
+	//   - authorization.signature verifies under an operator public key from
+	//     the configured --recovery-trust-anchor file, is within
+	//     issued_at/expires_at, and its snapshot_digest equals the digest of
+	//     the presented snapshot;
+	//   - the mark's current uid/generation equal old_volume_uid/old_generation
+	//     exactly and the mark's pinned LVM source equals lvm_source;
+	//   - under the per-volume lock the device is provably idle (no exports,
+	//     no ACL entries, no local consumers, O_EXCL claim free) — a stale or
+	//     replayed snapshot cannot override a live observation;
+	//   - authorization.new_volume_uid/new_generation differ from every
+	//     lifecycle already recorded in the mark.
+	//
+	// One atomic mark write then records the new uid/generation, retires the
+	// old uid, and pins the preserve policy and the authorization digest.
+	// If the rename/fsync outcome is uncertain the agent returns
+	// TRANSFER_OUTCOME_UNKNOWN and performs no rollback.  Retrying the exact
+	// same snapshot+authorization is idempotent; retrying with a different
+	// destination uid/generation or a different digest is refused with
+	// FAILED_PRECONDITION.  When no --recovery-trust-anchor is configured the
+	// agent fails closed with UNAVAILABLE.
+	TransferVolumeOwnership(ctx context.Context, in *TransferVolumeOwnershipRequest, opts ...grpc.CallOption) (*TransferVolumeOwnershipResponse, error)
 	// ExportVolume creates the network-protocol target entry that exposes the
 	// already-created volume to the network (e.g. adds an NVMe-oF subsystem +
 	// namespace, or an iSCSI LUN, or an NFS export).
@@ -359,6 +412,16 @@ func (c *agentServiceClient) ImportVolume(ctx context.Context, in *ImportVolumeR
 	return out, nil
 }
 
+func (c *agentServiceClient) InspectVolume(ctx context.Context, in *InspectVolumeRequest, opts ...grpc.CallOption) (*InspectVolumeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InspectVolumeResponse)
+	err := c.cc.Invoke(ctx, AgentService_InspectVolume_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *agentServiceClient) DeleteVolume(ctx context.Context, in *DeleteVolumeRequest, opts ...grpc.CallOption) (*DeleteVolumeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteVolumeResponse)
@@ -383,6 +446,16 @@ func (c *agentServiceClient) ReleaseVolume(ctx context.Context, in *ReleaseVolum
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ReleaseVolumeResponse)
 	err := c.cc.Invoke(ctx, AgentService_ReleaseVolume_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) TransferVolumeOwnership(ctx context.Context, in *TransferVolumeOwnershipRequest, opts ...grpc.CallOption) (*TransferVolumeOwnershipResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TransferVolumeOwnershipResponse)
+	err := c.cc.Invoke(ctx, AgentService_TransferVolumeOwnership_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -532,7 +605,8 @@ type AgentServiceServer interface {
 	// ImportVolume adopts an already-existing backend storage resource into a
 	// volume lifecycle instead of creating one.  It backs the CSI CreateVolume
 	// path of a PersistentVolumeClaim that carries the
-	// "pillar-csi.bhyoo.com/import-zvol" annotation.
+	// "pillar-csi.bhyoo.com/import-zvol" or "pillar-csi.bhyoo.com/import-lv"
+	// annotation.
 	//
 	// Import is strictly read-only on the backend: the agent MUST refuse
 	// (FAILED_PRECONDITION or INVALID_ARGUMENT) when the resolved volume_id
@@ -540,12 +614,29 @@ type AgentServiceServer interface {
 	// its configured layout, when that resource is still in use on the storage
 	// node (a target backstore, an nvmet namespace, a mount or an exclusive
 	// device claim), or when capacity_bytes exceeds the resource's current
-	// size. It must never create or modify the resource. Filesystem adoption
-	// instead carries a pinned native identity and requires an exact quota bound.
+	// size.  It must never create or modify the resource.  ZFS zvol and LVM
+	// backends implement it; filesystem backends implement it only for
+	// filesystem adoption, which instead carries a pinned native identity and
+	// requires an exact quota bound; other backends return UNIMPLEMENTED.
+	//
+	// LVM imports require expected_lvm_source and are pinned durably to that
+	// identity and to preserve_original: a later import of the same volume_id
+	// naming a different source, or downgrading a preserving adoption, is
+	// refused with FAILED_PRECONDITION.
 	//
 	// Idempotent: repeated calls for the same volume_id return the same
 	// device path and capacity.  The request is fenced like CreateVolume.
 	ImportVolume(context.Context, *ImportVolumeRequest) (*ImportVolumeResponse, error)
+	// InspectVolume reports what the storage node observes about a backend
+	// resource and the agent's own record of it: LVM identity and layout,
+	// filesystem signature, local consumers, the agent's configured exports
+	// and the durable fence mark (including a pinned import source).
+	//
+	// Strictly read-only and unfenced: it never activates, mounts, modifies or
+	// persists anything, never compares or admits a lifecycle, and never
+	// infers ownership.  Only BACKEND_TYPE_LVM is supported; other backends
+	// return UNIMPLEMENTED.  A corrupt fence mark returns INTERNAL.
+	InspectVolume(context.Context, *InspectVolumeRequest) (*InspectVolumeResponse, error)
 	// DeleteVolume destroys the backend storage resource.  The export MUST have
 	// been removed (UnexportVolume) before calling this RPC; the agent will
 	// return FAILED_PRECONDITION otherwise.
@@ -571,6 +662,39 @@ type AgentServiceServer interface {
 	//
 	// Idempotent: releasing an already released lifecycle returns success.
 	ReleaseVolume(context.Context, *ReleaseVolumeRequest) (*ReleaseVolumeResponse, error)
+	// TransferVolumeOwnership atomically transfers ownership of an adopted
+	// backend resource from a retired lifecycle to a new one.  It is the
+	// recovery path for a PillarVolumeState that was adopted (ImportVolume)
+	// but whose controller record was lost before the adoption was durable:
+	// instead of deleting the pre-existing resource, an operator-authorised
+	// transfer moves the durable fence mark to the new lifecycle.
+	//
+	// The request carries no FencingToken: authority is cryptographic, not
+	// caller-asserted.  The agent accepts the transfer only when ALL of:
+	//   - snapshot.signature verifies under the agent's own configured server
+	//     TLS identity (the snapshot is self-attestation produced while the
+	//     agent was healthy — never an mTLS peer assertion);
+	//   - authorization.signature verifies under an operator public key from
+	//     the configured --recovery-trust-anchor file, is within
+	//     issued_at/expires_at, and its snapshot_digest equals the digest of
+	//     the presented snapshot;
+	//   - the mark's current uid/generation equal old_volume_uid/old_generation
+	//     exactly and the mark's pinned LVM source equals lvm_source;
+	//   - under the per-volume lock the device is provably idle (no exports,
+	//     no ACL entries, no local consumers, O_EXCL claim free) — a stale or
+	//     replayed snapshot cannot override a live observation;
+	//   - authorization.new_volume_uid/new_generation differ from every
+	//     lifecycle already recorded in the mark.
+	//
+	// One atomic mark write then records the new uid/generation, retires the
+	// old uid, and pins the preserve policy and the authorization digest.
+	// If the rename/fsync outcome is uncertain the agent returns
+	// TRANSFER_OUTCOME_UNKNOWN and performs no rollback.  Retrying the exact
+	// same snapshot+authorization is idempotent; retrying with a different
+	// destination uid/generation or a different digest is refused with
+	// FAILED_PRECONDITION.  When no --recovery-trust-anchor is configured the
+	// agent fails closed with UNAVAILABLE.
+	TransferVolumeOwnership(context.Context, *TransferVolumeOwnershipRequest) (*TransferVolumeOwnershipResponse, error)
 	// ExportVolume creates the network-protocol target entry that exposes the
 	// already-created volume to the network (e.g. adds an NVMe-oF subsystem +
 	// namespace, or an iSCSI LUN, or an NFS export).
@@ -710,6 +834,9 @@ func (UnimplementedAgentServiceServer) InspectImport(context.Context, *InspectIm
 func (UnimplementedAgentServiceServer) ImportVolume(context.Context, *ImportVolumeRequest) (*ImportVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ImportVolume not implemented")
 }
+func (UnimplementedAgentServiceServer) InspectVolume(context.Context, *InspectVolumeRequest) (*InspectVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InspectVolume not implemented")
+}
 func (UnimplementedAgentServiceServer) DeleteVolume(context.Context, *DeleteVolumeRequest) (*DeleteVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteVolume not implemented")
 }
@@ -718,6 +845,9 @@ func (UnimplementedAgentServiceServer) ExpandVolume(context.Context, *ExpandVolu
 }
 func (UnimplementedAgentServiceServer) ReleaseVolume(context.Context, *ReleaseVolumeRequest) (*ReleaseVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReleaseVolume not implemented")
+}
+func (UnimplementedAgentServiceServer) TransferVolumeOwnership(context.Context, *TransferVolumeOwnershipRequest) (*TransferVolumeOwnershipResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TransferVolumeOwnership not implemented")
 }
 func (UnimplementedAgentServiceServer) ExportVolume(context.Context, *ExportVolumeRequest) (*ExportVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ExportVolume not implemented")
@@ -911,6 +1041,24 @@ func _AgentService_ImportVolume_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_InspectVolume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InspectVolumeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).InspectVolume(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_InspectVolume_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).InspectVolume(ctx, req.(*InspectVolumeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AgentService_DeleteVolume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DeleteVolumeRequest)
 	if err := dec(in); err != nil {
@@ -961,6 +1109,24 @@ func _AgentService_ReleaseVolume_Handler(srv interface{}, ctx context.Context, d
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(AgentServiceServer).ReleaseVolume(ctx, req.(*ReleaseVolumeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_TransferVolumeOwnership_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TransferVolumeOwnershipRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).TransferVolumeOwnership(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_TransferVolumeOwnership_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).TransferVolumeOwnership(ctx, req.(*TransferVolumeOwnershipRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1149,6 +1315,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _AgentService_ImportVolume_Handler,
 		},
 		{
+			MethodName: "InspectVolume",
+			Handler:    _AgentService_InspectVolume_Handler,
+		},
+		{
 			MethodName: "DeleteVolume",
 			Handler:    _AgentService_DeleteVolume_Handler,
 		},
@@ -1159,6 +1329,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReleaseVolume",
 			Handler:    _AgentService_ReleaseVolume_Handler,
+		},
+		{
+			MethodName: "TransferVolumeOwnership",
+			Handler:    _AgentService_TransferVolumeOwnership_Handler,
 		},
 		{
 			MethodName: "ExportVolume",

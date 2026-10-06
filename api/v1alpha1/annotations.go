@@ -99,6 +99,34 @@ const (
 	// It requires the file CSI driver and is mutually exclusive with the
 	// other import selectors. It is not a StorageClass parameter.
 	AnnotationImportZFSDataset = "pillar-csi.bhyoo.com/import-zfs-dataset"
+
+	// AnnotationImportLV is a PVC annotation that names an existing LVM
+	// logical volume to adopt instead of provisioning a new volume.  The
+	// plain-string value is "<vg>/<lv>:<vg_uuid>:<lv_uuid>"; all four parts
+	// are required (read the UUIDs with `lvs -o vg_uuid,lv_uuid`).  It is
+	// mutually exclusive with the other import selectors ([AnnotationImportZvol],
+	// [AnnotationImportDirectory], [AnnotationImportZFSDataset]) on the same
+	// claim and is not valid as a StorageClass parameter.
+	//
+	// Example:
+	//   annotations:
+	//     pillar-csi.bhyoo.com/import-lv: "data-vg/legacy:<vg_uuid>:<lv_uuid>"
+	AnnotationImportLV = "pillar-csi.bhyoo.com/import-lv"
+
+	// AnnotationImportLVPolicy is an optional PVC annotation selecting the
+	// adoption policy of an [AnnotationImportLV] claim: one of
+	// [ImportLVPolicyPreserveOriginal] (the default when absent) or
+	// [ImportLVPolicyManaged].  Any other value is refused.
+	AnnotationImportLVPolicy = "pillar-csi.bhyoo.com/import-lv-policy"
+
+	// ImportLVPolicyPreserveOriginal keeps the adopted LV's data intact:
+	// DeleteVolume only releases it, expansion is refused, and the node
+	// never formats, fscks or resizes it.
+	ImportLVPolicyPreserveOriginal = "PreserveOriginal"
+
+	// ImportLVPolicyManaged turns the adopted LV into a normal managed
+	// volume that DeleteVolume removes and ExpandVolume may grow.
+	ImportLVPolicyManaged = "Managed"
 )
 
 // PVCBackendOverride is the Go representation of the [AnnotationBackendDoc]

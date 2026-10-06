@@ -7,7 +7,7 @@ sidebar:
 
 If a volume already lives as a ZFS zvol on a pillar-csi storage node, pillar-csi can take it over in place instead of copying it into a new volume. You create a PVC with the annotation `pillar-csi.bhyoo.com/import-zvol` set to the zvol's full dataset name. `CreateVolume` then adopts that zvol instead of creating one, and everything else happens as for a new volume: the PV, the `PillarVolumeState`, the NVMe-oF/TCP export and its recorded export spec, and fencing.
 
-This works for zvols created by democratic-csi (`zfs-generic-iscsi`, `zfs-generic-nvmeof`), by openebs zfs-localpv for volumes with an `ext4` or `xfs` `fsType` (those are zvols), or by hand. It does not work for ZFS filesystem datasets.
+This works for zvols created by democratic-csi (`zfs-generic-iscsi`, `zfs-generic-nvmeof`), by openebs zfs-localpv for volumes with an `ext4` or `xfs` `fsType` (those are zvols), or by hand. It does not work for ZFS filesystem datasets. For LVM logical volumes, see [Adopt an existing LVM logical volume](/docs/how-to/import-lv/).
 
 ## Existing filesystem adoption is a separate feature
 

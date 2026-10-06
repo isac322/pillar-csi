@@ -393,3 +393,35 @@ func TestHealthCheck_PoolStatusDegraded(t *testing.T) {
 		t.Error("overall Healthy should be false when a pool is degraded")
 	}
 }
+
+// Control: discovery is read-only and unaware of the LVM pin.  An adopted,
+// preserved LV is listed exactly as the backend reports it, its capacity
+// counts as usual, and neither call touches the mark or verifies the LV.
+func TestDiscovery_PinnedLVUnchanged(t *testing.T) {
+	t.Parallel()
+	b := newMockLVBackend()
+	b.capacityTotal, b.capacityAvailable = 100<<30, 40<<30
+	b.listVolumesResult = []*agentv1.VolumeInfo{{VolumeId: testVolumeID, CapacityBytes: 1 << 30}}
+	srv, stateDir, _ := newLVTestServer(t, b)
+	seeded := seedMark(t, stateDir, pinnedMark("lifecycle-a", 2, testLVSource(), true))
+
+	list, err := srv.ListVolumes(context.Background(), &agentv1.ListVolumesRequest{
+		PoolName: testPool, BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+	})
+	if err != nil {
+		t.Fatalf("ListVolumes: %v", err)
+	}
+	if vols := list.GetVolumes(); len(vols) != 1 || vols[0].GetVolumeId() != testVolumeID {
+		t.Errorf("ListVolumes = %v, want the adopted LV as the backend lists it", vols)
+	}
+	capResp, err := srv.GetCapacity(context.Background(), &agentv1.GetCapacityRequest{
+		PoolName: testPool, BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+	})
+	if err != nil {
+		t.Fatalf("GetCapacity: %v", err)
+	}
+	if capResp.GetUsedBytes() != 60<<30 {
+		t.Errorf("UsedBytes = %d, want %d", capResp.GetUsedBytes(), int64(60<<30))
+	}
+	requireMarkUnchanged(t, stateDir, seeded, "discovery")
+}

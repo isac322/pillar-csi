@@ -913,6 +913,125 @@ Longhorn filesystem-trim, Portworx auto-fstrim과 같은 역할).
    pillar_csi_node_trim_duration_seconds.
 ```
 
+### 5.6 기존 LVM LV 채택 (`import-lv`, issue #163)
+
+PVC 어노테이션으로 스토리지 노드에 이미 있는 LV를 새 볼륨 대신 채택한다. 미릴리스 기능이다. 운영 절차는
+[`import-lv` how-to](../site/src/content/docs/docs/how-to/import-lv.md) 참조.
+
+```
+1. 요청: PVC 어노테이션
+   pillar-csi.bhyoo.com/import-lv: "<vg>/<lv>:<vg_uuid>:<lv_uuid>"   (네 값 모두 필수, `lvs -o vg_uuid,lv_uuid`)
+   pillar-csi.bhyoo.com/import-lv-policy: PreserveOriginal | Managed (생략 = PreserveOriginal, 그 밖의 값 거부)
+   import-zvol·import-directory·import-zfs-dataset과 같은 claim에 함께 쓸 수 없고 StorageClass 파라미터로는 받지 않는다.
+2. controller (CreateVolume):
+   a. lvm-lv PillarStore + 같은 VG만 허용
+   b. 첫 시도에서 이름·UUID·정책을 PillarVolumeState.spec.lvmSource에 기록 (불변, 추가·삭제 불가).
+      재시도는 기록을 따른다. 다른 LV·UUID·정책을 가리키는 어노테이션은 거부 (재지정·강등 없음)
+   c. 같은 agent의 다른 PillarVolumeState가 같은 <vg>/<lv> 또는 LV UUID를 쓰면 거부.
+      LV UUID 키 PillarVolumeReservation으로 동시 생성 경합 차단
+   d. agent ImportVolume(backend_type=LVM, expected_lvm_source, preserve_original)
+3. agent (ImportVolume, backend 읽기 전용):
+   a. lvs 한 번으로 이름·UUID 일치 확인 → linear 또는 설정된 thinPool의 thin LV만 허용
+      (thinPool 없는 backend = linear만, 있는 backend = 그 pool의 thin만).
+      snapshot·origin·pool·mirror·raid·pvmove·virtual·type 불명 LV 거부
+   b. 비활성 LV 거부 (자동 활성화 없음), lv_size < 요청 용량 거부 (resize 없음)
+   c. O_RDONLY|O_EXCL claim을 잡은 채 mount·holder·LIO/nvmet export 검사 후 lvs 재확인. 사용 중이면 거부
+   d. 성공 시 identity와 정책을 fence mark에 고정. 고정된 source는 이후 lifecycle에서도 바뀌지 않고
+      PreserveOriginal은 Managed로 강등되지 않는다
+   e. lvchange·lvcreate·lvextend·lvremove·mkfs·fsck·mount를 실행하지 않는다. VG/LV 메타데이터 불변
+   f. proto의 preserve_original은 optional: 미설정 = PreserveOriginal, 명시적 false만 Managed
+```
+
+**정책별 동작:**
+
+| | PreserveOriginal (기본) | Managed |
+|---|---|---|
+| NodeStage | MountExisting: 기존 filesystem을 그대로 mount. mkfs·fsck·자동 repair·resize 없음. 빈 디바이스나 다른 fsType은 거부 | 일반 볼륨 경로 |
+| 확장 | controller·agent·node 모두 거부 | 허용 |
+| PVC 삭제 + reclaim Delete | ReleaseVolume: export 제거, pinned identity 재확인, 로컬 consumer 없음 확인 후 lifecycle retire. LV·데이터·thin pool 유지 | DeleteVolume으로 LV 삭제 |
+| PVC 삭제 + reclaim Retain | PV·PillarVolumeState·export 유지. LV는 lifecycle이 계속 소유 (반환 아님) | 같음 |
+
+커널의 일반 동작(journal replay)과 workload의 rw 쓰기는 허용된다. PreserveOriginal은 드라이버가 데이터를 바꾸지 않는다는
+약속이며, rw mount 후 LV가 채택 전과 바이트 단위로 같다는 보장이 아니다.
+
+**InspectVolume (인벤토리, LVM 전용):**
+- 읽기 전용·fencing 없음: lvs, `blkid -p`, 즉시 닫는 O_EXCL open 1회, devidle 보고. 활성화·mount·쓰기·영속화 없음.
+  LVM 외 backend는 UNIMPLEMENTED, 손상된 fence mark는 INTERNAL
+- 응답: LV identity·lv_attr·segtype·pool_lv·크기·활성 상태·exclusive_claim(free/busy/unknown), filesystem signature와
+  probe 상태(detected/unknown), consumers, agent 자신의 export 설정, fence mark(uid·generation·ended·ended_uids·정책·source)
+- 관측일 뿐 소유권 주장이 아니다. probe unknown은 빈 디바이스가 아니고, consumers가 비어도 exclusive_claim busy면 사용 중
+  (다른 mount namespace의 mount 등), fence mark 부재는 미관리 증거가 아니다
+- 소유자 대응은 운영자가 한다: mark uid·agentRef·agentVolumeID·LV UUID가 모두 일치하는 PillarVolumeState가 정확히 하나일 때만
+  claimed. 그 밖은 unknown으로 두고 소유자를 지정하지 않는다
+- 전용 CLI 없음. grpcurl + 이미지와 같은 revision의 agent.proto + 승인된 client 인증서. CA에 서명된 client 인증서는 모든
+  agent RPC를 호출할 수 있다 (읽기 전용 role 없음)
+
+**Retain된 PV 재바인딩 (수동 절차):**
+
+```
+같은 PV·volumeHandle·PillarVolumeState UID를 유지한다. CreateVolume·새 lifecycle 없음.
+1. Kubernetes 사전 확인: PV Released + Retain, 이전 claim(같은 UID, terminating 포함) 없음,
+   VolumeAttachment 없음, publishedNodes 비어 있음, deleting=false,
+   이전 노드 Ready + volumesInUse에 볼륨 없음 (오프라인·미확인 소유자는 차단)
+2. controller를 replicas 0으로 일시 정지. 모든 종료 경로에서 원래 replicas로 복구 (trap)
+3. UnexportVolume을 현재 lifecycle 토큰(PillarVolumeState UID, status.publicationGeneration)으로 호출.
+   ReleaseVolume은 쓰지 않는다 (lifecycle retire)
+4. InspectVolume: fence 존재·같은 UID·ended=false, fence와 관측 identity 모두 spec.lvmSource 네 값과 일치,
+   exports·consumers 비어 있음, exclusive_claim=free. 빈 ACL·빈 consumers만으로 판단하지 않는다
+5. PV를 다시 읽어 사전 확인 반복 후 metadata.uid·resourceVersion을 유지한 kubectl replace로 claimRef 교체 (충돌 시 처음부터)
+6. volumeName을 지정한 static PVC 생성 → Bound
+7. controller 복구 → ReconcileState가 같은 lifecycle로 export 재생성 → 새 Pod가 데이터 읽기
+```
+
+- PillarVolumeState.spec.claimRef는 원래 claim을 계속 가리킨다 (불변 기록, 수정하지 않음)
+- 기존 publish 충돌 검사는 그대로 동작한다. 같은 노드에서 Kubernetes 밖으로 살아남은 이전 workload를 자동으로 막는 장치는
+  없으며 사전 확인이 그 역할을 한다
+- fence mark 삭제, PillarVolumeState 임의 patch는 지원하지 않는다
+- Release된 lifecycle 토큰의 DeleteVolume 등 변경 요청은 FAILED_PRECONDITION. 예외는 이미 성공한 Managed DeleteVolume의
+  같은 요청 재시도로, backend를 다시 건드리지 않고 성공한다
+
+**메타데이터 유실 후 복구 (TransferVolumeOwnership, 수동 절차):**
+
+권한은 두 서명뿐이다 (A+B). mTLS 호출자 신원, CA 개인키, 새 PKI 서비스는 권한이 아니다.
+
+```
+A. agent RecoverySnapshot: InspectVolume이 verified mTLS 호출자에게만, mark가 이 LV에 고정된 live lifecycle을
+   기록할 때만 반환. volume_id·backend·lvm_source·old uid·정확한 old generation·preserve 정책·exclusive_claim·
+   consumers·exports·fence·agent_identity(서버 인증서 CN 또는 첫 DNS SAN)·issued_at을 agent 서버 TLS 키로 서명
+B. operator RecoveryAuthorization: snapshot digest·같은 volume/backend/source/old uid/old generation·
+   new uid(복구 PillarVolumeState metadata.uid)·new generation·preserve(명시 필수)·issued_at/expires_at을
+   --recovery-trust-anchor PEM(PUBLIC KEY/CERTIFICATE, 여러 키 허용)에 있는 키로 서명
+서명: proto.MarshalOptions{Deterministic:true}로 signature를 비운 메시지 → SHA-256 → RSA PKCS#1 v1.5 또는 ECDSA ASN.1.
+그 밖의 키 종류는 거부. grant 창 ≤ 24h(+2m skew), snapshot은 transfer 시점 15분 이내.
+
+1. old lifecycle 정지: workload·unstage 확인, controller replicas 0, export가 남으면 old 토큰으로 UnexportVolume
+2. import 어노테이션 없는 일반 PVC 생성 → 이름이 pvc-<claim UID>인 PillarVolumeState를 spec.recovery
+   (oldVolumeUID, oldGeneration, source, newGeneration)로 생성. lvmSource와 함께 쓸 수 없다.
+   이 레코드는 처음부터 RecoveryPending: publish·expand·delete 거부, reaper 제외(status가 비어도)
+3. mTLS InspectVolume으로 새 snapshot → 오프라인에서 grant 서명 → 한 번의 patch로
+   spec.recovery.newVolumeUID·authorization·authorizationDigest(write-once)와
+   pillar-csi.bhyoo.com/recovery-snapshot 어노테이션(base64 deterministic proto)을 설정
+4. controller 복구 → CreateVolume: grant·snapshot을 intent와 live 관찰에 대조 → TransferVolumeOwnership
+5. agent: verified mTLS가 아니면 UNAUTHENTICATED, trust anchor 없으면 UNAVAILABLE. per-volume lock 아래
+   두 서명 검증, mark의 uid·정확한 generation·pinned source·preserve 일치, LV 재관찰(export·ACL 없음, mount·
+   holder 없음, O_EXCL free)을 확인한 뒤 mark 한 번 원자 쓰기: new uid/generation, old uid retired, source·정책,
+   transfer 기록 + grant digest. rename 후 fsync 불확실은 TRANSFER_OUTCOME_UNKNOWN(rollback 없음)
+6. 같은 요청 재시도는 ALREADY_COMMITTED. 같은 목적지의 다른 grant, 다른 목적지, stale snapshot, 옛 토큰은 거부
+7. PillarVolumeState는 transfer 기록과 status가 일치한 뒤에만 Ready, claim은 유실 전과 같은 volumeHandle로 Bound
+```
+
+- trust anchor 개인키는 클러스터 밖에서 운영자가 보관한다. 파일은 시작 시 한 번 읽고, 읽기 실패·사용할 키 없음·
+  서명할 수 없는 서버 인증서는 agent 기동 실패(fail closed). 회전: 새 키 추가 → 재시작 → 새 키로 서명 → 옛 키 제거 → 재시작
+- agent 서버 인증서를 회전하면 미커밋 snapshot은 무효다. 다시 inspect한다
+- import-lv로 채택된 LVM LV만 대상. 자동 takeover 없음. 오프라인·미확인 노드, 증명되지 않은 old initiator 정지,
+  손상·부재·불일치 history는 모두 거부. 기존 managed LVM/zvol/NFS 경로는 바뀌지 않는다
+- 검증: `test/e2e/tc_e39_metadata_recovery_e2e_test.go`(E39, 전용 Serial lane). 실제 Kind runner에서 아직 실행하지 않았다
+
+**미구현·차단:**
+- 두 서명 없는 메타데이터 유실 복구. fence mark 삭제·강제·오프라인 우회는 제공하지 않는다
+- 지원 레이아웃 밖의 LV, 고정된 source·정책 변경, PreserveOriginal 확장, 읽기 전용 agent 인증서
+- 지원 범위는 위 레이아웃과 초기 상태(활성·유휴 LV)에 한정되며 LVM API 전체와의 동등성을 뜻하지 않는다
+
 ## 6. 로드맵
 
 ### Phase 1: ZFS zvol + NVMe-oF TCP (MVP)

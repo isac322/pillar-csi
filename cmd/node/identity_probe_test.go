@@ -203,3 +203,76 @@ func assertLocalBindTarget(t *testing.T, source string, sourceIsDir bool) {
 		t.Fatalf("bind must preserve the underlying mount error: %v", err)
 	}
 }
+
+// existingMounter records MountExisting calls of the wrapped Mounter and
+// fails the test on any FormatAndMount: the preserve-original path must
+// never reach the format path.
+type existingMounter struct {
+	csisvc.Mounter
+	t     *testing.T
+	calls []existingCall
+	err   error
+	check func(target string)
+}
+
+type existingCall struct {
+	source, target, fsType string
+	options                []string
+}
+
+func (m *existingMounter) MountExisting(
+	_ context.Context, source, target, fsType string, options []string,
+) error {
+	if m.check != nil {
+		m.check(target)
+	}
+	m.calls = append(m.calls, existingCall{source, target, fsType, options})
+	return m.err
+}
+
+func (m *existingMounter) FormatAndMount(context.Context, string, string, string, []string, []string) error {
+	m.t.Error("FormatAndMount reached through MountExisting")
+	return nil
+}
+
+func TestMkdirMounter_MountExisting_CreatesTargetAndForwards(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "staging", "globalmount")
+	wrapped := &existingMounter{t: t, err: syscall.EACCES}
+	wrapped.check = func(gotTarget string) {
+		st, err := os.Stat(gotTarget)
+		if err != nil || !st.IsDir() {
+			t.Fatalf("MountExisting target must exist as a directory before the forward: stat=%v, err=%v", st, err)
+		}
+	}
+	options := []string{"noatime"}
+
+	err := (&mkdirMounter{wrapped: wrapped}).MountExisting(t.Context(), "/dev/vg0/lv", target, "xfs", options)
+	if !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("MountExisting must reach the wrapped mounter and retain its error: %v", err)
+	}
+	if len(wrapped.calls) != 1 {
+		t.Fatalf("wrapped MountExisting calls = %d, want 1", len(wrapped.calls))
+	}
+	got := wrapped.calls[0]
+	if got.source != "/dev/vg0/lv" || got.target != target || got.fsType != "xfs" ||
+		len(got.options) != 1 || got.options[0] != "noatime" {
+		t.Errorf("forwarded call = %+v, want identical arguments", got)
+	}
+}
+
+func TestMkdirMounter_MountExisting_MkdirFailureNotForwarded(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(parent, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wrapped := &existingMounter{t: t}
+
+	target := filepath.Join(parent, "target")
+	err := (&mkdirMounter{wrapped: wrapped}).MountExisting(t.Context(), "/dev/vg0/lv", target, "ext4", nil)
+	if err == nil {
+		t.Fatal("MountExisting under a regular-file parent succeeded, want the MkdirAll error")
+	}
+	if len(wrapped.calls) != 0 {
+		t.Errorf("wrapped MountExisting called %d times after a failed MkdirAll, want 0", len(wrapped.calls))
+	}
+}

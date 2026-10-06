@@ -26,6 +26,8 @@ package lvm
 import (
 	"context"
 	"testing"
+
+	"github.com/isac322/pillar-csi/internal/agent/backend/devidle"
 )
 
 // SetBackendDevBase overrides the devBase field of b for the duration of one
@@ -86,4 +88,23 @@ func IsAlreadyExistsOutput(out []byte) bool {
 func SetParamsHasModeOverride(t *testing.T, p *Params, v bool) {
 	t.Helper()
 	p.hasModeOverride = v
+}
+
+// SetBackendClaimDevice overrides the exclusive-claim function ImportLV and
+// InspectLV use, for the duration of one test.  Tests supply a stateful
+// device fake because t.TempDir trees hold no block devices.
+func SetBackendClaimDevice(t *testing.T, b *Backend, fn func(path string) (devidle.Claim, error)) {
+	t.Helper()
+	orig := b.claimDevice
+	b.claimDevice = fn
+	t.Cleanup(func() { b.claimDevice = orig })
+}
+
+// SetBackendIdleChecker overrides the consumer scanner (its kernel tree
+// roots and recorded-path stat) for the duration of one test.
+func SetBackendIdleChecker(t *testing.T, b *Backend, c devidle.Checker) {
+	t.Helper()
+	orig := b.idle
+	b.idle = c
+	t.Cleanup(func() { b.idle = orig })
 }

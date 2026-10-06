@@ -33,7 +33,11 @@ Not yet. The controller does not implement the CSI snapshot calls. You can still
 
 ## Can I grow a volume?
 
-Yes. Edit the PVC's `spec.resources.requests.storage`. The controller grows the zvol or logical volume, and the node plugin grows the filesystem. See [expand a volume](/docs/how-to/expand-volume/).
+Yes. Edit the PVC's `spec.resources.requests.storage`. The controller grows the zvol or logical volume, and the node plugin grows the filesystem. See [expand a volume](/docs/how-to/expand-volume/). An LV adopted with the `PreserveOriginal` policy is the exception: pillar-csi refuses to expand it.
+
+## Can pillar-csi use a volume that already exists?
+
+Yes, with limits. The `pillar-csi.bhyoo.com/import-zvol` PVC annotation adopts a ZFS zvol, which then becomes an ordinary pillar-csi volume; see [import a zvol](/docs/how-to/import-zvol/). The `pillar-csi.bhyoo.com/import-lv` annotation adopts an active linear LV, or a thin LV of the store's thin pool, and keeps its data by default: deleting the PVC releases the LV instead of removing it. LVM adoption and metadata-loss recovery are implemented on the current source revision but are not in a tagged release yet. Recovery requires an agent-signed snapshot, an operator-signed grant, persistent agent state and verified owner-stop evidence; uncertain ownership is refused. See [adopt an existing LVM logical volume](/docs/how-to/import-lv/) and the [support matrix](/docs/reference/support-matrix/#adopting-existing-volumes).
 
 ## Can I use more than one storage node or pool?
 

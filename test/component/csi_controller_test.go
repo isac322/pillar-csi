@@ -236,6 +236,16 @@ func (*csiMockAgent) ListVolumes(
 ) (*agentv1.ListVolumesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
 }
+func (*csiMockAgent) InspectVolume(
+	_ context.Context, _ *agentv1.InspectVolumeRequest, _ ...grpc.CallOption,
+) (*agentv1.InspectVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
+}
+func (*csiMockAgent) TransferVolumeOwnership(
+	_ context.Context, _ *agentv1.TransferVolumeOwnershipRequest, _ ...grpc.CallOption,
+) (*agentv1.TransferVolumeOwnershipResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
+}
 func (*csiMockAgent) ListExports(
 	_ context.Context, _ *agentv1.ListExportsRequest, _ ...grpc.CallOption,
 ) (*agentv1.ListExportsResponse, error) {

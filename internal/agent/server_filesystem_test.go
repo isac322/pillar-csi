@@ -325,6 +325,47 @@ func zfsFilesystemFixture(t *testing.T) (*agent.Server, *filesystemTestBackend, 
 	return srv, b, req
 }
 
+// An LVM identity on an otherwise valid, importable filesystem adoption is a
+// malformed request: it is refused before the native source is pinned or its
+// fence is claimed, so a later valid import by another lifecycle still owns it.
+func TestFilesystemImportRejectsExpectedLVMSource(t *testing.T) {
+	t.Parallel()
+	dir := filesystemFixture(t)
+	zfsSrv, zfsBackend, zfsReq := zfsFilesystemFixture(t)
+	for _, tc := range []struct {
+		name string
+		srv  *agent.Server
+		b    *filesystemTestBackend
+		req  *agentv1.ImportVolumeRequest
+	}{
+		{name: "directory", srv: dir.server, b: dir.backend, req: dir.request},
+		{name: "zfs-dataset", srv: zfsSrv, b: zfsBackend, req: zfsReq},
+	} {
+		guarded, ok := proto.Clone(tc.req).(*agentv1.ImportVolumeRequest)
+		if !ok {
+			t.Fatal("clone import request")
+		}
+		guarded.ExpectedLvmSource = testLVSource()
+		if _, err := tc.srv.ImportVolume(context.Background(), guarded); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("%s: adoption carrying an LVM identity was not refused as malformed: %v", tc.name, err)
+		}
+		if tc.b.closed {
+			t.Fatalf("%s: refused import pinned the native source", tc.name)
+		}
+		control, ok := proto.Clone(tc.req).(*agentv1.ImportVolumeRequest)
+		if !ok {
+			t.Fatal("clone import request")
+		}
+		control.Fence = &agentv1.FencingToken{VolumeUid: "other-owner", Generation: 1}
+		if _, err := tc.srv.ImportVolume(context.Background(), control); err != nil {
+			t.Fatalf("%s: refused import claimed the fence or control is invalid: %v", tc.name, err)
+		}
+		if !tc.b.closed {
+			t.Fatalf("%s: valid control import did not pin and release the native source", tc.name)
+		}
+	}
+}
+
 func TestFilesystemAdoptionRejectsLiveManagedDatasetOwner(t *testing.T) {
 	t.Parallel()
 	srv, b, req := zfsFilesystemFixture(t)

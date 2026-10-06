@@ -50,6 +50,7 @@ import (
 	"github.com/isac322/pillar-csi/internal/agent/backend/zfs"
 	"github.com/isac322/pillar-csi/internal/agent/nfs"
 	"github.com/isac322/pillar-csi/internal/agent/nvmeof"
+	"github.com/isac322/pillar-csi/internal/recoveryauth"
 	"github.com/isac322/pillar-csi/internal/runtimepaths"
 	"github.com/isac322/pillar-csi/internal/telemetry"
 	"github.com/isac322/pillar-csi/internal/tlscreds"
@@ -225,6 +226,29 @@ func buildGRPCOpts(tlsEnabled bool, cert, key, ca string) ([]grpc.ServerOption, 
 	return []grpc.ServerOption{grpc.Creds(creds)}, nil
 }
 
+// loadRecoveryAuthority builds the ServerOption that enables volume recovery:
+// the agent's own TLS certificate/private key (the identity that signs
+// RecoverySnapshot payloads) and the operator public keys trusted to sign a
+// RecoveryAuthorization.  It is called only when --recovery-trust-anchor is
+// set; any load failure is fatal so recovery never runs half-configured.
+// A certificate that cannot attest an identity (no Subject CN, no DNS SAN)
+// is rejected here instead of producing unverifiable snapshots.
+func loadRecoveryAuthority(certFile, keyFile, anchorFile string) (agent.ServerOption, error) {
+	signer, leaf, err := tlscreds.LoadServerIdentity(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load recovery signing identity: %w", err)
+	}
+	if agent.RecoveryAgentIdentity(leaf) == "" {
+		return nil, fmt.Errorf("recovery: TLS certificate %s attests no identity "+
+			"(no Subject CN, no DNS SAN); cannot sign recovery snapshots", certFile)
+	}
+	anchors, err := recoveryauth.LoadPublicKeysPEM(anchorFile)
+	if err != nil {
+		return nil, fmt.Errorf("load recovery trust anchor %q: %w", anchorFile, err)
+	}
+	return agent.WithRecoveryAuthority(signer, leaf, anchors), nil
+}
+
 type configuredAgent struct {
 	volumeBackends map[string]backend.VolumeBackend
 	nfsManager     *nfs.Manager
@@ -345,6 +369,9 @@ func main() {
 	tlsCert := flag.String("tls-cert", "", "path to PEM server certificate for mTLS")
 	tlsKey := flag.String("tls-key", "", "path to PEM server private key for mTLS")
 	tlsCA := flag.String("tls-ca", "", "path to PEM CA certificate for mTLS client verification")
+	recoveryAnchor := flag.String("recovery-trust-anchor", "",
+		"path to a PEM file of operator public keys (or certificates) trusted to sign volume-recovery "+
+			"authorizations; requires --tls-cert/--tls-key because the agent's TLS identity signs recovery snapshots")
 	flag.Parse()
 
 	if *configPath == "" {
@@ -357,6 +384,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error: --tls-cert, --tls-key, and --tls-ca must all be provided together")
 		os.Exit(1)
 	}
+	if *recoveryAnchor != "" && (*tlsCert == "" || *tlsKey == "") {
+		fmt.Fprintln(os.Stderr, "error: --recovery-trust-anchor requires --tls-cert and --tls-key "+
+			"(the agent's TLS identity signs recovery snapshots)")
+		os.Exit(1)
+	}
 
 	runtime, err := configureAgent(*configPath, *cfgRoot, *nfsBindAddress, *filesystemHostRoot, *nfsExportRoot)
 	if err != nil {
@@ -365,6 +397,17 @@ func main() {
 	}
 	nfsManager := runtime.nfsManager
 	srv := runtime.server
+	// Recovery is opt-in: only --recovery-trust-anchor enables it.  Without
+	// the flag the server keeps a nil authority and every transfer fails
+	// closed; loading never falls back to another credential.
+	if *recoveryAnchor != "" {
+		authority, err := loadRecoveryAuthority(*tlsCert, *tlsKey, *recoveryAnchor)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		authority(srv)
+	}
 	serveAgent(srv, serveConfig{
 		listenAddr: *listenAddr, metricsAddr: *metricsAddr, gracePeriod: *gracePeriod,
 		tlsEnabled: tlsEnabled, tlsCert: *tlsCert, tlsKey: *tlsKey, tlsCA: *tlsCA,

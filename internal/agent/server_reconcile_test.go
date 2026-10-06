@@ -663,3 +663,86 @@ func TestReconcileState_MixedPoolPreservesExplicitNFSPathAndTypeGuard(t *testing
 		t.Fatalf("refused NFS export created runtime ownership/admission state: %v", err)
 	}
 }
+
+// ReconcileState re-verifies a pinned LV before re-exporting it: a volume
+// whose LV was replaced fails on its own and gets no target, while the other
+// listed volumes are still reconciled.  The second volume is an unpinned
+// managed LV with no adopted identity behind it, so it is reconciled only if
+// unpinned volumes are not verified.
+func TestPinnedSource_RecheckedBeforeReconcile(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		replaced   bool
+		wantFirst  bool
+		wantTarget int
+	}{
+		{"verified", false, true, 2},
+		{"replaced LV", true, false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := newMockLVBackend()
+			if tc.replaced {
+				b.replaceLV()
+			}
+			srv, stateDir, cfgRoot := newLVTestServer(t, b)
+			seeded := seedMark(t, stateDir, pinnedMark("lifecycle-a", 1, testLVSource(), true))
+
+			resp, err := srv.ReconcileState(context.Background(), pinnedAndUnpinnedReconcileRequest(t))
+			if err != nil {
+				t.Fatalf("ReconcileState: %v", err)
+			}
+			requirePinnedReconcileResults(t, resp, tc.wantFirst)
+			if n := nvmetSubsystems(t, cfgRoot); n != tc.wantTarget {
+				t.Errorf("NVMe-oF subsystems = %d, want %d", n, tc.wantTarget)
+			}
+			if !tc.wantFirst {
+				requireMarkUnchanged(t, stateDir, seeded, "refused reconcile")
+			}
+		})
+	}
+}
+
+// requirePinnedReconcileResults asserts ReconcileState reported one result
+// per volume: the pinned volume succeeded exactly when wantFirst, and the
+// unpinned volume always succeeded.
+func requirePinnedReconcileResults(t *testing.T, resp *agentv1.ReconcileStateResponse, wantFirst bool) {
+	t.Helper()
+	if len(resp.GetResults()) != 2 {
+		t.Fatalf("Results = %v, want 2", resp.GetResults())
+	}
+	if got := resp.GetResults()[0].GetSuccess(); got != wantFirst {
+		t.Errorf("pinned volume success = %t, want %t (%q)",
+			got, wantFirst, resp.GetResults()[0].GetErrorMessage())
+	}
+	if !resp.GetResults()[1].GetSuccess() {
+		t.Errorf("unpinned volume failed: %q", resp.GetResults()[1].GetErrorMessage())
+	}
+}
+
+// pinnedAndUnpinnedReconcileRequest asks ReconcileState to export
+// testVolumeID's pinned LV under lifecycle-a and the unpinned managed LV
+// tank/pvc-def over NVMe-oF.
+func pinnedAndUnpinnedReconcileRequest(t *testing.T) *agentv1.ReconcileStateRequest {
+	t.Helper()
+	const secondVolumeID = "tank/pvc-def"
+	return &agentv1.ReconcileStateRequest{
+		Volumes: []*agentv1.VolumeDesiredState{
+			{
+				VolumeId:    testVolumeID,
+				BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+				Fence:       token2("lifecycle-a", 1),
+				DevicePath:  testLVDevicePath,
+				Exports:     []*agentv1.ExportDesiredState{nvmeofExportState("10.0.0.1")},
+			},
+			{
+				VolumeId:    secondVolumeID,
+				BackendType: agentv1.BackendType_BACKEND_TYPE_LVM,
+				Fence:       testFence(t),
+				DevicePath:  "/dev/tank/pvc-def",
+				Exports:     []*agentv1.ExportDesiredState{nvmeofExportState("10.0.0.1")},
+			},
+		},
+	}
+}

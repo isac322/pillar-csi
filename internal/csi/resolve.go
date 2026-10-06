@@ -123,6 +123,11 @@ const (
 	// "false"), present only when a layer sets it; "false" opts the
 	// staged filesystem out of the node's periodic trim.
 	paramPeriodicTrim = "pillar-csi.bhyoo.com/periodic-trim"
+
+	// ParamValueTrue is the only spelling of true a boolean StorageClass
+	// parameter or VolumeContext value (paramLocalAttach,
+	// paramPeriodicTrim) accepts.
+	paramValueTrue = "true"
 )
 
 // generatedClassParams are the pillar-csi keys a generated StorageClass may
@@ -194,6 +199,11 @@ type resolution struct {
 	importDataset    string
 	importDirectory  string
 	importZFSDataset string
+
+	// importLV and importLVPolicy are the raw values of the claim's
+	// v1alpha1.AnnotationImportLV and v1alpha1.AnnotationImportLVPolicy
+	// annotations ("" when absent); see resolveLVImportRequest.
+	importLV, importLVPolicy string
 }
 
 // resolveVolumeConfig resolves the effective configuration of a new volume
@@ -271,6 +281,8 @@ func (s *ControllerServer) resolveVolumeConfig(
 		importDataset:    pvc.ImportZvol,
 		importDirectory:  pvc.ImportDirectory,
 		importZFSDataset: pvc.ImportZFSDataset,
+		importLV:         pvc.ImportLV,
+		importLVPolicy:   pvc.ImportLVPolicy,
 	}, nil
 }
 
@@ -349,7 +361,8 @@ func replayResolution(
 	}
 	return &resolution{resolved: exportOnly, pvcFS: pvc.Filesystem, storeName: class.storeName,
 		importDataset: pvc.ImportZvol, importDirectory: pvc.ImportDirectory,
-		importZFSDataset: pvc.ImportZFSDataset}, nil
+		importZFSDataset: pvc.ImportZFSDataset, importLV: pvc.ImportLV,
+		importLVPolicy: pvc.ImportLVPolicy}, nil
 }
 
 // resolveClassLayer reads the StorageClass identity parameters and loads the
@@ -442,7 +455,7 @@ func parseLocalAttachParam(scParams map[string]string) (bool, error) {
 		return false, nil
 	}
 	switch raw {
-	case topologyValueTrue:
+	case paramValueTrue:
 		return true, nil
 	case "false":
 		return false, nil

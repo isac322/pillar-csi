@@ -21,10 +21,17 @@ package csi
 // the checks are not atomic, and controller replicas do not share a cache.
 // Before its PillarVolumeState exists, a CreateVolume for an import creates a
 // PillarVolumeReservation whose name deterministically encodes
-// (agent, backend type, agent volume ID), or (agent, canonical native resource
-// key) for adopted filesystems regardless of logical pool aliases. The API
-// server's single write wins: the loser gets AlreadyExists and is refused
-// with FailedPrecondition naming the recorded owner.
+// (agent, backend type, key), or (agent, canonical native resource key) for
+// adopted filesystems regardless of logical pool aliases.  The API server's
+// single write wins: the loser gets AlreadyExists and is refused with
+// FailedPrecondition naming the recorded owner, so no second lifecycle ever
+// reaches the agent for the same backend volume.
+//
+// The key is the agent volume ID for a zvol import and the LV UUID for an
+// LV import (issue #163): an LV renamed between two claims keeps its UUID,
+// so a renamed locator can never open a second lifecycle on the same LV.
+// The key derives from the lifecycle record (see reservationKey), and
+// reserve, verify and release all use that one key.
 //
 // The reservation is held for the whole lifecycle — refused or failed import
 // retries keep it, because the claim still intends to import — and is
@@ -61,15 +68,72 @@ import (
 const reservationNamePrefix = "rsv-"
 
 // reservationName returns the deterministic name of the reservation binding
-// the backend volume. A supplied native resource key replaces backend type
-// and routing ID, so aliases in different logical pools race on one object.
-// Without it the legacy zvol reservation name remains unchanged.
-func reservationName(agentName, backendType, agentVolID string, resourceID ...string) string {
+// the backend volume (agentName, backendType, key): the API server makes the
+// create atomic, so every contender for the same backend volume races on the
+// same object name.  A supplied native resource key replaces backend type
+// and key, so filesystem aliases in different logical pools race on one
+// object.  Without it the zvol and LV reservation names remain unchanged.
+func reservationName(agentName, backendType, key string, resourceID ...string) string {
 	if len(resourceID) > 0 {
-		backendType, agentVolID = "filesystem", resourceID[0]
+		backendType, key = "filesystem", resourceID[0]
 	}
-	sum := sha256.Sum256([]byte(agentName + "\x00" + backendType + "\x00" + agentVolID))
+	sum := sha256.Sum256([]byte(agentName + "\x00" + backendType + "\x00" + key))
 	return reservationNamePrefix + hex.EncodeToString(sum[:16])
+}
+
+// backendReservation identifies the reservation of one backend volume: the
+// agent, the backend type and the key (see reservationKey).  The resourceID
+// field is the canonical native resource key of a filesystem adoption (see
+// filesystemResourceID); when set it names the reservation instead of
+// backendType and key, and the reservation must record that same resource.
+// The zero value names no reservation.
+type backendReservation struct {
+	agent, backendType, key string
+	resourceID              string
+}
+
+// name returns the deterministic reservation object name of rsv.
+func (rsv backendReservation) name() string {
+	if rsv.resourceID != "" {
+		return reservationName(rsv.agent, rsv.backendType, rsv.key, rsv.resourceID)
+	}
+	return reservationName(rsv.agent, rsv.backendType, rsv.key)
+}
+
+// reservationKey returns the reservation identity of the lifecycle pvs.  An
+// LV import is keyed by its pinned LV UUID on the lifecycle's agent, never by
+// the renameable "<vg>/<lv>" locator.  Every other lifecycle is keyed by the
+// (agent, backend type, agent volume ID) fields of its CSI volume ID, the key
+// zvol imports have always used.  A volume ID that does not parse names no
+// reservation ("" key).
+func reservationKey(pvs *v1alpha1.PillarVolumeState) (agent, backendType, key string) {
+	if src := pvs.Spec.LVMSource; src != nil {
+		return pvs.Spec.AgentRef, string(v1alpha1.BackendIDLVMLV), src.LogicalVolumeUUID
+	}
+	fields := strings.SplitN(pvs.Spec.VolumeID, "/", volumeIDParts)
+	if len(fields) != volumeIDParts {
+		return "", "", ""
+	}
+	return fields[0], fields[2], fields[3]
+}
+
+// reservationOf is reservationKey as a backendReservation.
+func reservationOf(pvs *v1alpha1.PillarVolumeState) backendReservation {
+	agent, backendType, key := reservationKey(pvs)
+	return backendReservation{agent: agent, backendType: backendType, key: key}
+}
+
+// reservationSubject names the import a reservation refusal is about: the
+// claim annotation, the resource noun ("zvol", "LV") and the source the
+// annotation names.  A filesystem adoption names only its canonical source
+// (see filesystemImportSubject).
+type reservationSubject struct {
+	annotation, noun, source string
+}
+
+// filesystemImportSubject names a filesystem adoption in reservation refusals.
+func filesystemImportSubject(canonicalSource string) reservationSubject {
+	return reservationSubject{noun: "filesystem source", source: canonicalSource}
 }
 
 // reserveBackendVolume takes the reservation for the backend volume of the
@@ -79,24 +143,21 @@ func reservationName(agentName, backendType, agentVolID string, resourceID ...st
 // records the owning claim (nil when the provisioner did not report one).
 func (s *ControllerServer) reserveBackendVolume(
 	ctx context.Context,
-	pvName, agentName, backendType, agentVolID, dataset string,
+	pvName string,
+	rsv backendReservation,
+	subject reservationSubject,
 	claimRef *v1alpha1.VolumeClaimRef,
-	resourceID ...string,
 ) error {
-	if len(resourceID) > 1 || (len(resourceID) == 1 && resourceID[0] == "") {
-		return importInvalid("filesystem reservation requires one non-empty canonical resource ID")
-	}
-	name := reservationName(agentName, backendType, agentVolID, resourceID...)
+	name := rsv.name()
 	res := &v1alpha1.PillarVolumeReservation{}
 	err := s.uncachedReader().Get(ctx, types.NamespacedName{Name: name}, res)
 	switch {
 	case err == nil:
-		if len(resourceID) == 1 && res.Spec.FilesystemResourceID != resourceID[0] {
-			return status.Errorf(
-				codes.FailedPrecondition, "PillarVolumeReservation %q has a different native filesystem resource", name,
-			)
+		err = checkFilesystemReservationResource(res, rsv)
+		if err != nil {
+			return err
 		}
-		return reservationOwnerCheck(res, pvName, dataset, claimRef)
+		return reservationOwnerCheck(res, pvName, subject, claimRef)
 	case !k8serrors.IsNotFound(err):
 		return status.Errorf(codes.Internal,
 			"get PillarVolumeReservation %q: %v", name, err)
@@ -104,15 +165,13 @@ func (s *ControllerServer) reserveBackendVolume(
 	res = &v1alpha1.PillarVolumeReservation{
 		Name: name,
 		Spec: v1alpha1.PillarVolumeReservationSpec{
-			AgentRef:      agentName,
-			BackendType:   backendType,
-			AgentVolumeID: agentVolID,
-			OwnerVolume:   pvName,
-			ClaimRef:      claimRef,
+			AgentRef:             rsv.agent,
+			BackendType:          rsv.backendType,
+			AgentVolumeID:        rsv.key,
+			FilesystemResourceID: rsv.resourceID,
+			OwnerVolume:          pvName,
+			ClaimRef:             claimRef,
 		},
-	}
-	if len(resourceID) == 1 {
-		res.Spec.FilesystemResourceID = resourceID[0]
 	}
 	err = s.k8sClient.Create(ctx, res)
 	switch {
@@ -120,7 +179,7 @@ func (s *ControllerServer) reserveBackendVolume(
 		return nil
 	case k8serrors.IsAlreadyExists(err):
 		// Lost the create race: refuse on what the winner's record says.
-		return s.verifyReservation(ctx, pvName, agentName, backendType, agentVolID, dataset, claimRef, resourceID...)
+		return s.verifyReservation(ctx, pvName, rsv, subject, claimRef)
 	default:
 		return status.Errorf(codes.Internal,
 			"create PillarVolumeReservation %q: %v", name, err)
@@ -132,39 +191,46 @@ func (s *ControllerServer) reserveBackendVolume(
 // calls it immediately before ImportVolume, the first agent call of an
 // import, so a reservation deleted by an operator and re-taken by another
 // claim since this attempt reserved it stops the attempt before it can bind
-// the zvol at the agent.
+// the source at the agent.
 func (s *ControllerServer) verifyReservation(
 	ctx context.Context,
-	pvName, agentName, backendType, agentVolID, dataset string,
+	pvName string,
+	rsv backendReservation,
+	subject reservationSubject,
 	claimRef *v1alpha1.VolumeClaimRef,
-	resourceID ...string,
 ) error {
-	if len(resourceID) > 1 || (len(resourceID) == 1 && resourceID[0] == "") {
-		return importInvalid("filesystem reservation requires one non-empty canonical resource ID")
-	}
-	name := reservationName(agentName, backendType, agentVolID, resourceID...)
+	name := rsv.name()
 	res := &v1alpha1.PillarVolumeReservation{}
 	err := s.uncachedReader().Get(ctx, types.NamespacedName{Name: name}, res)
 	switch {
 	case k8serrors.IsNotFound(err):
-		if len(resourceID) == 1 {
+		if rsv.resourceID != "" {
 			return status.Errorf(codes.Aborted,
 				"filesystem source %q: PillarVolumeReservation %q of volume %q disappeared; retry the import",
-				dataset, name, pvName)
+				subject.source, name, pvName)
 		}
 		return status.Errorf(codes.Aborted,
-			"%s: zvol %q: PillarVolumeReservation %q of volume %q disappeared; retry the import",
-			v1alpha1.AnnotationImportZvol, dataset, name, pvName)
+			"%s: %s %q: PillarVolumeReservation %q of volume %q disappeared; retry the import",
+			subject.annotation, subject.noun, subject.source, name, pvName)
 	case err != nil:
 		return status.Errorf(codes.Internal,
 			"get PillarVolumeReservation %q: %v", name, err)
 	}
-	if len(resourceID) == 1 && res.Spec.FilesystemResourceID != resourceID[0] {
-		return status.Errorf(
-			codes.FailedPrecondition, "PillarVolumeReservation %q has a different native filesystem resource", name,
-		)
+	err = checkFilesystemReservationResource(res, rsv)
+	if err != nil {
+		return err
 	}
-	return reservationOwnerCheck(res, pvName, dataset, claimRef)
+	return reservationOwnerCheck(res, pvName, subject, claimRef)
+}
+
+// checkFilesystemReservationResource refuses a filesystem reservation whose
+// recorded native resource differs from the one rsv names.
+func checkFilesystemReservationResource(res *v1alpha1.PillarVolumeReservation, rsv backendReservation) error {
+	if rsv.resourceID != "" && res.Spec.FilesystemResourceID != rsv.resourceID {
+		return status.Errorf(codes.FailedPrecondition,
+			"PillarVolumeReservation %q has a different native filesystem resource", res.Name)
+	}
+	return nil
 }
 
 // reservationOwnerCheck accepts the reservation only when the lifecycle
@@ -174,7 +240,8 @@ func (s *ControllerServer) verifyReservation(
 // releases the reservation once an operator verified its claim is gone.
 func reservationOwnerCheck(
 	res *v1alpha1.PillarVolumeReservation,
-	pvName, dataset string,
+	pvName string,
+	subject reservationSubject,
 	claimRef *v1alpha1.VolumeClaimRef,
 ) error {
 	held := res.Spec.ClaimRef
@@ -195,34 +262,35 @@ func reservationOwnerCheck(
 			"filesystem source %q is reserved by %s (PillarVolumeReservation %q); delete that claim first, "+
 				"or, after verifying that claim and its PillarVolumeState no longer exist, "+
 				"release the reservation with `kubectl delete pillarvolumereservation %s`",
-			dataset, owner, res.Name, res.Name)
+			subject.source, owner, res.Name, res.Name)
 	}
 	return status.Errorf(codes.FailedPrecondition,
-		"%s: zvol %q is reserved by %s (PillarVolumeReservation %q); delete that claim first, "+
+		"%s: %s %q is reserved by %s (PillarVolumeReservation %q); delete that claim first, "+
 			"or, after verifying that claim and its PillarVolumeState no longer exist, "+
 			"release the reservation with `kubectl delete pillarvolumereservation %s`",
-		v1alpha1.AnnotationImportZvol, dataset, owner, res.Name, res.Name)
+		subject.annotation, subject.noun, subject.source, owner, res.Name, res.Name)
 }
 
-// releaseBackendVolume drops the reservation of the backend volume encoded
-// in volumeID — <agent>/<protocol>/<backend>/<agent-vol-id> — but only when
-// it is still held by the ending lifecycle pvName: a reservation recorded
-// for a different owner belongs to a later lifecycle and is left alone.  The
-// delete is preconditioned on the UID and resourceVersion that were read, so
-// a reservation replaced in between is never removed; a conflict is re-read
-// and decided again on the next attempt.  A missing reservation is success
-// (non-import volumes reserve nothing).
+// releaseBackendVolume drops the reservation rsv — the reservationKey of the
+// ending lifecycle pvName — but only when it is still held by pvName: a
+// reservation recorded for a different owner belongs to a later lifecycle
+// and is left alone.  The delete is preconditioned on the UID and
+// resourceVersion that were read, so a reservation replaced in between is
+// never removed; a conflict is re-read and decided again on the next
+// attempt.  A missing reservation, or an empty key, is success (non-import
+// volumes reserve nothing).  A filesystem lifecycle releases every native
+// reservation of its exact deleting record instead (see
+// releaseFilesystemReservations).
 func (s *ControllerServer) releaseBackendVolume(
 	ctx context.Context,
 	pvName, volumeID string,
 	expectedUID types.UID,
+	rsv backendReservation,
 ) error {
-	fields := strings.SplitN(volumeID, "/", volumeIDParts)
-	if len(fields) != volumeIDParts {
+	if rsv.key == "" {
 		return s.releaseInvalidBackendVolumeID(pvName)
 	}
-	name := reservationName(fields[0], fields[2], fields[3])
-	return s.releaseBackendVolumeReservation(ctx, pvName, volumeID, expectedUID, name)
+	return s.releaseBackendVolumeReservation(ctx, pvName, volumeID, expectedUID, rsv.name())
 }
 
 func (s *ControllerServer) releaseInvalidBackendVolumeID(pvName string) error {

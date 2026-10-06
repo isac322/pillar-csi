@@ -93,7 +93,6 @@ spec:
                   an operator can verify it is gone before deleting the reservation.
                 properties:
                   name:
-                    description: name is the name of the PersistentVolumeClaim.
                     type: string
                   namespace:
                     description: namespace is the namespace of the PersistentVolumeClaim.

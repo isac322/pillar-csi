@@ -43,10 +43,12 @@ package csi
 //     lifecycle is ended by the same fenced teardown as DeleteVolume before
 //     its record is removed. Adopted filesystems use UnexportVolume followed
 //     by ReleaseVolume, preserving the original source. Legacy adopted
-//     zvols and dynamically created volumes retain destructive deletion.
-//     Imports without durable adoption (status.importAcquired unset, no
-//     backend device path or export info) use ReleaseVolume only; a lost
-//     response must never justify destroying pre-existing data.
+//     zvols, LVs adopted under Managed and dynamically created volumes
+//     retain destructive deletion. An LV adopted under PreserveOriginal, and
+//     imports without durable adoption (status.importAcquired unset, no
+//     backend device path or export info), use ReleaseVolume only: its
+//     backend resource is pre-existing data this driver must never destroy,
+//     and a lost response must never justify destroying it.
 import (
 	"context"
 	"fmt"
@@ -196,8 +198,14 @@ const annotationValueTrue = "true"
 // reapablePhase reports whether pvs never reported success, i.e. never had a
 // PersistentVolume.  Provisioning precedes the backend record under every
 // controller version; CreatePartial is conclusive only for lifecycles created
-// under the success-recording contract.
+// under the success-recording contract.  A recovery record (spec.recovery)
+// is never reapable in any phase, including before its first status write:
+// it owns nothing until its authorized transfer commits, and ending it
+// could release the claim on the LV it exists to receive.
 func reapablePhase(pvs *v1alpha1.PillarVolumeState) bool {
+	if pvs.Spec.Recovery != nil {
+		return false
+	}
 	switch pvs.Status.Phase {
 	case "", v1alpha1.PillarVolumeStatePhaseProvisioning:
 		return true
@@ -317,7 +325,8 @@ func (s *ControllerServer) reapAbandoned(
 		backendType:        mapBackendType(marked.Spec.BackendType),
 		agentVolID:         marked.Spec.AgentVolumeID,
 		fence:              fence,
-		releaseOnly:        importNeverAdopted(marked),
+		releaseOnly:        releaseOnlyTeardown(marked),
+		reservationKey:     reservationOf(marked),
 		filesystemAdoption: filesystemAdoption,
 	})
 	if err != nil {

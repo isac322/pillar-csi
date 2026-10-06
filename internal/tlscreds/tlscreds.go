@@ -34,6 +34,7 @@ limitations under the License.
 package tlscreds
 
 import (
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -133,6 +134,39 @@ func LoadServerCredentials(certFile, keyFile, caFile string) (credentials.Transp
 		return nil, err
 	}
 	return creds, nil
+}
+
+// LoadServerIdentity reads the server certificate and private key from disk
+// and returns the parsed leaf certificate and its private key as a
+// [crypto.Signer].  The volume-recovery path uses exactly this identity — the
+// certificate the agent serves — to sign and verify RecoverySnapshot
+// attestations, so the signer and the certificate always belong together.
+// A non-signing or unparsable key is an error: the caller must fail closed.
+func LoadServerIdentity(certFile, keyFile string) (crypto.Signer, *x509.Certificate, error) {
+	certPEM, err := os.ReadFile(certFile) //nolint:gosec // G304: paths are operator-supplied TLS credential files
+	if err != nil {
+		return nil, nil, fmt.Errorf("tlscreds: read server cert %q: %w", certFile, err)
+	}
+	keyPEM, err := os.ReadFile(keyFile) //nolint:gosec // G304: paths are operator-supplied TLS credential files
+	if err != nil {
+		return nil, nil, fmt.Errorf("tlscreds: read server key %q: %w", keyFile, err)
+	}
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, nil, fmt.Errorf("tlscreds: parse server cert/key: %w", err)
+	}
+	if len(pair.Certificate) == 0 {
+		return nil, nil, fmt.Errorf("tlscreds: server cert %q holds no certificate", certFile)
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return nil, nil, fmt.Errorf("tlscreds: parse server leaf certificate %q: %w", certFile, err)
+	}
+	signer, ok := pair.PrivateKey.(crypto.Signer)
+	if !ok {
+		return nil, nil, fmt.Errorf("tlscreds: server key %q (%T) cannot sign recovery snapshots", keyFile, pair.PrivateKey)
+	}
+	return signer, leaf, nil
 }
 
 // recordCertificates sets the M16 NotAfter gauges for the leaf certificate

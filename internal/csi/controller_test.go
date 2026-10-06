@@ -40,6 +40,7 @@ import (
 	"errors"
 	"io"
 	"maps"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -408,6 +409,24 @@ func (*mockAgentClient) Drain(
 	_ *agentv1.DrainRequest,
 	_ ...grpc.CallOption,
 ) (*agentv1.DrainResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
+}
+
+// InspectVolume and TransferVolumeOwnership are called only by the recovery
+// path, whose tests (recovery_test.go) wrap this mock with a scripted agent.
+func (*mockAgentClient) InspectVolume(
+	_ context.Context,
+	_ *agentv1.InspectVolumeRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.InspectVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
+}
+
+func (*mockAgentClient) TransferVolumeOwnership(
+	_ context.Context,
+	_ *agentv1.TransferVolumeOwnershipRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.TransferVolumeOwnershipResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in mock")
 }
 
@@ -3846,5 +3865,100 @@ func TestDeleteVolume_PublishedVolume_FailedPrecondition(t *testing.T) {
 	}
 	if env.agent.deleteVolumeCalls != 1 {
 		t.Errorf("agent DeleteVolume calls = %d, want 1", env.agent.deleteVolumeCalls)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Same retained PV rebind (issue #163 S3): no binder, no claimant state
+// ─────────────────────────────────────────────────────────────────────────────
+
+// retainedLVState returns the Ready record of a PreserveOriginal adoption of
+// data-vg/legacy still attributed to its original claim default/old — what
+// a Retain PersistentVolume keeps after that claim was deleted — carrying
+// the given publication records.
+func retainedLVState(pubs ...v1alpha1.VolumePublication) *v1alpha1.PillarVolumeState {
+	return &v1alpha1.PillarVolumeState{
+		Name: "pvc-retained",
+		Spec: v1alpha1.PillarVolumeStateSpec{
+			VolumeID:      lvVolumeID,
+			AgentVolumeID: "data-vg/legacy",
+			AgentRef:      "storage-node-1",
+			BackendType:   "lvm-lv",
+			ProtocolType:  "nvmeof-tcp",
+			LVMSource:     wantLVSource(true),
+			ClaimRef:      &v1alpha1.VolumeClaimRef{UID: "uid-old", Namespace: "default", Name: "old"},
+		},
+		Status: v1alpha1.PillarVolumeStateStatus{
+			Phase:          v1alpha1.PillarVolumeStatePhaseReady,
+			ImportAcquired: true,
+			PublishedNodes: pubs,
+		},
+	}
+}
+
+// TestControllerPublishVolume_RetainedRebind_SameHandle: a new claim bound to
+// the retained PV publishes through the unchanged volume handle and Ready
+// record.  Publish never consults the claim: the grant is recorded for the
+// new node, the recorded claimRef is left as history, and no create or
+// import runs.
+func TestControllerPublishVolume_RetainedRebind_SameHandle(t *testing.T) {
+	t.Parallel()
+	env := newPublishTestEnv(t, append(exclCSINodes(), retainedLVState())...)
+	snw := csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER
+
+	_, err := env.srv.ControllerPublishVolume(context.Background(),
+		exclPublishReq(lvVolumeID, exclNode2, snw, false))
+	if err != nil {
+		t.Fatalf("ControllerPublishVolume of the retained volume: %v", err)
+	}
+	if env.agent.allowInitiatorCalls != 1 ||
+		env.agent.lastAllowInitiator.GetVolumeId() != "data-vg/legacy" ||
+		env.agent.lastAllowInitiator.GetInitiatorId() != exclNQN(exclNode2) {
+		t.Fatalf("AllowInitiator calls=%d last=%+v, want data-vg/legacy granted to %s",
+			env.agent.allowInitiatorCalls, env.agent.lastAllowInitiator, exclNQN(exclNode2))
+	}
+	if env.agent.createVolumeCalls != 0 || env.agent.importVolumeCalls != 0 {
+		t.Fatalf("publish provisioned: create=%d import=%d", env.agent.createVolumeCalls, env.agent.importVolumeCalls)
+	}
+	got, _, err := env.srv.loadPillarVolumeState(context.Background(), "pvc-retained")
+	if err != nil {
+		t.Fatalf("load PillarVolumeState: %v", err)
+	}
+	if pubs := got.Status.PublishedNodes; len(pubs) != 1 || pubs[0].NodeID != exclNode2 {
+		t.Fatalf("publishedNodes = %+v, want only %s", pubs, exclNode2)
+	}
+	if !reflect.DeepEqual(got.Spec.ClaimRef, retainedLVState().Spec.ClaimRef) ||
+		!reflect.DeepEqual(got.Spec.LVMSource, wantLVSource(true)) {
+		t.Fatalf("publish rewrote the record spec: claimRef %+v lvmSource %+v", got.Spec.ClaimRef, got.Spec.LVMSource)
+	}
+}
+
+// TestControllerPublishVolume_RetainedRebind_OldNodeStillPublished: while
+// the old consumer's single-node-writer publication is still recorded, a
+// publish of the rebound volume to another node is refused by the existing
+// access-mode rule before any grant.  This is the only overlap protection
+// pillar-csi provides: publications are keyed by node and initiator, not by
+// claim, so no same-node old/new claimant exclusion is asserted.
+func TestControllerPublishVolume_RetainedRebind_OldNodeStillPublished(t *testing.T) {
+	t.Parallel()
+	snw := csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER
+	old := exclPub(exclNode1, exclNQN(exclNode1), snw, false)
+	env := newPublishTestEnv(t, append(exclCSINodes(), retainedLVState(old))...)
+
+	_, err := env.srv.ControllerPublishVolume(context.Background(),
+		exclPublishReq(lvVolumeID, exclNode2, snw, false))
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("publish while the old node holds the volume: err = %v, want FailedPrecondition", err)
+	}
+	if env.agent.allowInitiatorCalls != 0 || len(env.agent.setLocalAttachCalls) != 0 {
+		t.Fatalf("refused publish granted access: allow=%d localAttach=%d",
+			env.agent.allowInitiatorCalls, len(env.agent.setLocalAttachCalls))
+	}
+	got, _, err := env.srv.loadPillarVolumeState(context.Background(), "pvc-retained")
+	if err != nil {
+		t.Fatalf("load PillarVolumeState: %v", err)
+	}
+	if !reflect.DeepEqual(got.Status.PublishedNodes, []v1alpha1.VolumePublication{old}) {
+		t.Fatalf("publishedNodes = %+v, want only the old publication", got.Status.PublishedNodes)
 	}
 }

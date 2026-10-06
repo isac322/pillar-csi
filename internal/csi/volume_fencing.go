@@ -674,7 +674,9 @@ func (s *ControllerServer) releasePublication(
 // such a volume owns nothing and there is nothing to delete.  A retry after
 // deleting was set returns the already committed generation.  A non-nil admit
 // is evaluated on the fresh object inside the same compare-and-swap before
-// deleting is first set; its error aborts the mark.
+// deleting is first set; its error aborts the mark.  A recovery record whose
+// transfer has not committed (spec.recovery set, no Ready yet) is always
+// refused: it is non-serving and non-deletable by definition.
 func (s *ControllerServer) markVolumeDeleting(
 	ctx context.Context,
 	pvName, volumeID string,
@@ -721,6 +723,10 @@ func markVolumeDeletingMutation(
 			codes.Aborted,
 			"volume %q no longer belongs to PillarVolumeState %q", volumeID, pvName)
 	}
+	err := refuseRecoveryPending(pvs, volumeID)
+	if err != nil {
+		return err
+	}
 	if pvs.Status.Deleting {
 		return errNoStatusChange
 	}
@@ -735,7 +741,7 @@ func markVolumeDeletingMutation(
 			volumeID, nodes)
 	}
 	if admit != nil {
-		err := admit(pvs)
+		err = admit(pvs)
 		if err != nil {
 			return err
 		}
@@ -825,10 +831,15 @@ func (s *ControllerServer) persistCreatePartial(
 		pvs.Status.Phase = v1alpha1.PillarVolumeStatePhaseCreatePartial
 		pvs.Status.BackendDevicePath = devicePath
 		pvs.Status.ExportSpec = exportSpec
-		if pvs.Spec.ImportedFrom != "" || pvs.Spec.FilesystemAdoption != nil {
-			// ImportVolume succeeded and durably bound this lifecycle.
-			// Imported zvols retain their destructive Delete semantics;
-			// adopted filesystems retire owned state and preserve the source.
+		if pvs.Spec.ImportedFrom != "" || pvs.Spec.LVMSource != nil || pvs.Spec.FilesystemAdoption != nil {
+			// ImportVolume succeeded and durably bound this lifecycle: the
+			// agent adopted the pre-existing zvol, LV or filesystem.  While
+			// this is unset the lifecycle cannot prove ownership and cleanup
+			// must retire the record without touching the source.  Imported
+			// zvols and Managed LVs retain destructive Delete semantics; a
+			// PreserveOriginal LV is released, never deleted (see
+			// releaseOnlyTeardown); adopted filesystems retire owned state and
+			// preserve the source.
 			pvs.Status.ImportAcquired = true
 		}
 		pvs.Status.PartialFailure = &v1alpha1.PartialFailureInfo{

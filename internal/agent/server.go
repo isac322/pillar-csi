@@ -22,6 +22,8 @@ package agent
 
 import (
 	"context"
+	"crypto"
+	"crypto/x509"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -139,6 +141,19 @@ type Server struct {
 	// lioFS performs the LIO configfs operations of the iSCSI handler.  nil
 	// selects lio.OSFS; tests inject an emulated kernel via WithLIOFS.
 	lioFS lio.FS
+
+	// recoverySigner signs RecoverySnapshot payloads this agent issues,
+	// using the agent's server TLS private key.  Nil disables recovery:
+	// InspectVolume reports no snapshot and every transfer is refused.
+	recoverySigner crypto.Signer
+	// recoveryCert is the server TLS leaf certificate actually configured
+	// for this agent (parsed from --tls-cert).  Its identity is embedded in
+	// signed snapshots and verified again when a transfer presents one.
+	recoveryCert *x509.Certificate
+	// recoveryAnchors are the operator public keys trusted to sign a
+	// RecoveryAuthorization (--recovery-trust-anchor).  Empty means no
+	// authorization can ever verify: every transfer fails closed.
+	recoveryAnchors []crypto.PublicKey
 }
 
 // Ensure Server satisfies the interface at compile time.

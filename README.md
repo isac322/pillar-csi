@@ -64,6 +64,8 @@ What works today:
 
 Not supported yet: SMB, snapshots, and clones. Block protocols reject `ReadWriteMany`; NFS is the only RWX protocol.
 
+LVM adoption and metadata-loss recovery are implemented on the current source revision but are not in a tagged release yet. Adoption keeps the LV and its data by default: deleting the PVC releases the LV, expansion is refused, and the node mounts the existing filesystem without formatting, checking or resizing it. Recovery requires an agent-signed observation, an operator-signed authorization, persistent agent state and verified owner-stop evidence; uncertain ownership fails closed. See [Adopt an existing LVM logical volume](https://pillar-csi.bhyoo.com/docs/how-to/import-lv/) and the [support matrix](https://pillar-csi.bhyoo.com/docs/reference/support-matrix/#adopting-existing-volumes).
+
 
 ## Compared with democratic-csi
 
@@ -539,7 +541,7 @@ A file record that still names a staging path is outside this lifecycle: publish
 
 ### Adoption restrictions and reuse
 
-- `pillar-csi.bhyoo.com/import-directory` and `pillar-csi.bhyoo.com/import-zfs-dataset` are PVC annotations, not StorageClass parameters. They are mutually exclusive with each other and with `pillar-csi.bhyoo.com/import-zvol`. The file driver does not dynamically create filesystems or import zvols.
+- `pillar-csi.bhyoo.com/import-directory` and `pillar-csi.bhyoo.com/import-zfs-dataset` are PVC annotations, not StorageClass parameters. They are mutually exclusive with each other and with `pillar-csi.bhyoo.com/import-zvol` and `pillar-csi.bhyoo.com/import-lv`. The file driver does not dynamically create filesystems or import zvols or LVs.
 - The file driver sets `fsGroupPolicy: None`. It does not recursively chown the source, initialize an fsGroup, or change existing DAC, ACLs or properties.
 - The controller and agent revalidate the recorded native identity, exact quota and backend layout on retries and later lifecycle operations. A replaced directory, changed UUID, inode, project ID, dataset GUID, quota or configured root is refused. Expansion is always refused.
 - Use `reclaimPolicy: Retain` when you need manual PV reuse. After the old PVC is gone, clear the retained PV's old claim reference and bind a new PVC to the same PV. Keep the PV's `files.pillar-csi.bhyoo.com` CSI driver and volume handle; do not reprovision the source:
@@ -613,6 +615,7 @@ Security notes:
 - [Install with Helm](https://pillar-csi.bhyoo.com/docs/how-to/install-helm/)
 - [Prepare a ZFS node](https://pillar-csi.bhyoo.com/docs/how-to/prepare-zfs-node/) and [prepare an LVM node](https://pillar-csi.bhyoo.com/docs/how-to/prepare-lvm-node/)
 - [Volume overrides](https://pillar-csi.bhyoo.com/docs/how-to/volume-overrides/) and [PVC annotations](https://pillar-csi.bhyoo.com/docs/reference/annotations/)
+- [Import a zvol](https://pillar-csi.bhyoo.com/docs/how-to/import-zvol/) and [adopt an existing LVM logical volume](https://pillar-csi.bhyoo.com/docs/how-to/import-lv/) (LV adoption is not in a release yet)
 - [Tune NVMe-oF](https://pillar-csi.bhyoo.com/docs/how-to/tune-nvmeof/) and [configure iSCSI](https://pillar-csi.bhyoo.com/docs/how-to/configure-iscsi/)
 - [Expand a volume](https://pillar-csi.bhyoo.com/docs/how-to/expand-volume/) and [node maintenance](https://pillar-csi.bhyoo.com/docs/how-to/node-maintenance/)
 - [CRD reference](https://pillar-csi.bhyoo.com/docs/reference/crd/) and [Helm values](https://pillar-csi.bhyoo.com/docs/reference/helm-values/)

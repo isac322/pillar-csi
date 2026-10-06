@@ -146,7 +146,7 @@ func validateFilePublishContext(req *csi.NodePublishVolumeRequest, fileCtx *file
 	volCtx, mount := req.GetVolumeContext(), req.GetVolumeCapability().GetMount()
 	if !fileCtx.local &&
 		(req.GetPublishContext()[PublishContextKeyAttachMode] == AttachModeLocal ||
-			volCtx[VolumeContextKeyFilesystemLocalAttach] == "true") {
+			volCtx[VolumeContextKeyFilesystemLocalAttach] == topologyValueTrue) {
 		return status.Errorf(codes.FailedPrecondition,
 			"%s", "NodePublishVolume: adopted filesystem local attach is missing its controller-owned proxy path")
 	}

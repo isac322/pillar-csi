@@ -171,6 +171,7 @@ type csiMockMounter struct {
 	mu sync.Mutex
 
 	formatAndMountFn   func(source, target, fsType string, options, formatOptions []string) error
+	mountExistingFn    func(source, target, fsType string, options []string) error
 	mountFn            func(source, target, fsType string, options []string) error
 	unmountFn          func(target string) error
 	checkHealthFn      func(target string) error
@@ -180,6 +181,7 @@ type csiMockMounter struct {
 
 	// call counters
 	formatAndMountCalls int
+	mountExistingCalls  int
 	mountCalls          int
 	unmountCalls        int
 
@@ -236,6 +238,26 @@ func (m *csiMockMounter) FormatAndMount(
 	m.mu.Unlock()
 	if fn != nil {
 		return fn(source, target, fsType, options, formatOptions)
+	}
+	m.mu.Lock()
+	m.mounted[target] = true
+	m.mountSource[target] = source
+	m.mu.Unlock()
+	return nil
+}
+
+// MountExisting models the preserve-original mount: it never formats, so
+// by default it records the mount like Mount does; mountExistingFn
+// overrides it for tests that model a refused signature.
+func (m *csiMockMounter) MountExisting(
+	_ context.Context, source, target, fsType string, options []string,
+) error {
+	m.mu.Lock()
+	m.mountExistingCalls++
+	fn := m.mountExistingFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(source, target, fsType, options)
 	}
 	m.mu.Lock()
 	m.mounted[target] = true

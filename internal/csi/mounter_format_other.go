@@ -29,3 +29,9 @@ import (
 func (*KubeMounter) FormatAndMount(_ context.Context, source, target, fsType string, _, _ []string) error {
 	return fmt.Errorf("FormatAndMount %s → %s as %s: unsupported on %s", source, target, fsType, runtime.GOOS)
 }
+
+// MountExisting is only implemented on Linux for the same reason as
+// FormatAndMount: probing the existing filesystem signature needs blkid.
+func (*KubeMounter) MountExisting(_ context.Context, source, target, fsType string, _ []string) error {
+	return fmt.Errorf("MountExisting %s → %s as %s: unsupported on %s", source, target, fsType, runtime.GOOS)
+}

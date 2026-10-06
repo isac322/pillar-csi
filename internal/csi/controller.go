@@ -735,6 +735,14 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 			}
 			telemetry.SetVolumeAttributes(ctx, volumeID)
 			setSpanAttributes(ctx, telemetry.KeyCreateResumedFrom.String(createResumedFromReady))
+			// The recorded import source stays authoritative on this path
+			// too: a claim re-annotated to another LV or policy, or a late
+			// import-lv, import-directory or import-zfs-dataset annotation,
+			// is refused instead of answered.
+			driftErr := s.refuseRecordedImportDrift(ctx, existingPV, scParams)
+			if driftErr != nil {
+				return nil, driftErr
+			}
 			resp, respErr := completedVolumeResponse(req, existingPV)
 			if respErr == nil {
 				topology, err := s.filesystemAccessibleTopology(ctx, existingPV, req.GetVolumeCapabilities())
@@ -785,6 +793,21 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	protocolID := resolved.Protocol.Kind()
 	agentBackendType := mapBackendType(string(backendID))
 	agentProtocolType := mapProtocolType(string(protocolID))
+
+	// ── Recovery record (spec.recovery) ─────────────────────────────────────
+	// An operator-created record that exists solely to receive an authorized
+	// ownership transfer refuses a claim carrying an import annotation: its
+	// intent already pins the adopted source, and letting the import
+	// resolution below run would add a second, ambiguous source of truth (and
+	// an orphaned backend reservation).
+	recoveryIntent := pvExists && existingPV.Spec.Recovery != nil
+	if recoveryIntent && (res.importLV != "" || res.importLVPolicy != "" || res.importDataset != "" ||
+		res.importDirectory != "" || res.importZFSDataset != "") {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"cannot recover volume for PillarVolumeState %q: the claim carries an "+
+				"import annotation but the record is a recovery record; the intent "+
+				"already pins the adopted source — use a plain claim", pvName)
+	}
 
 	// The filesystem settings are frozen into the PV VolumeContext and only
 	// applied when NodeStageVolume formats the volume; reject a setting that
@@ -842,6 +865,16 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		}
 	}
 
+	// ── LV import (PVC annotation pillar-csi.bhyoo.com/import-lv) ────────────
+	// The adopted LV's "<vg>/<lv>" is the agent volume ID, and its identity
+	// and policy are pinned in spec.lvmSource before any agent call; a retry
+	// replays the recorded source (see resolveLVImportRequest).
+	lvmSource, lvAgentVolID, err := s.resolveLVImportRequest(
+		ctx, pvName, pvExists, existingPV, resolved, res.importLV, res.importLVPolicy, targetName)
+	if err != nil {
+		return nil, err
+	}
+
 	// ── Build the agent-level and CSI volume IDs ─────────────────────────────
 	// Agent volume ID: "<pool>/<volume-name>", pool = ZFS pool or LVM VG.
 	// CSI volume ID:   "<agent>/<protocol>/<backend>/<agent-vol-id>".
@@ -852,6 +885,14 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		agentVolLeaf = importLeaf
 	}
 	agentVolID := resolved.Backend.PoolName() + "/" + agentVolLeaf
+	switch {
+	case lvmSource != nil:
+		agentVolID = lvAgentVolID
+	case recoveryIntent:
+		// The record pins the adopted LV: the agent volume ID is the
+		// source locator, exactly like an import-lv adoption.
+		agentVolID = lvmSourceLocator(existingPV.Spec.Recovery.Source)
+	}
 	volumeID := strings.Join(
 		[]string{targetName, string(protocolID), string(backendID), agentVolID},
 		"/",
@@ -886,6 +927,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		Resolved:           resolved,
 		ImportedFrom:       importedFrom,
 		FilesystemAdoption: adoption,
+		LVMSource:          lvmSource,
 	}
 	attempt := existingPV
 	if !pvExists {
@@ -912,22 +954,35 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	}
 	// An import reserves the backend volume before the PillarVolumeState
 	// exists: the reservation's deterministic name makes the claim atomic,
-	// so two concurrent imports of one zvol cannot both start a lifecycle.
-	// The reservation belongs to the lifecycle and outlives refused or
-	// failed attempts until the record is retired; finishDelete releases it.
-	if adoption != nil {
+	// so two concurrent imports of one zvol (or one LV, keyed by its UUID, or
+	// one filesystem, keyed by its canonical native resource) cannot both
+	// start a lifecycle.  The reservation belongs to the lifecycle and
+	// outlives refused or failed attempts until the record is retired;
+	// finishDelete releases it.
+	var importRsv backendReservation
+	var importSubject reservationSubject
+	switch {
+	case adoption != nil:
 		resourceID, resourceErr := filesystemResourceID(adoption)
 		if resourceErr != nil {
 			return nil, invalidFilesystemDescriptor(resourceErr)
 		}
-		err = s.reserveBackendVolume(ctx, pvName, targetName, string(backendID), agentVolID,
-			adoption.CanonicalSource, attempt.Spec.ClaimRef, resourceID)
-	} else if importedFrom != "" {
-		err = s.reserveBackendVolume(ctx, pvName, targetName, string(backendID), agentVolID,
-			importedFrom, attempt.Spec.ClaimRef)
+		importRsv = backendReservation{
+			agent: targetName, backendType: string(backendID), key: agentVolID, resourceID: resourceID,
+		}
+		importSubject = filesystemImportSubject(adoption.CanonicalSource)
+	case importedFrom != "":
+		importRsv = backendReservation{agent: targetName, backendType: string(backendID), key: agentVolID}
+		importSubject = reservationSubject{annotation: v1alpha1.AnnotationImportZvol, noun: "zvol", source: importedFrom}
+	case lvmSource != nil:
+		importRsv = reservationOf(attempt)
+		importSubject = lvImportSubject(lvmSource)
 	}
-	if err != nil {
-		return nil, err
+	if importRsv.key != "" {
+		err = s.reserveBackendVolume(ctx, pvName, importRsv, importSubject, attempt.Spec.ClaimRef)
+		if err != nil {
+			return nil, err
+		}
 	}
 	pvs, err := s.ensureVolumeState(ctx, pvName, spec)
 	if err != nil {
@@ -942,6 +997,21 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	err = refuseDeleting(pvs, volumeID)
 	if err != nil {
 		return nil, err
+	}
+	if recoveryIntent {
+		// The record's immutable spec is authoritative; the claim only
+		// supplies the export configuration.  Adopting commits the record's
+		// first status write (phase RecoveryPending, declared generation)
+		// and fills the write-once fields the controller can supply.
+		err = recoverySpecDrift(pvs, volumeID, agentVolID, targetName,
+			string(protocolID), string(backendID), agentBackendType)
+		if err != nil {
+			return nil, err
+		}
+		err = s.adoptRecoveryIntent(ctx, pvName, pvs.UID, resolved)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// The first attempt's resolution is authoritative for the backend and
 	// the node-side settings; only the export parameters below come from
@@ -999,6 +1069,16 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	devicePath := pvs.Status.BackendDevicePath
 	actualCapacity := capacityBytes
 	switch {
+	case recoveryIntent:
+		// Ownership transfer instead of a backend create: the record's
+		// intent, the persisted snapshot and the operator's authorization
+		// drive InspectVolume + TransferVolumeOwnership; the committed
+		// transfer records CreatePartial so a retry only re-exports.
+		devicePath, actualCapacity, err = s.recoverVolume(ctx, agentClient,
+			pvName, pvs, exportSpec, capacityBytes)
+		if err != nil {
+			return nil, err
+		}
 	case pvs.Status.Phase == v1alpha1.PillarVolumeStatePhaseCreatePartial &&
 		(devicePath != "" || (adoption != nil && pvs.Status.ImportAcquired)):
 		if pvs.Spec.CapacityBytes > 0 {
@@ -1018,8 +1098,9 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		if resourceErr != nil {
 			return nil, invalidFilesystemDescriptor(resourceErr)
 		}
-		err = s.verifyReservation(ctx, pvName, targetName, string(backendID), agentVolID,
-			adoption.CanonicalSource, pvs.Spec.ClaimRef, resourceID)
+		err = s.verifyReservation(ctx, pvName, backendReservation{
+			agent: targetName, backendType: string(backendID), key: agentVolID, resourceID: resourceID,
+		}, filesystemImportSubject(adoption.CanonicalSource), pvs.Spec.ClaimRef)
 		if err != nil {
 			return nil, err
 		}
@@ -1043,8 +1124,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		// the recorded source (ExpectedDataset pins the layout).  The
 		// reservation is re-read uncached right before the agent call: an
 		// attempt that lost it since reserving must not bind the zvol.
-		err = s.verifyReservation(
-			ctx, pvName, targetName, string(backendID), agentVolID, importedFrom, pvs.Spec.ClaimRef)
+		err = s.verifyReservation(ctx, pvName, importRsv, importSubject, pvs.Spec.ClaimRef)
 		if err != nil {
 			return nil, err
 		}
@@ -1055,6 +1135,22 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 				BackendType:     agentBackendType,
 				ExpectedDataset: importedFrom,
 			}, exportSpec)
+		if err != nil {
+			return nil, err
+		}
+	case pvs.Spec.LVMSource != nil:
+		// Adopt the LV pinned in the durable record (never the live
+		// annotation): the agent verifies the name and both UUIDs, refuses
+		// a layout, size or consumer it cannot adopt, and pins the policy
+		// in its mark.  Nothing is created, formatted or resized.  The
+		// UUID-keyed reservation is re-read right before the agent call.
+		err = s.verifyReservation(ctx, pvName, reservationOf(pvs), lvImportSubject(pvs.Spec.LVMSource),
+			pvs.Spec.ClaimRef)
+		if err != nil {
+			return nil, err
+		}
+		devicePath, actualCapacity, err = s.importBackend(ctx, agentClient, pvName, volumeID, pvs.UID,
+			lvImportRequest(agentVolID, capacityBytes, pvs.Spec.LVMSource), exportSpec)
 		if err != nil {
 			return nil, err
 		}
@@ -1139,6 +1235,7 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	if err != nil {
 		return nil, err
 	}
+	addVolumePreserveContext(pvs, volumeContext)
 	setSpanAttributes(ctx, telemetry.KeyCapacityAllocatedBytes.Int64(actualCapacity))
 
 	return &csi.CreateVolumeResponse{
@@ -1175,6 +1272,7 @@ func completedVolumeResponse(
 	if err != nil {
 		return nil, err
 	}
+	addVolumePreserveContext(pvs, volumeContext)
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
 			VolumeId:      pvs.Spec.VolumeID,
@@ -1389,8 +1487,8 @@ func (s *ControllerServer) DeleteVolume(
 	teardown := volumeTeardown{
 		volumeID: volumeID, pvName: pvName, uid: pvs.UID, targetName: targetName,
 		protocolType: mapProtocolType(parts[1]), backendType: mapBackendType(parts[2]),
-		agentVolID: parts[3], fence: fence, releaseOnly: importNeverAdopted(pvs),
-		filesystemAdoption: adoptionProto,
+		agentVolID: parts[3], fence: fence, releaseOnly: releaseOnlyTeardown(pvs),
+		reservationKey: reservationOf(pvs), filesystemAdoption: adoptionProto,
 	}
 	if pvs.Spec.FilesystemAdoption != nil {
 		teardown.targetName = pvs.Spec.AgentRef
@@ -1419,18 +1517,30 @@ type volumeTeardown struct {
 	filesystemAdoption *agentv1.FilesystemAdoption
 	// releaseOnly ends the lifecycle at the agent with ReleaseVolume instead
 	// of UnexportVolume + DeleteVolume: the volume was an import whose agent
-	// never durably adopted the backend resource, so the zvol is
-	// pre-existing data this driver never owned and must never destroy.
+	// never durably adopted the backend resource, or an LV adopted under
+	// PreserveOriginal, so its backend resource is pre-existing data this
+	// driver must never destroy (see releaseOnlyTeardown).
 	releaseOnly bool
+	// reservationKey is the reservation of the lifecycle (reservationKey of
+	// the marked record) that finishDelete releases.
+	reservationKey backendReservation
 }
 
-// importNeverAdopted reports whether pvs is an import lifecycle that never
-// durably recorded adoption: status.importAcquired is the explicit record
-// written after a successful agent.ImportVolume; backendDevicePath and
-// exportInfo are set only after the backend call succeeded, so states
-// written by older versions still count as adopted.
+// releaseOnlyTeardown reports whether the lifecycle pvs must end with
+// ReleaseVolume only: an import never durably adopted, or an LV adoption or
+// recovery whose policy preserves the original.  The agent then verifies
+// consumer absence before it retires the lifecycle, and refuses otherwise.
+func releaseOnlyTeardown(pvs *v1alpha1.PillarVolumeState) bool {
+	return importNeverAdopted(pvs) || volumePreservesOriginal(pvs)
+}
+
+// importNeverAdopted reports whether pvs is an import lifecycle (zvol, LV or
+// filesystem) that never durably recorded adoption: status.importAcquired is
+// the explicit record written after a successful agent.ImportVolume;
+// backendDevicePath and exportInfo are set only after the backend call
+// succeeded, so states written by older versions still count as adopted.
 func importNeverAdopted(pvs *v1alpha1.PillarVolumeState) bool {
-	if pvs.Spec.ImportedFrom == "" && pvs.Spec.FilesystemAdoption == nil {
+	if pvs.Spec.ImportedFrom == "" && pvs.Spec.LVMSource == nil && pvs.Spec.FilesystemAdoption == nil {
 		return false
 	}
 	return !pvs.Status.ImportAcquired &&
@@ -1438,13 +1548,20 @@ func importNeverAdopted(pvs *v1alpha1.PillarVolumeState) bool {
 }
 
 // refuseUnadoptedImport refuses a mutating operation op on an import
-// lifecycle that never durably adopted its zvol (see importNeverAdopted):
-// the zvol is still pre-existing data this driver does not own, so it must
-// never be resized or exposed to a node, and a fenced grant for the
-// lifecycle would bind the volume ID at the agent without an adoption.
+// lifecycle that never durably adopted its zvol or LV (see
+// importNeverAdopted): the source is still pre-existing data this driver
+// does not own, so it must never be resized or exposed to a node, and a
+// fenced grant for the lifecycle would bind the volume ID at the agent
+// without an adoption.
 func refuseUnadoptedImport(pvs *v1alpha1.PillarVolumeState, volumeID, op string) error {
 	if !importNeverAdopted(pvs) {
 		return nil
+	}
+	if src := pvs.Spec.LVMSource; src != nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"cannot %s volume %q: its import of LV %q was never adopted "+
+				"(status.importAcquired is unset); the pre-existing LV is left untouched",
+			op, volumeID, lvmSourceLocator(src))
 	}
 	return status.Errorf(codes.FailedPrecondition,
 		"cannot %s volume %q: its import of zvol %q was never adopted "+
@@ -1499,10 +1616,13 @@ func (s *ControllerServer) teardownMarkedVolume(ctx context.Context, t volumeTea
 	}
 	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
 
-	// An import that was never durably adopted owns no backend resource:
-	// ReleaseVolume removes this lifecycle's export if its import did land
-	// and retires the lifecycle at the agent, without touching the zvol.
-	// DeleteVolume would destroy a dataset this driver never owned.
+	// An import that was never durably adopted owns no backend resource, and
+	// an LV adopted under PreserveOriginal must outlive the lifecycle:
+	// ReleaseVolume removes this lifecycle's export if one landed and
+	// retires the lifecycle at the agent, which first verifies no local
+	// consumer remains, without touching the zvol or LV.  DeleteVolume
+	// would destroy data this driver must keep.  A refusal or an unreachable
+	// agent keeps the record (still marked deleting) and its reservation.
 	if t.releaseOnly {
 		_, releaseErr := agentClient.ReleaseVolume(ctx, &agentv1.ReleaseVolumeRequest{
 			VolumeId:           t.agentVolID,
@@ -1514,7 +1634,7 @@ func (s *ControllerServer) teardownMarkedVolume(ctx context.Context, t volumeTea
 			return status.Errorf(status.Code(releaseErr),
 				"agent ReleaseVolume(%q) failed: %v", t.agentVolID, releaseErr)
 		}
-		return s.finishDelete(ctx, t.volumeID, t.pvName, t.uid)
+		return s.finishDelete(ctx, t.volumeID, t.pvName, t.uid, t.reservationKey)
 	}
 
 	// ── Step 1: Remove the network export (idempotent) ────────────────────────
@@ -1538,7 +1658,7 @@ func (s *ControllerServer) teardownMarkedVolume(ctx context.Context, t volumeTea
 			return status.Errorf(status.Code(releaseErr),
 				"agent ReleaseVolume(%q) failed: %v", t.agentVolID, releaseErr)
 		}
-		return s.finishDelete(ctx, t.volumeID, t.pvName, t.uid)
+		return s.finishDelete(ctx, t.volumeID, t.pvName, t.uid, t.reservationKey)
 	}
 
 	// ── Step 2: Destroy the backend storage resource (idempotent) ─────────────
@@ -1555,7 +1675,7 @@ func (s *ControllerServer) teardownMarkedVolume(ctx context.Context, t volumeTea
 			"agent DeleteVolume(%q) failed: %v", t.agentVolID, deleteErr)
 	}
 
-	return s.finishDelete(ctx, t.volumeID, t.pvName, t.uid)
+	return s.finishDelete(ctx, t.volumeID, t.pvName, t.uid, t.reservationKey)
 }
 
 // finishDelete forgets the volume in memory and removes the lifecycle's
@@ -1565,13 +1685,14 @@ func (s *ControllerServer) finishDelete(
 	ctx context.Context,
 	volumeID, pvName string,
 	uid types.UID,
+	rsv backendReservation,
 ) error {
 	// Release the backend-volume reservation before the record goes away:
 	// once the PillarVolumeState is gone a leftover reservation is orphaned
-	// and would block a re-import of the same zvol until a contender
+	// and would block a re-import of the same zvol or LV until a contender
 	// reclaims it.  Releasing only while this lifecycle owns it keeps a
 	// reservation a contender already took.
-	err := s.releaseBackendVolume(ctx, pvName, volumeID, uid)
+	err := s.releaseBackendVolume(ctx, pvName, volumeID, uid, rsv)
 	if err != nil {
 		return err
 	}
@@ -2238,6 +2359,10 @@ func (s *ControllerServer) resolvePublishTarget(
 	}
 	setClaimAttributes(ctx, pvs.Spec.ClaimRef)
 	err = refuseUnadoptedImport(pvs, publishReq.volumeID, "publish")
+	if err != nil {
+		return publishVolumeTarget{}, err
+	}
+	err = refuseRecoveryPending(pvs, publishReq.volumeID)
 	if err != nil {
 		return publishVolumeTarget{}, err
 	}
@@ -3173,6 +3298,12 @@ func (s *ControllerServer) expandBackend(
 	pvName string,
 	pvs *v1alpha1.PillarVolumeState,
 ) (*csi.ControllerExpandVolumeResponse, error) {
+	// ── Refuse a preserving adoption or pending recovery before any agent
+	// dial or token ──────────────────────────────────────────────────────────
+	err := refuseEarlyExpand(pvs, expandReq.volumeID)
+	if err != nil {
+		return nil, err
+	}
 	target, err := s.getReadyAgent(ctx, expandReq.targetName)
 	if err != nil {
 		return nil, err
@@ -3185,6 +3316,8 @@ func (s *ControllerServer) expandBackend(
 			"failed to dial agent at %q: %v", agentAddr, err)
 	}
 	defer closeAgentConnection(ctx, closer)
+	// The request carries the lifecycle's current token: an expand of a
+	// deleted, deleting, or re-created volume is refused here or by the agent.
 	err = refuseUnadoptedImport(pvs, expandReq.volumeID, "expand")
 	if err != nil {
 		return nil, err
@@ -3215,6 +3348,18 @@ func (s *ControllerServer) expandBackend(
 		CapacityBytes:         actualBytes,
 		NodeExpansionRequired: v1alpha1.ProtocolID(expandReq.protocolType) != v1alpha1.ProtocolIDNFS,
 	}, nil
+}
+
+// refuseEarlyExpand refuses a preserving adoption or pending recovery before
+// ControllerExpandVolume resolves or dials any agent or reads a token.  A
+// PreserveOriginal LV is never resized, and a recovery record is non-serving
+// until its transfer commits.
+func refuseEarlyExpand(pvs *v1alpha1.PillarVolumeState, volumeID string) error {
+	err := refusePreservedExpand(pvs, volumeID)
+	if err != nil {
+		return err
+	}
+	return refuseRecoveryExpand(pvs, volumeID)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

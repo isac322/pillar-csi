@@ -42,12 +42,26 @@ import (
 // cause is fixed can still adopt it.  Once the mark is written it binds the
 // resource to this lifecycle, so a concurrent or delayed import/create for a
 // different lifecycle is rejected.
+//
+// BACKEND_TYPE_LVM imports require expected_lvm_source and go through the
+// backend's LVImporter only (never the name-only VolumeImporter); the
+// adopted identity and preserve_original are pinned into the mark, and a
+// later import naming another source or downgrading the policy is refused
+// before the backend runs.  Every other backend rejects
+// expected_lvm_source.
 func (s *Server) ImportVolume(
 	ctx context.Context,
 	req *agentv1.ImportVolumeRequest,
 ) (*agentv1.ImportVolumeResponse, error) {
 	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
 	if req.GetFilesystemAdoption() != nil {
+		// Filesystem adoptions never resolve through an LV; refuse the LVM
+		// identity here, before the filesystem path claims any ownership.
+		if req.GetExpectedLvmSource() != nil {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"ImportVolume %q: expected_lvm_source is only valid for BACKEND_TYPE_LVM, not %s",
+				req.GetVolumeId(), req.GetBackendType())
+		}
 		return s.importFilesystem(ctx, req)
 	}
 	b, err := s.backendForType(req.GetVolumeId(), req.GetBackendType())
@@ -58,6 +72,14 @@ func (s *Server) ImportVolume(
 	if err != nil {
 		return nil, err
 	}
+	if b.Type() == agentv1.BackendType_BACKEND_TYPE_LVM {
+		return s.importLV(ctx, req, b)
+	}
+	if req.GetExpectedLvmSource() != nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"ImportVolume %q: expected_lvm_source is only valid for BACKEND_TYPE_LVM, not %s",
+			req.GetVolumeId(), b.Type())
+	}
 	importer, ok := b.(backend.VolumeImporter)
 	if !ok {
 		return nil, status.Errorf(codes.Unimplemented,
@@ -67,10 +89,61 @@ func (s *Server) ImportVolume(
 		devicePath string
 		sizeBytes  int64
 	)
-	err = s.fencedImport(ctx, req.GetVolumeId(), req.GetFence(), func() error {
+	err = s.fencedImport(ctx, req.GetVolumeId(), req.GetFence(), nil, false, func() error {
 		var importErr error
 		devicePath, sizeBytes, importErr = importer.Import(
 			ctx, req.GetVolumeId(), req.GetCapacityBytes(), req.GetExpectedDataset())
+		return importVolumeError(importErr)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &agentv1.ImportVolumeResponse{
+		DevicePath:    devicePath,
+		CapacityBytes: sizeBytes,
+	}, nil
+}
+
+// importLV adopts an existing LV for an LVM ImportVolume request.  The
+// identity is mandatory and complete.  An absent preserve_original field
+// defaults to PreserveOriginal; only an explicit false opts in to Managed.
+// The pin is checked before ImportLV runs and written only after ImportLV
+// succeeded.
+func (s *Server) importLV(
+	ctx context.Context,
+	req *agentv1.ImportVolumeRequest,
+	b backend.VolumeBackend,
+) (*agentv1.ImportVolumeResponse, error) {
+	volumeID := req.GetVolumeId()
+	expected := req.GetExpectedLvmSource()
+	if expected == nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"ImportVolume %q: expected_lvm_source is required for BACKEND_TYPE_LVM", volumeID)
+	}
+	if expected.GetVolumeGroup() == "" || expected.GetLogicalVolume() == "" ||
+		expected.GetVolumeGroupUuid() == "" || expected.GetLogicalVolumeUuid() == "" {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"ImportVolume %q: expected_lvm_source needs volume_group, logical_volume, "+
+				"volume_group_uuid and logical_volume_uuid", volumeID)
+	}
+	if req.GetExpectedDataset() != "" {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"ImportVolume %q: expected_dataset is not valid for BACKEND_TYPE_LVM", volumeID)
+	}
+	importer, ok := b.(backend.LVImporter)
+	if !ok {
+		return nil, status.Errorf(codes.Unimplemented,
+			"ImportVolume %q: backend %s cannot adopt existing LVs", volumeID, b.Type())
+	}
+	src := markLVMSourceFromProto(expected)
+	var (
+		devicePath string
+		sizeBytes  int64
+	)
+	preserve := req.PreserveOriginal == nil || req.GetPreserveOriginal()
+	err := s.fencedImport(ctx, volumeID, req.GetFence(), src, preserve, func() error {
+		var importErr error
+		devicePath, sizeBytes, importErr = importer.ImportLV(ctx, volumeID, req.GetCapacityBytes(), src.identity())
 		return importVolumeError(importErr)
 	})
 	if err != nil {

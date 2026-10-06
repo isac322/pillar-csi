@@ -11,7 +11,7 @@
 - 실제 커널 모듈, 실제 ZFS, 실제 NVMe-oF 장치를 요구하는 테스트는
   별도로 표시하고 현실적인 인프라 요구사항을 함께 기술한다.
 
--**총 테스트 케이스: 464** (등록 spec 464개; strict TC 라벨 455개: 기존 default-profile 413개 + dedicated NFS lane의 E37 13개와 E71 29개; 라벨 없는 teardown 보장 9개 포함. 전체 문서 inventory는 **758개**이며 비기본 E33·E36·F27–F31 및 reference 항목을 포함하며 strict gate에서 별도로 보고한다. 등록 수는 통과 결과를 의미하지 않는다.)
+-**총 테스트 케이스: 464** (등록 spec 464개; strict TC 라벨 455개: 기존 default-profile 413개 + dedicated NFS lane의 E37 13개와 E71 29개; 라벨 없는 teardown 보장 9개 포함. 전체 문서 inventory는 **783개**이며 비기본 E33·E36·E38·E39·F27–F31 및 reference 항목을 포함하며 strict gate에서 별도로 보고한다. 등록 수는 통과 결과를 의미하지 않는다.)
 
 ---
 
@@ -140,6 +140,10 @@
   - [E36.1: import-zvol 어노테이션으로 기존 zvol 채택](#e361-import-zvol-어노테이션으로-기존-zvol-채택)
 - [E37: ZFS dataset + NFS 멀티노드 RWX E2E](#e37-zfs-dataset--nfs-멀티노드-rwx-e2e)
   - [E37.1: 실제 dataset/NFS 프로비저닝](#e371-실제-datasetnfs-프로비저닝)
+- [E38: LVM import-lv — 기존 LV 채택·보존·재바인딩 (Kind 클러스터 E2E)](#e38-lvm-import-lv--기존-lv-채택보존재바인딩-kind-클러스터-e2e)
+  - [E38.1: import-lv 어노테이션으로 기존 LVM LV 채택](#e381-import-lv-어노테이션으로-기존-lvm-lv-채택)
+- [E39: 메타데이터 유실 후 서명 기반 LVM 볼륨 소유권 복구 (Kind 클러스터 E2E)](#e39-메타데이터-유실-후-서명-기반-lvm-볼륨-소유권-복구-kind-클러스터-e2e)
+  - [E39.1: 에이전트 서명 스냅샷 + 운영자 승인으로 유실된 import-lv 볼륨 복구](#e391-에이전트-서명-스냅샷--운영자-승인으로-유실된-import-lv-볼륨-복구)
 - [E71: 기존 filesystem 채택 — native quota와 파일 CSI 소비자](#e71-기존-filesystem-채택--native-quota와-파일-csi-소비자)
 
 ### 카테고리 3 — 완전 E2E / 수동 스테이징 테스트 (유형 F) ❌
@@ -5389,6 +5393,141 @@ ZFS child dataset, exportfs 항목, node mount 및 publication 상태가 모두 
 |--------|---------|----------|--------|
 | E37.1 | 실제 dataset/NFS 프로비저닝·RWX·ACL·quota·ROX·squash·restart·invalid·cleanup·same-pool zvol 공존 | 13개 | 멀티 노드 Kind + 실제 ZFS + kernel NFS |
 | **합계** | | **13개** | PR CI dedicated internal lane |
+
+---
+
+## E38: LVM import-lv — 기존 LV 채택·보존·재바인딩 (Kind 클러스터 E2E)
+
+**테스트 유형:** D (Kind 클러스터 + 실제 LVM VG/thin pool + NVMe-oF) ⚠️ 멀티 노드 Kind + Helm 설치 이미지 필요
+
+> PVC 어노테이션 `pillar-csi.bhyoo.com/import-lv: <vg>/<lv>:<vg_uuid>:<lv_uuid>`로 pillar-csi 밖에서
+> 만든 linear·thin LV를 기본 정책 PreserveOriginal로 **채택**하고, 원본 UUID·크기·thin pool·데이터가
+> 채택·해제·재바인딩 내내 보존되는지 실제 agent RPC, Kubernetes 객체, 원격 노드 Pod의 sha256으로
+> 검증한다. 잘못된 UUID·사용 중·다른 lifecycle 소유·빈(blank) LV는 거부되거나 포맷되지 않으며 LV
+> 바이트와 agent fence mark가 바뀌지 않는다. InspectVolume은 읽기 전용 관찰이며, 테스트는 그 fence
+> 기록을 살아 있는 PillarVolumeState와 대조해 claimed/absent/unknown으로 분류한다(agent 단독으로
+> 소유를 추론하지 않음). Retain PV 재바인딩은 문서화된 retained-PV 재바인딩 런북의 정지(quiescence) 절차만 사용한다:
+> 살아 있는 workload·VolumeAttachment·publication·경쟁 import가 있으면 bind 전에 중단하고, 자동
+> 동일 노드 claimant 감지나 새 binder는 없다.
+
+**인프라 요구사항:**
+
+| 항목 | 버전/사양 | 비고 |
+|------|----------|------|
+| Kind | v0.23+ | Ready·스케줄 가능한 노드 2개 이상 (pillar-csi node 플러그인 실행) |
+| pillar-csi | Helm 설치 (controller/agent/node 이미지는 검증 대상 빌드) | `agent.backends[].lvm` 두 개: thinPool 없는 linear VG 1개 + `thinPool`이 있는 VG 1개 (PillarAgent `status.discoveredPools`에서 탐색); `mtls.enabled=false`(기본값) |
+| `PILLAR_E2E_BACKEND_CONTAINER` | 환경 변수 | 스토리지 노드 Kind 컨테이너 이름 (= 노드 이름) |
+| 스토리지 노드 도구 | `lvm2`, `mkfs.ext4`, `mount`, `mountpoint`, `blkid`, `dd`, `sha256sum`, `stat`, `find`, `awk` | `/dev/<vg>/<lv>` 블록 디바이스가 보여야 함 (host `/dev`) |
+| 호스트 커널 | `dm_mod`, `dm_thin_pool`, `nvmet`, `nvmet-tcp`, `nvme-tcp` | |
+
+**빌드 태그:** `//go:build e2e && e2e_helm`
+
+```bash
+go test ./test/e2e/ -tags=e2e,e2e_helm -v --ginkgo.label-filter="e38"
+```
+
+테스트는 스토리지 노드의 PillarAgent(없으면 생성), PillarStore 2개(linear VG, thin VG+thinPool),
+PillarProtocol(nvmeof-tcp), PillarStorageClass 3개(Delete+`allowVolumeExpansion`, Retain, thin Delete;
+모두 `ext4`)와 LV 6개(linear, retain, wrong, busy, blank, thin)를 만든다. 전제 조건 누락은 Skip이 아닌
+Fail이다. 종료 시 controller replica 복구, Pod·PVC 삭제, 남은 PV는 reclaim을 Delete로 바꿔 보존 해제한
+뒤 PV·PillarVolumeState 제거를 확인하고, busy 마운트 해제, 만든 LV 삭제, CR과 네임스페이스를 지운다.
+agent의 ended fence mark는 실행마다 고유한 LV 이름으로 남는다.
+
+### E38.1 import-lv 어노테이션으로 기존 LVM LV 채택
+
+**위치:** `test/e2e/tc_e38_lvm_adoption_e2e_test.go`
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E38.1 | `It("[TC-E38.1] the Helm-installed agent inspects an unclaimed LV read-only with its real filesystem signature")` | Helm 설치 산출물 증명 + 미채택 LV 읽기 전용 관찰 | CR 스택 Ready; linear LV ext4 포맷·파일 기록 | Helm workload·agent Pod 조회; 스토리지 스냅샷 전후로 InspectVolume 2회 | controller/agent/node가 한 Helm release; identity·segtype·size = lvs; fs ext4·UUID = blkid, probe state `detected`; exclusive `free`; consumer·export·fence 없음 → `absent`; VG seqno·LV attr·mount·holder·mark 불변 | `Helm`, `Agent`, `LVM`, `Inspect` |
+| E38.2 | `It("[TC-E38.2] an import-lv PVC adopts a pre-created linear LV under PreserveOriginal without changing its UUID or size")` | linear LV 채택 | E38.1 | import-lv PVC(32Mi) 생성; PV·PVS·lvs 조회 | PVC Bound; PV 용량 = LV 크기(64Mi); volumeAttributes `preserve-original=true`; `spec.lvmSource` = VG/LV/UUID/PreserveOriginal; LV identity 불변 | `CSI-C`, `Agent`, `LVM`, `VolCRD` |
+| E38.3 | `It("[TC-E38.3] a Pod on a remote node reads the data written before the linear import")` | 채택 전 데이터 원격 읽기 | E38.2 Bound | 원격 노드 Pod 실행; `sha256sum` | sha256 = 채택 전 값 (재포맷 없음) | `CSI-C`, `CSI-N`, `NVMeF`, `Mnt` |
+| E38.4 | `It("[TC-E38.4] InspectVolume correlates the adopted LV with its surviving PillarVolumeState and changes no metadata")` | 채택 LV 관찰·대조 | E38.3 Pod Running | 스냅샷 전후 InspectVolume 2회; PVS 대조 | fence uid = PVS UID, 미종료, PreserveOriginal, lvmSource UUID 일치; 자체 export 1개; `claimed:<pv>`; 메타데이터 불변 | `Agent`, `Inspect`, `VolCRD` |
+| E38.5 | `It("[TC-E38.5] expanding a PreserveOriginal claim is refused and the LV keeps its size")` | 보존 채택 확장 거부 | E38.2 Bound | PVC 요청 128Mi로 patch | `VolumeResizeFailed` 이벤트 reason 기록(메시지는 진단용); PVC status 용량·PV 용량·LV identity 불변 | `CSI-C`, `Resizer`, `LVM` |
+| E38.6 | `It("[TC-E38.6] a second claim on an LV another lifecycle owns is refused and the fence is unchanged")` | 다른 lifecycle 소유 LV 재채택 거부 | E38.2 채택 | 새 lifecycle 토큰으로 agent ImportVolume; 같은 LV로 두 번째 import PVC 생성 | ImportVolume `FailedPrecondition`; `ProvisioningFailed` reason·Pending·미바인딩; fence uid·generation·mark 파일 불변; 기존 claim 유지 | `CSI-C`, `Agent` |
+| E38.7 | `It("[TC-E38.7] an import naming a wrong LV UUID is refused and the LV and fences are untouched")` | 잘못된 LV UUID 거부 | 유휴 ext4 LV | 실제 VG UUID + 가짜 LV UUID로 agent ImportVolume과 import PVC | ImportVolume `FailedPrecondition`; `ProvisioningFailed` reason·Pending; 디바이스 전체 sha256·스토리지 스냅샷·LV identity 불변; fence·export 없음 | `CSI-C`, `Agent`, `LVM` |
+| E38.8 | `It("[TC-E38.8] an LV mounted on the storage node is refused as in use and reported busy without a claim")` | 사용 중 LV 거부 | 스토리지 노드에 마운트된 LV | InspectVolume; agent ImportVolume; import PVC 생성 | exclusive claim `busy`, `absent`; ImportVolume `FailedPrecondition`; `ProvisioningFailed` reason·Pending; 마운트 유지; 스토리지 스냅샷(seqno·attr·mount·holder·mark)·LV identity 불변. agent는 노드 mount namespace를 공유하지 않으므로 `mount` consumer 항목은 요구하지 않음 | `CSI-C`, `Agent`, `Inspect` |
+| E38.9 | `It("[TC-E38.9] a blank LV under PreserveOriginal is never formatted: staging is refused and the device bytes are unchanged")` | 빈 LV 포맷 금지 | 시그니처 없는 LV | import PVC Bound; Pod 실행; Pod·PVC 삭제 | Pod `FailedMount` reason; Pod 미실행; 해제 후 blkid 시그니처 없음, 디바이스 sha256·LV identity 불변 | `CSI-N`, `Mnt`, `LVM` |
+| E38.10 | `It("[TC-E38.10] deleting a PreserveOriginal claim releases the lifecycle and keeps the LV and its data")` | 보존 Delete = 해제 | E38.3 | Pod·PVC 삭제; PV·PVS 제거 대기; InspectVolume; 읽기 전용 마운트 | LV identity 유지; export·consumer 없음, `free`; fence ended·PreserveOriginal·source 유지 → `unknown`; 데이터 sha256 동일 | `CSI-C`, `Agent`, `LVM`, `Inspect` |
+| E38.11 | `It("[TC-E38.11] stale and new-lifecycle Delete, Expand and Create on the released LV cannot destroy or resize it")` | 지연·새 lifecycle 파괴 호출 차단 | E38.10 해제 (old UID가 EndedUIDs에 포함) | 종료 lifecycle 토큰 DeleteVolume/ExpandVolume; 새 토큰 DeleteVolume/ExpandVolume/CreateVolume | 모두 `FailedPrecondition` (old UID는 retired); 스토리지 스냅샷(mark 바이트 포함)·LV identity 불변 | `Agent`, `Fence`, `LVM` |
+| E38.12 | `It("[TC-E38.12] a pre-created thin LV is adopted, read remotely and released with its UUID, size and thin pool intact")` | thin LV 채택·해제 | thin VG의 thin LV ext4 포맷·기록 | thin SC import PVC; InspectVolume; 원격 Pod; Pod·PVC 삭제 | PV 용량 = LV 크기; segtype `thin`·pool 일치; sha256 동일; 해제 후 thin LV·thin pool identity와 데이터 유지 | `CSI-C`, `CSI-N`, `Agent`, `LVM-thin` |
+| E38.13 | `It("[TC-E38.13] the rebind preflight refuses while the Retain claim's workload is live and nothing is mutated")` | 살아 있는 workload 중 런북 중단 | Retain SC | Retain import PVC + Pod; 런북 1-4·7단계 검사 | `pv-phase=Bound`, live claim, VolumeAttachment, publication, export blocker; PV claimRef·resourceVersion 불변 | `CSI-C`, `Runbook` |
+| E38.14 | `It("[TC-E38.14] the terminated Retain workload is unpublished and unstaged, the PV is Released and a competing import is refused")` | 기존 workload 종료·Released·경쟁 import 거부 | E38.13 | Pod 삭제; VA·publication·노드 마운트 소멸 대기; PVC 삭제; 경쟁 lifecycle agent ImportVolume과 import PVC | VA·publication·publish/staging 마운트 없음; PV Released; 같은 PVS 유지, deleting 아님; LV 불변; 1-4단계 통과; ImportVolume `FailedPrecondition`; `ProvisioningFailed` reason·Pending; claimRef·PV resourceVersion 불변, fence 유지 | `CSI-C`, `CSI-N`, `Runbook` |
+| E38.15 | `It("[TC-E38.15] under controller quiescence a fenced UnexportVolume leaves the active lifecycle owning an idle LV")` | 정지 + fenced unexport | E38.14 | controller 0 replica; PVS UID·publicationGeneration으로 UnexportVolume; InspectVolume | 7단계 blocker 없음(같은 활성 lifecycle, pinned source, export·consumer 없음, `free`); `claimed:<pv>`; 1-4단계 통과 | `Agent`, `Fence`, `Inspect`, `Runbook` |
+| E38.16 | `It("[TC-E38.16] the same retained PV rebinds to a static claim without a new PillarVolumeState and serves the same data")` | 같은 PV 정적 재바인딩 | E38.15 | stale resourceVersion replace; 현재 resourceVersion replace; volumeName PVC; controller 복구; 다른 노드 Pod | stale replace 실패·PV resourceVersion/claimRef 불변; 새 PVC가 같은 PV에 Bound; provisioner 어노테이션 없음; 같은 volumeHandle; PVS 1개·같은 UID; resync가 export 복구; sha256 동일 | `CSI-C`, `CSI-N`, `Runbook`, `VolCRD` |
+| E38.17 | `It("[TC-E38.17] releasing the rebound PV under Delete ends the lifecycle and keeps the LV")` | 재바인딩 PV 보존 해제 | E38.16 | Pod 삭제; reclaim Delete patch; PVC 삭제 | PV·PVS 제거; LV identity·데이터 유지; fence 같은 UID로 ended; export 없음 | `CSI-C`, `Agent`, `LVM`, `Cleanup` |
+
+### E38 커버리지 요약
+
+| 소섹션 | 검증 내용 | 테스트 수 | 인프라 |
+|--------|---------|----------|--------|
+| E38.1 | Helm 산출물·읽기 전용 Inspect·linear/thin 채택·원격 데이터·확장/재채택/UUID/사용 중/빈 LV 거부·보존 해제·stale 파괴 차단·Retain 런북 재바인딩 | 17개 | 멀티 노드 Kind + LVM(linear+thin) + NVMe-oF |
+| **합계** | | **17개** | ⚠️ |
+
+---
+
+## E39: 메타데이터 유실 후 서명 기반 LVM 볼륨 소유권 복구 (Kind 클러스터 E2E)
+
+**테스트 유형:** D (Kind 클러스터 + 실제 LVM VG + NVMe-oF + mTLS) ⚠️ 전용 Serial lane, 공유 Helm release를 바꾼다
+
+> import-lv로 채택된 LV의 PVC·PV·PillarVolumeState가 유실되고 agent fence mark와 LV만 남은 상황에서,
+> 권한은 두 서명뿐이다: agent가 자신의 서버 TLS 키로 서명한 `RecoverySnapshot`(관찰한 volume ID, LV
+> UUID/source, 옛 UID+정확한 generation, 보존 정책, export·consumer 관찰, agent identity, issued_at)과,
+> 운영자가 `--recovery-trust-anchor` 공개키에 대응하는 개인키로 그 스냅샷 digest에 서명한
+> `RecoveryAuthorization`(옛 UID/generation/source, 새 UID+generation, 보존 정책, 만료). mTLS 호출자 신원,
+> CA 개인키, 별도 PKI 서비스는 권한이 아니다. 테스트는 임시 mTLS 인증서와 임시 운영자 키를 만들고
+> release를 mTLS + trust anchor로 upgrade한 뒤 끝에 원래 revision으로 rollback한다. 실제 runner에서
+> 아직 실행하지 않았다 — main real smoke 전까지 **미실행(blocked)** 이며 통과를 주장하지 않는다.
+
+**인프라 요구사항:**
+
+| 항목 | 버전/사양 | 비고 |
+|------|----------|------|
+| Kind | v0.23+ | 스토리지 노드 외에 Ready·스케줄 가능한 worker 1개 이상 |
+| pillar-csi | Helm 설치 release 1개, `mtls.enabled=false`로 설치 | `agent.backends[].lvm`에 thinPool 없는 linear VG; `pillar-agent-mtls`·`pillar-controller-mtls` Secret이 없어야 함(덮어쓰지 않음); `agent.extraArgs`에 기존 `--recovery-trust-anchor` 없음 |
+| `helm` | v3.10+ (`--set-json`) | release upgrade/rollback |
+| `PILLAR_E2E_BACKEND_CONTAINER` | 환경 변수 | 스토리지 노드 Kind 컨테이너 이름 |
+| 스토리지 노드 도구 | E38과 동일 + `base64` | |
+| 호스트 커널 | `dm_mod`, `nvmet`, `nvmet-tcp`, `nvme-tcp` | |
+
+**빌드 태그:** `//go:build e2e && e2e_helm`
+
+```bash
+go test ./test/e2e/ -tags=e2e,e2e_helm -v --ginkgo.label-filter="e39"
+```
+
+전제 조건 누락은 Skip이 아닌 Fail이다. 다른 spec과 동시에 돌리지 않는다(`Serial`). 임시 인증서는
+1시간 유효하므로 lane은 그 안에 끝나야 한다. 정리 순서: controller replica 복구, Pod 삭제, claim 없는
+RecoveryPending 레코드 직접 삭제, 복구된 PV는 reclaim Delete로 바꾸고 PVC 삭제(CSI release) 후 PV·PVS 소멸을
+최대 4분 대기. 이어서 이 실행 범위(테스트 네임스페이스, 테스트 StorageClass, 이 agent의 테스트 LV·이 실행이 만든
+레코드 이름·네임스페이스 claim을 가리키는 PillarVolumeState, volumeHandle이 테스트 LV인 PV)의 남은 PVC→PV→PVS를
+delete 후 finalizer 제거로 정리하고 목록이 빌 때까지 최대 3분 반복한다. cleanup claim에 빈 볼륨으로 프로비저닝된
+`<vg>/pvc-*` LV도 지운다. 강제 정리한 객체는 report entry로 남긴다. 그 뒤 LV 삭제, PillarStorageClass 차단 객체가
+없음을 확인한 뒤
+CR 삭제(실패 시 Ready condition 메시지 포함), 네임스페이스 삭제, release rollback, mTLS Secret 삭제,
+모든 노드의 trust anchor 파일 삭제. 각 단계 오류는 모아서 마지막에 보고하므로 앞 단계 실패가 뒤 정리를 막지 않는다.
+
+### E39.1 에이전트 서명 스냅샷 + 운영자 승인으로 유실된 import-lv 볼륨 복구
+
+**위치:** `test/e2e/tc_e39_metadata_recovery_e2e_test.go`
+
+| ID | 테스트 함수 | 설명 | 사전 조건 | 단계 | 기대 결과 | 커버리지 |
+|----|------------|------|----------|------|----------|---------|
+| E39.1 | `It("[TC-E39.1] an adopted LV served over mTLS gets a healthy lifecycle and a remote workload reads its data")` | 정상 채택 lifecycle | release mTLS + trust anchor; Retain SC, `acl: true` protocol; ext4 LV + proof 파일 | import-lv PVC; 원격 worker Pod | PVC Bound; PVS `lvmSource` = LV UUID, PreserveOriginal; Pod sha256 = proof | `Helm`, `mTLS`, `LVM`, `CSI-N` |
+| E39.2 | `It("[TC-E39.2] the agent signs snapshots only for verified mTLS callers and refuses to transfer a live, ACL-granted volume")` | 전송 계층·서명 스냅샷·live export 거부 | E39.1 Pod 실행 중 | plaintext InspectVolume; 클라이언트 인증서 없는 TLS Transfer; mTLS InspectVolume; 유효 서명 grant로 Transfer | plaintext·무인증서 호출은 `Unavailable`/`Unauthenticated`; 스냅샷은 agent 서버 인증서로 검증, identity `pillar-agent`, 옛 UID·generation = mark, export ACL 활성·호스트 부여; Transfer `FailedPrecondition`; mark 불변 | `mTLS`, `Agent`, `Recovery` |
+| E39.3 | `It("[TC-E39.3] losing the PVC, PV and PillarVolumeState keeps the LV bytes and the old lifecycle's fence mark")` | 메타데이터 유실 시뮬레이션 | E39.2 | Pod 삭제·unpublish 대기; controller 0 replica; 옛 fence로 UnexportVolume; PVC 삭제, PV·PVS finalizer 제거 후 삭제 | PVS 없음; LV UUID·디바이스 sha256·mark 파일 불변; fence = 옛 UID·같은 generation·미종료; export·consumer 없음, claim `free` | `Fence`, `LVM`, `Recovery` |
+| E39.4 | `It("[TC-E39.4] missing, untrusted, expired, tampered and mismatched grants refuse without touching the LV or the mark")` | grant 거부 매트릭스 | E39.3 | 새 스냅샷; 12가지 잘못된 요청으로 Transfer | 스냅샷/grant 없음·preserve 미지정·다른 스냅샷 digest·다른 옛 generation/UID → `InvalidArgument`; 신뢰하지 않는 키·서명 변조·payload 위조 → `Unauthenticated`; 만료·미래·24h 초과 창 → `FailedPrecondition`; 매번 mark 불변; 디바이스 sha256 불변 | `Recovery`, `Fence` |
+| E39.5 | `It("[TC-E39.5] a local consumer on the storage node refuses a valid grant until it stops")` | live consumer 거부 | E39.4 | 스토리지 노드에서 LV ro 마운트; 유휴 시점 스냅샷 + 유효 grant로 Transfer; 언마운트 | `FailedPrecondition`; mark 불변; `exclusiveClaim` `busy` (O_EXCL 실패가 구형 initiator 미정지의 증거 — 마운트는 agent mount namespace에 보이지 않아 `consumers`는 비어 있을 수 있음, E38.8과 동일 경계); 언마운트 후 `free` | `Recovery`, `LVM` |
+| E39.6 | `It("[TC-E39.6] the operator workflow commits the exact transfer and a never-claimed RecoveryPending record is neither reaped nor served")` | 운영자 workflow 정확 전송 | E39.5, controller 0 replica | 일반 PVC; `pvc-<claimUID>` 복구 PVS + claim 없는 RecoveryPending 레코드 생성; mTLS 새 스냅샷에 grant 서명; latch patch(`newVolumeUID`, `authorization`, `authorizationDigest`, `recovery-snapshot` 어노테이션); controller 복구 | PVC가 레코드 이름의 PV에 Bound; PVS `Ready`; mark = 새 UID, generation ≥ newGeneration, 옛 UID retired, PreserveOriginal, 같은 LV; volumeHandle = 유실 전과 동일; `preserve-original=true`; claim 없는 레코드는 90초 창 동안 10초마다 관찰(각 관찰의 API 읽기 실패는 최대 30초 재시도)해 매번 존재·비 Ready·publication 없음 | `Runbook`, `CSI-C`, `Recovery`, `Reaper` |
+| E39.7 | `It("[TC-E39.7] a replacement workload on a remote node reads the original data from the recovered volume")` | 복구 후 데이터 | E39.6 | 원격 worker Pod | sha256 = 원본 proof; LV UUID·크기 불변 | `CSI-N`, `NVMeF`, `LVM` |
+| E39.8 | `It("[TC-E39.8] after the commit an exact replay is idempotent while stale, re-targeted, re-signed and retired-lifecycle requests refuse")` | 재생·stale·다른 목적지 | E39.7 | 커밋된 요청 재전송; 다른 목적지 grant; 같은 목적지 다른 grant; 유실 전 스냅샷; 옛 fence로 DeleteVolume | 재전송 `ALREADY_COMMITTED` + 같은 grant digest; 나머지 모두 `FailedPrecondition`; mark·LV 불변; claim 없는 레코드 여전히 비 Ready | `Recovery`, `Fence` |
+
+### E39 커버리지 요약
+
+| 소섹션 | 검증 내용 | 테스트 수 | 인프라 |
+|--------|---------|----------|--------|
+| E39.1 | mTLS 전송 거부·서명 스냅샷·live export/consumer 거부·grant 거부 매트릭스·메타데이터 유실 보존·운영자 workflow 정확 전송·RecoveryPending 비 reap/비 serving·재생 멱등·stale/다른 목적지 거부 | 8개 | 멀티 노드 Kind + LVM(linear) + NVMe-oF + mTLS (미실행, blocked) |
+| **합계** | | **8개** | ⚠️ |
 
 ---
 

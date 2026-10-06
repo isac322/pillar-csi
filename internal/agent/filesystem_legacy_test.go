@@ -47,7 +47,7 @@ func TestLegacyRevokeDoesNotClaimFilesystemOrRequireNativeInspection(t *testing.
 		admitted = false
 		return nil
 	}
-	if err := s.fencedBackend(ctx, "pool/data", token("old-owner", 2), fenceRevoke, native, withdraw); err != nil {
+	if err := s.fencedChecked(ctx, "pool/data", token("old-owner", 2), fenceRevoke, native, nil, withdraw); err != nil {
 		t.Fatalf("unhealthy source prevented access withdrawal: %v", err)
 	}
 	if admitted {

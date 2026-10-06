@@ -262,8 +262,9 @@ func TestFilesystemReservation_AliasPoolsHaveOneAtomicOwner(t *testing.T) {
 	for _, pool := range []string{"files-a", "files-b"} {
 		workers.Go(func() {
 			<-start
-			results <- env.srv.reserveBackendVolume(context.Background(), "pv-"+pool, "storage-node-1", "directory",
-				pool+"/"+leaf, a.CanonicalSource, claim, native)
+			results <- env.srv.reserveBackendVolume(context.Background(), "pv-"+pool, backendReservation{
+				agent: "storage-node-1", backendType: "directory", key: pool + "/" + leaf, resourceID: native,
+			}, filesystemImportSubject(a.CanonicalSource), claim)
 		})
 	}
 	close(start)
@@ -302,7 +303,8 @@ func TestFilesystemReservation_AliasPoolsHaveOneAtomicOwner(t *testing.T) {
 	if err := env.srv.k8sClient.Create(context.Background(), pvs); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.srv.releaseBackendVolume(context.Background(), pvs.Name, volumeID, pvs.UID); err != nil {
+	if err := env.srv.releaseBackendVolume(context.Background(), pvs.Name, volumeID, pvs.UID,
+		reservationOf(pvs)); err != nil {
 		t.Fatal(err)
 	}
 	got := &v1alpha1.PillarVolumeReservation{}
@@ -310,8 +312,9 @@ func TestFilesystemReservation_AliasPoolsHaveOneAtomicOwner(t *testing.T) {
 		t.Fatal("canonical reservation was not released")
 	}
 	// The same identity on another agent is not the same backing resource.
-	if err := env.srv.reserveBackendVolume(context.Background(), "pv-other", "storage-node-2", "directory",
-		"files-a/leaf", a.CanonicalSource, nil, native); err != nil {
+	if err := env.srv.reserveBackendVolume(context.Background(), "pv-other", backendReservation{
+		agent: "storage-node-2", backendType: "directory", key: "files-a/leaf", resourceID: native,
+	}, filesystemImportSubject(a.CanonicalSource), nil); err != nil {
 		t.Fatal(err)
 	}
 }
