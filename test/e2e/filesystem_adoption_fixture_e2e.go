@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -423,20 +424,162 @@ func (f *FilesystemAdoptionFixture) WithQuotaDrift(ctx context.Context) (func() 
 		return err
 	}, nil
 }
+
+// identityDriftCheck holds the shell functions shared by WithIdentityDrift
+// and its restore. Predicates never rely on errexit (it is suspended inside
+// an if condition): every property read propagates its own failure and a
+// GUID must be a non-empty decimal number before it is trusted.
+//
+// original: dataset $1 carries the original GUID ($guid), keeps the original
+// explicit mountpoint ($mp, source local) and is mounted. The original's
+// mountpoint is never changed, so its live mounts, including an agent proxy
+// that is NFS-exported, are never remounted.
+//
+// replacement: the canonical name holds exactly the replacement this fixture
+// created, proven by its recorded GUID ($rguid, captured right after create)
+// and the fixture's distinct local mountpoint ($repl). A GUID that merely
+// differs from the original is not proof of ownership.
+const identityDriftCheck = `src=$1 backup=$2 mp=$3 guid=$4 quota=$5 refquota=$6 repl=$7 rguid=${8:-}
+# present sets found=1 when dataset $1 exists and found=0 when it is absent;
+# it fails, instead of reporting absent, when its parent cannot be listed.
+present() {
+	names=$(zfs list -H -o name -r -d 1 "${1%/*}") || { printf 'cannot list datasets under %s\n' "${1%/*}" >&2; return 1; }
+	found=0
+	case "
+$names
+" in *"
+$1
+"*) found=1 ;; esac
+}
+decimal() { case $1 in ''|*[!0-9]*) return 1 ;; esac; }
+guidof() {
+	out=$(zfs get -Hp -o value guid "$1") || return 1
+	decimal "$out" || { printf 'invalid GUID %s for %s\n' "$out" "$1" >&2; return 1; }
+	printf '%s' "$out"
+}
+original() {
+	g=$(guidof "$1") || return 1
+	m=$(zfs get -H -o value,source mountpoint "$1") || return 1
+	d=$(zfs get -H -o value mounted "$1") || return 1
+	if [ "$g" != "$guid" ] || [ "$m" != "$(printf '%s\tlocal' "$mp")" ] || [ "$d" != yes ]; then
+		printf 'original %s identity changed: guid=%s mountpoint=%s mounted=%s\n' "$1" "$g" "$m" "$d" >&2
+		return 1
+	fi
+}
+replacement() {
+	decimal "$rguid" || { printf 'no recorded replacement GUID; refusing to treat %s as fixture-owned\n' "$src" >&2; return 1; }
+	g=$(guidof "$src") || return 1
+	m=$(zfs get -H -o value,source mountpoint "$src") || return 1
+	if [ "$g" != "$rguid" ] || [ "$g" = "$guid" ] || [ "$m" != "$(printf '%s\tlocal' "$repl")" ]; then
+		printf '%s is not the fixture replacement: guid=%s recorded=%s mountpoint=%s\n' "$src" "$g" "$rguid" "$m" >&2
+		return 1
+	fi
+}
+`
+
+// identityDriftRestore is idempotent over every state a drift or a partial
+// restore can leave. Original aside (backup present): the original is
+// verified, a canonical dataset is destroyed (non-recursively) only when it
+// is the recorded replacement, then the original is renamed back. Original
+// already canonical (backup absent): it is only read back and verified.
+const identityDriftRestore = identityDriftCheck + `present "$backup" || exit 1
+if [ "$found" = 1 ]; then
+	original "$backup" || exit 1
+	present "$src" || exit 1
+	if [ "$found" = 1 ]; then
+		replacement || exit 1
+		zfs destroy "$src"
+	fi
+	zfs rename "$backup" "$src"
+fi
+original "$src" || exit 1
+`
+
+// WithIdentityDrift replaces the canonical dataset name with a new dataset
+// of a different GUID: the fixture-owned original is renamed aside (its
+// explicit mountpoint, data and DAC stay in place) and a replacement with
+// the same quota is created at a distinct mountpoint. The replacement's GUID
+// is captured right after create and is the only ownership proof used to
+// destroy it. A failure after the rename rolls back in-script and, because a
+// cancelled command may not finish its trap, the Go side then runs the
+// idempotent restore under an independent bounded context. Rollback failures
+// are reported and always leave the verified original in place.
 func (f *FilesystemAdoptionFixture) WithIdentityDrift(ctx context.Context) (func() error, error) {
 	if !f.CreatedSource || f.BackendKind != "zfs-dataset" {
 		return nil, fmt.Errorf("identity drift requires owned ZFS")
 	}
-	backup := f.CanonicalSource + "-original"
-	replacement := f.MountPoint + "-replacement"
-	script := "set -eu; zfs rename " + shellQuote(f.CanonicalSource) + " " + shellQuote(backup) + "; zfs set mountpoint=" + shellQuote(f.MountPoint) + " " + shellQuote(backup) + "; zfs mount " + shellQuote(backup) + " || true; zfs create -o mountpoint=" + shellQuote(replacement) + " -o quota=67108864 -o refquota=67108864 " + shellQuote(f.CanonicalSource)
-	if _, err := f.HostExec(ctx, "sh", "-ceu", script); err != nil {
+	quota, refquota := f.OriginalProperties["quota"], f.OriginalProperties["refquota"]
+	if f.NativeID == "" || quota == "" || refquota == "" {
+		return nil, fmt.Errorf("identity drift requires the recorded GUID and quota of %s", f.CanonicalSource)
+	}
+	args := []string{f.CanonicalSource, f.CanonicalSource + "-original", f.MountPoint, f.NativeID, quota, refquota, f.MountPoint + "-replacement"}
+	drift := identityDriftCheck + `renamed=0
+rollback() {
+	status=$?
+	trap - EXIT
+	if [ "$status" -ne 0 ] && [ "$renamed" = 1 ]; then
+		failed=0
+		if ! present "$src"; then
+			printf 'ROLLBACK FAILED: cannot inspect %s; original stays at %s\n' "$src" "$backup" >&2
+			failed=1
+		elif [ "$found" = 1 ]; then
+			if replacement; then
+				zfs destroy "$src" || { printf 'ROLLBACK FAILED: destroy replacement %s\n' "$src" >&2; failed=1; }
+			else
+				printf 'ROLLBACK FAILED: refusing to destroy unproven %s; original stays at %s\n' "$src" "$backup" >&2
+				failed=1
+			fi
+		fi
+		if [ "$failed" = 0 ]; then
+			zfs rename "$backup" "$src" || printf 'ROLLBACK FAILED: rename %s back to %s\n' "$backup" "$src" >&2
+		fi
+	fi
+	exit "$status"
+}
+trap rollback EXIT
+present "$backup" || exit 1
+if [ "$found" = 1 ]; then
+	printf 'refusing identity drift: %s already exists\n' "$backup" >&2
+	exit 1
+fi
+original "$src" || exit 1
+zfs rename "$src" "$backup"
+renamed=1
+original "$backup" || exit 1
+zfs create -o mountpoint="$repl" -o quota="$quota" -o refquota="$refquota" "$src"
+rguid=$(guidof "$src") || exit 1
+replacement || exit 1
+original "$backup" || exit 1
+trap - EXIT
+printf '%s\n' "$rguid"
+`
+	restore := func(rguid string) error {
+		restoreCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		_, err := f.HostExec(restoreCtx, append([]string{"sh", "-ceu", identityDriftRestore, "identity-restore"}, append(args, rguid)...)...)
+		return err
+	}
+	out, err := f.HostExec(ctx, append([]string{"sh", "-ceu", drift, "identity-drift"}, args...)...)
+	// The replacement GUID is trusted only from a successful drift's final
+	// stdout line; after a failure, error text is never parsed as ownership
+	// proof, so the restore can only rename an already-verified original
+	// back and never destroys an unproven canonical dataset.
+	rguid := ""
+	if err == nil {
+		if lines := strings.Fields(out); len(lines) > 0 {
+			rguid = lines[len(lines)-1]
+		}
+		if _, parseErr := strconv.ParseUint(rguid, 10, 64); parseErr != nil || rguid == f.NativeID {
+			err = fmt.Errorf("identity drift did not report a distinct replacement GUID: %q", out)
+		}
+	}
+	if err != nil {
+		if restoreErr := restore(rguid); restoreErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("restore original %s after failed drift: %w", f.CanonicalSource, restoreErr))
+		}
 		return nil, err
 	}
-	return func() error {
-		_, err := f.HostExec(context.Background(), "sh", "-ceu", "set -eu; zfs destroy -r "+shellQuote(f.CanonicalSource)+"; zfs rename "+shellQuote(backup)+" "+shellQuote(f.CanonicalSource)+"; zfs set mountpoint="+shellQuote(f.MountPoint)+" "+shellQuote(f.CanonicalSource)+"; zfs mount "+shellQuote(f.CanonicalSource)+" || true")
-		return err
-	}, nil
+	return func() error { return restore(rguid) }, nil
 }
 func (f *FilesystemAdoptionFixture) Cleanup(ctx context.Context) error {
 	before, err := f.Snapshot(ctx)

@@ -416,6 +416,49 @@ func (n *filesystemNetworkFixture) unpublishDiagnostics(nodes ...string) func() 
 	return n.teardownDiagnostics(n.Handle, n.Target, nodes...)
 }
 
+// exportDiagnostics is a lazy, bounded description of this volume's kernel
+// export state: the agent's exportfs table and nfsd client records, the
+// storage-node mounts of its owned proxy, the canonical and renamed-aside
+// datasets, then the common teardown collector. Each command is capped and
+// failures are recorded rather than ignored.
+func (n *filesystemNetworkFixture) exportDiagnostics() func() string {
+	return func() string {
+		diagCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		const maxBytes = 16 * 1024
+		var b strings.Builder
+		record := func(header, out string, err error) {
+			if len(out) > maxBytes {
+				out = "[earlier output truncated]\n" + out[len(out)-maxBytes:]
+			}
+			fmt.Fprintf(&b, "\n\n%s:\n%s", header, out)
+			if err != nil {
+				fmt.Fprintf(&b, "\nDiagnostic command failed: %v", err)
+			}
+		}
+		agent, err := n.Kubectl(diagCtx, "", "-n", resolveHelmNamespace(), "get", "pods", "-l", "app.kubernetes.io/component=agent", "--field-selector", "spec.nodeName="+n.StorageNode, "-o", "jsonpath={.items[0].metadata.name}")
+		record("agent pod on "+n.StorageNode, agent, err)
+		if err == nil && agent != "" {
+			for _, args := range [][]string{
+				{"exportfs", "-v"},
+				{"/bin/busybox", "sh", "-c", `for f in /proc/fs/nfsd/clients/*/info; do printf '== %s\n' "$f"; cat "$f"; done`},
+			} {
+				out, execErr := n.Kubectl(diagCtx, "", append([]string{"-n", resolveHelmNamespace(), "exec", agent, "-c", "agent", "--"}, args...)...)
+				record("agent "+strings.Join(args, " "), out, execErr)
+			}
+		}
+		if n.Proxy != "" {
+			out, mErr := n.HostExec(diagCtx, "grep", "-F", n.Proxy, "/proc/1/mountinfo")
+			record("storage-node mounts of proxy "+n.Proxy, out, mErr)
+		}
+		if n.Dataset != "" {
+			out, zErr := n.HostExec(diagCtx, "zfs", "get", "-H", "-o", "name,property,value,source", "guid,mountpoint,mounted,quota,refquota", n.Dataset, n.Dataset+"-original")
+			record("datasets", out, zErr)
+		}
+		return "volume " + n.PVName + " export state:" + b.String() + "\n" + n.unpublishDiagnostics()()
+	}
+}
+
 func (n *filesystemNetworkFixture) assertWithdrawn(ctx context.Context) {
 	Expect(nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), n.Proxy)).To(BeEmpty())
 	_, err := n.HostExec(ctx, "findmnt", "-n", "-M", n.Proxy)

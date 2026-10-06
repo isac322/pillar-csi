@@ -219,16 +219,16 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 		for _, drift := range []func(context.Context) (func() error, error){n.WithQuotaDrift, n.WithIdentityDrift} {
 			Expect(nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), n.Proxy)).To(HaveLen(2), "the unsafe export must be active before drift")
 			restore, err := drift(ctx)
-			Expect(err).NotTo(HaveOccurred())
+			Expect(err).NotTo(HaveOccurred(), n.exportDiagnostics())
 			func() {
-				defer func() { Expect(restore()).To(Succeed()) }()
+				defer func() { Expect(restore()).To(Succeed(), n.exportDiagnostics()) }()
 				n.restart(ctx, "agent", n.StorageNode)
-				Eventually(func() map[string][]string { return nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), n.Proxy) }, 90*time.Second, 2*time.Second).Should(BeEmpty())
-				Expect(nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), healthy.Proxy)).To(HaveLen(2))
+				Eventually(func() map[string][]string { return nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), n.Proxy) }, 90*time.Second, 2*time.Second).Should(BeEmpty(), n.exportDiagnostics())
+				Expect(nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), healthy.Proxy)).To(HaveLen(2), healthy.exportDiagnostics())
 				healthy.exchange(ctx)
 			}()
 			n.restart(ctx, "agent", n.StorageNode)
-			Eventually(func() map[string][]string { return nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), n.Proxy) }, 90*time.Second, 2*time.Second).Should(HaveLen(2))
+			Eventually(func() map[string][]string { return nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), n.Proxy) }, 90*time.Second, 2*time.Second).Should(HaveLen(2), n.exportDiagnostics())
 			n.verifyExchange(ctx)
 			n.observeProxy(ctx)
 		}
