@@ -15,6 +15,7 @@ import (
 	agentbackend "github.com/isac322/pillar-csi/internal/agent/backend"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -222,6 +223,21 @@ func e71Reservation(ctx context.Context, f *FilesystemAdoptionFixture) pillarv1.
 	}
 	Expect(holders).To(Equal([]string{r.Name}), "native resource %s must have exactly one reservation", r.Spec.FilesystemResourceID)
 	return r
+}
+
+// e71VolumeState reads the adopted PillarVolumeState and its ExportReconciled
+// condition (nil when not yet recorded). The controller reports agent-side
+// export restore and resync outcomes on that condition; phase is the
+// creation marker and stays Ready.
+func e71VolumeState(ctx context.Context, f *FilesystemAdoptionFixture) (pillarv1.PillarVolumeState, *metav1.Condition) {
+	var state pillarv1.PillarVolumeState
+	Expect(json.Unmarshal([]byte(f.Must(ctx, "get", "pillarvolumestate", f.PVName, "-o", "json")), &state)).To(Succeed())
+	for i := range state.Status.Conditions {
+		if state.Status.Conditions[i].Type == "ExportReconciled" {
+			return state, &state.Status.Conditions[i]
+		}
+	}
+	return state, nil
 }
 
 var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "filesystem", "nfs"), Ordered, func() {
@@ -536,16 +552,139 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		e71Delete(ctx, f, "pod", pod)
 	})
 	It("[TC-E71.13] rejects a replaced ZFS identity and restores the original GUID without creating a new owner", func() {
+		helm := resolveHelmNamespace()
+		handle := f.Must(ctx, "get", "pv", f.PVName, "-o", "jsonpath={.spec.csi.volumeHandle}")
+		target := f.Must(ctx, "get", "pv", f.PVName, "-o", "jsonpath={.spec.csi.volumeAttributes.target_id}")
+		// Bounded, lazily evaluated evidence of the guard's mechanism, captured
+		// while drift is still in place when an assertion below fails: PVS
+		// conditions/phase, VolumeAttachment status, reservations, and the
+		// common teardown collector (agent/controller/node logs).
+		diagnostics := func() string {
+			diagCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			var b strings.Builder
+			for _, args := range [][]string{
+				{"get", "pillarvolumestate", f.PVName, "--ignore-not-found", "-o", `jsonpath=phase={.status.phase} uid={.metadata.uid} generation={.metadata.generation} publishedNodes={.status.publishedNodes} conditions={.status.conditions}`},
+				{"get", "volumeattachments", "-o", `jsonpath={range .items[?(@.spec.source.persistentVolumeName=="` + f.PVName + `")]}{.metadata.name} node={.spec.nodeName} status={.status}{"\n"}{end}`},
+				{"get", "pillarvolumereservation", "-o", `jsonpath={range .items[*]}{.metadata.name} uid={.metadata.uid} spec={.spec}{"\n"}{end}`},
+			} {
+				out, err := f.Kubectl(diagCtx, "", args...)
+				if len(out) > 16*1024 {
+					out = "[earlier output truncated]\n" + out[len(out)-16*1024:]
+				}
+				fmt.Fprintf(&b, "\nkubectl %s:\n%s", strings.Join(args, " "), out)
+				if err != nil {
+					fmt.Fprintf(&b, "\nDiagnostic command failed: %v", err)
+				}
+			}
+			return "E71.13 identity-drift guard state:" + b.String() + "\n" + f.teardownDiagnostics(handle, target, append(append([]string{}, workers...), f.StorageNode)...)()
+		}
+		// E71.12 deleted its consumer without waiting for detach; drain the
+		// prior attachment and publication intent before capturing baselines
+		// so neither an old intent nor an in-flight unpublish races the swap.
+		Eventually(func() string { return e71Attachment(ctx, f, ".metadata.name") }, 2*time.Minute, 2*time.Second).Should(BeEmpty(), diagnostics)
+		Eventually(func() []pillarv1.VolumePublication {
+			s, _ := e71VolumeState(ctx, f)
+			return s.Status.PublishedNodes
+		}, 2*time.Minute, 2*time.Second).Should(BeEmpty(), diagnostics)
+		// Healthy precondition: the export guard currently reports the
+		// recorded identity reconciled, so a later False is caused by drift.
+		var reconciledAt metav1.Time
+		Eventually(func() string {
+			_, cond := e71VolumeState(ctx, f)
+			if cond == nil {
+				return "absent"
+			}
+			reconciledAt = cond.LastTransitionTime
+			return string(cond.Status) + "/" + cond.Reason
+		}, 2*time.Minute, 2*time.Second).Should(Equal("True/Reconciled"), diagnostics)
+		held := e71Reservation(ctx, f)
+		stateBefore, _ := e71VolumeState(ctx, f)
+		stable, err := f.Snapshot(ctx)
+		Expect(err).NotTo(HaveOccurred())
 		cleanup, err := f.WithIdentityDrift(ctx)
 		Expect(err).NotTo(HaveOccurred())
-		e71Command(ctx, f, "-n", resolveHelmNamespace(), "rollout", "restart", "daemonset/pillar-csi-agent")
-		Eventually(func() string {
-			return f.Must(ctx, "get", "pillarvolumestate", f.PVName, "-o", "jsonpath={.status.phase}")
-		}, 2*time.Minute, 2*time.Second).ShouldNot(Equal("Ready"))
+		restored := false
+		defer func() {
+			if !restored {
+				Expect(cleanup()).To(Succeed())
+			}
+		}()
+		e71Command(ctx, f, "-n", helm, "rollout", "restart", "daemonset/pillar-csi-agent")
+		e71Command(ctx, f, "-n", helm, "rollout", "status", "daemonset/pillar-csi-agent", "--timeout=4m")
+		// The restarted agent's export restore re-verifies the recorded native
+		// identity and refuses the replaced dataset; the controller records it
+		// as a fresh ExportReconciled=False transition naming the volume and
+		// the identity/GUID mismatch. Phase is the creation marker and stays.
+		var refusedAt metav1.Time
+		Eventually(func(g Gomega) {
+			state, cond := e71VolumeState(ctx, f)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(string(cond.Status)).To(Equal("False"))
+			g.Expect(cond.Reason).To(Equal("ReconcileFailed"))
+			g.Expect(cond.LastTransitionTime.After(reconciledAt.Time)).To(BeTrue(), "condition must transition after the healthy observation")
+			g.Expect(cond.Message).To(ContainSubstring(state.Spec.AgentVolumeID))
+			g.Expect(cond.Message).To(Or(ContainSubstring("GUID"), ContainSubstring("identity")))
+			refusedAt = cond.LastTransitionTime
+		}, 2*time.Minute, 2*time.Second).Should(Succeed(), diagnostics)
+		state, _ := e71VolumeState(ctx, f)
+		Expect(string(state.Status.Phase)).To(Equal("Ready"))
+		Expect(state.Status.PublishedNodes).To(BeEmpty(), diagnostics)
+		// A new consumer is refused by the same guard at attach time.
+		pod := "e71-identity-drift"
+		_, err = f.Kubectl(ctx, f.PodManifest(pod, f.PVCName, f.StorageNode, false, 1234, 2345), "apply", "-f", "-")
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func() string { return e71Attachment(ctx, f, ".status.attachError.message") }, 2*time.Minute, 2*time.Second).Should(And(
+			ContainSubstring("code = FailedPrecondition"),
+			Or(ContainSubstring("GUID"), ContainSubstring("identity")),
+		), diagnostics)
+		Expect(e71Attachment(ctx, f, ".status.attached")).NotTo(Equal("true"), diagnostics)
+		Expect(f.Must(ctx, "-n", f.Namespace, "get", "pod", pod, "-o", "jsonpath={.status.phase}")).To(Equal("Pending"), diagnostics)
+		// No new owner or lifecycle was created by the refusal. A refused
+		// local attach may keep its reserved publication intent until the
+		// attachment is withdrawn, so usability is proven by attached!=true
+		// and Pending above, and the intent must drain after deletion below.
+		state, _ = e71VolumeState(ctx, f)
+		for _, pub := range state.Status.PublishedNodes {
+			Expect(pub.NodeID).To(Equal(f.StorageNode), "only the refused consumer's node may hold publication intent")
+		}
+		Expect(len(state.Status.PublishedNodes)).To(BeNumerically("<=", 1), diagnostics)
+		Expect(state.UID).To(Equal(stateBefore.UID))
+		Expect(state.Generation).To(Equal(stateBefore.Generation))
+		Expect(state.Spec).To(Equal(stateBefore.Spec))
+		after := e71Reservation(ctx, f)
+		Expect(after.UID).To(Equal(held.UID))
+		Expect(after.Spec).To(Equal(held.Spec))
+		e71Delete(ctx, f, "pod", pod)
 		Expect(cleanup()).To(Succeed())
+		restored = true
+		Eventually(func() string { return e71Attachment(ctx, f, ".metadata.name") }, 2*time.Minute, 2*time.Second).Should(BeEmpty(), diagnostics)
+		Eventually(func() []pillarv1.VolumePublication {
+			s, _ := e71VolumeState(ctx, f)
+			return s.Status.PublishedNodes
+		}, 2*time.Minute, 2*time.Second).Should(BeEmpty(), diagnostics)
 		s, err := f.Snapshot(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(s.NativeID).To(Equal(before.NativeID))
+		Expect(s.NativeID).To(Equal(stable.NativeID))
+		Expect(s.Properties).To(Equal(stable.Properties))
+		Expect(s.TreeHash).To(Equal(stable.TreeHash))
+		// The restored original identity reconciles again on the next agent
+		// restore, and a healthy consumer reads the original marker.
+		e71Command(ctx, f, "-n", helm, "rollout", "restart", "daemonset/pillar-csi-agent")
+		e71Command(ctx, f, "-n", helm, "rollout", "status", "daemonset/pillar-csi-agent", "--timeout=4m")
+		Eventually(func(g Gomega) {
+			_, cond := e71VolumeState(ctx, f)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(string(cond.Status) + "/" + cond.Reason).To(Equal("True/Reconciled"))
+			g.Expect(cond.LastTransitionTime.After(refusedAt.Time)).To(BeTrue())
+		}, 2*time.Minute, 2*time.Second).Should(Succeed(), diagnostics)
+		healthy := "e71-identity-restored"
+		e71ApplyPod(ctx, f, healthy, f.PVCName, f.StorageNode, false, 1234, 2345)
+		Expect(f.Must(ctx, "-n", f.Namespace, "exec", healthy, "--", "cat", "/data/tree/preexisting")).To(Equal("native-source"))
+		e71Delete(ctx, f, "pod", healthy)
+		Eventually(func() string { return e71Attachment(ctx, f, ".metadata.name") }, 2*time.Minute, 2*time.Second).Should(BeEmpty(), diagnostics)
+		Expect(e71Reservation(ctx, f).UID).To(Equal(held.UID))
 	})
 	It("[TC-E71.14] adopts real XFS and ext4 project-quota directories with inherited project IDs and exact hard bounds", func() {
 		d := NewFilesystemAdoptionFixture("E71.14")
