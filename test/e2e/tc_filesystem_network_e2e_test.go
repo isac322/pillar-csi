@@ -32,7 +32,7 @@ var _ = Describe("E71: adopted filesystem physical network consumers", Label("e7
 	})
 
 	It("[TC-E71.17] shares an existing bounded directory across two remote nodes through an owned NFS bind proxy", func() {
-		n := newFilesystemNetworkFixture(ctx, "E71.17", "directory", false)
+		n := newFilesystemNetworkFixture(ctx, "E71.17", "directory")
 		n.ownerConsumers(ctx)
 		n.exchange(ctx)
 		n.observeRemoteMounts(ctx)
@@ -41,7 +41,7 @@ var _ = Describe("E71: adopted filesystem physical network consumers", Label("e7
 	})
 
 	It("[TC-E71.18] shares an existing dataset without changing its GUID, mountpoint, DAC or properties", func() {
-		n := newFilesystemNetworkFixture(ctx, "E71.18", "zfs", false)
+		n := newFilesystemNetworkFixture(ctx, "E71.18", "zfs")
 		n.ownerConsumers(ctx)
 		n.exchange(ctx)
 		n.observeRemoteMounts(ctx)
@@ -54,7 +54,7 @@ var _ = Describe("E71: adopted filesystem physical network consumers", Label("e7
 	})
 
 	It("[TC-E71.19] root-squashes remote root and denies a never-published client without changing source permissions", func() {
-		n := newFilesystemNetworkFixture(ctx, "E71.19", "zfs", false)
+		n := newFilesystemNetworkFixture(ctx, "E71.19", "zfs")
 		n.ownerConsumers(ctx)
 		n.exchange(ctx)
 		n.observeProxy(ctx)
@@ -76,7 +76,7 @@ else:
 	})
 
 	It("[TC-E71.20] enforces real two-node POSIX byte-range locking and releases locks for the next consumer", func() {
-		n := newFilesystemNetworkFixture(ctx, "E71.20", "zfs", false)
+		n := newFilesystemNetworkFixture(ctx, "E71.20", "zfs")
 		n.ownerConsumers(ctx)
 		n.exchange(ctx)
 		n.mustPython(ctx, "writer-0", `import subprocess
@@ -107,7 +107,7 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 	})
 
 	It("[TC-E71.21] serves a true storage-node local bind concurrently with both remote publishers", func() {
-		n := newFilesystemNetworkFixture(ctx, "E71.21", "zfs", true)
+		n := newFilesystemNetworkFixture(ctx, "E71.21", "zfs")
 		n.ownerConsumers(ctx)
 		n.exchange(ctx)
 		n.observeProxy(ctx)
@@ -139,7 +139,7 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 	})
 
 	It("[TC-E71.22] recovers staged remote source and data after the installed node plugin restarts", func() {
-		n := newFilesystemNetworkFixture(ctx, "E71.22", "zfs", false)
+		n := newFilesystemNetworkFixture(ctx, "E71.22", "zfs")
 		n.ownerConsumers(ctx)
 		n.exchange(ctx)
 		n.observeProxy(ctx)
@@ -157,7 +157,7 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 	})
 
 	It("[TC-E71.23] recovers proxy and export after agent restart while preserving complete native and old-block bootstrap profiles", func() {
-		n := newFilesystemNetworkFixture(ctx, "E71.23", "zfs", false)
+		n := newFilesystemNetworkFixture(ctx, "E71.23", "zfs")
 		n.ownerConsumers(ctx)
 		n.exchange(ctx)
 		n.observeProxy(ctx)
@@ -173,7 +173,7 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 		Expect(after).To(Equal(before))
 		// New real adoption plus legacy block IO proves that restart restored the
 		// bootstrap union rather than a successful-but-partial profile set.
-		d := newFilesystemNetworkFixture(ctx, "E71.23-peer", "directory", false)
+		d := newFilesystemNetworkFixture(ctx, "E71.23-peer", "directory")
 		d.ownerConsumers(ctx)
 		d.exchange(ctx)
 		d.observeProxy(ctx)
@@ -181,13 +181,13 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 	})
 
 	It("[TC-E71.24] refuses unsafe native quota or GUID recovery while an independent healthy export continues", func() {
-		n := newFilesystemNetworkFixture(ctx, "E71.24", "zfs", false)
+		n := newFilesystemNetworkFixture(ctx, "E71.24", "zfs")
 		n.ownerConsumers(ctx)
 		n.exchange(ctx)
 		n.observeProxy(ctx)
 		before, err := n.Snapshot(ctx)
 		Expect(err).NotTo(HaveOccurred())
-		healthy := newFilesystemNetworkFixture(ctx, "E71.24-healthy", "zfs", false)
+		healthy := newFilesystemNetworkFixture(ctx, "E71.24-healthy", "zfs")
 		healthy.ownerConsumers(ctx)
 		healthy.exchange(ctx)
 		healthy.observeProxy(ctx)
@@ -213,7 +213,7 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 	})
 
 	It("[TC-E71.25] protects publications from deletion and cleans every client stage and owned export without deleting the source", func() {
-		n := newFilesystemNetworkFixture(ctx, "E71.25", "directory", false)
+		n := newFilesystemNetworkFixture(ctx, "E71.25", "directory")
 		n.ownerConsumers(ctx)
 		n.exchange(ctx)
 		n.observeProxy(ctx)
@@ -236,7 +236,7 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 	})
 
 	It("[TC-E71.26] retains the actual source and ownership, and rejects an old lifecycle UID after Delete", func() {
-		n := newFilesystemNetworkFixture(ctx, "E71.26", "zfs", false)
+		n := newFilesystemNetworkFixture(ctx, "E71.26", "zfs")
 		n.ownerConsumers(ctx)
 		n.exchange(ctx)
 		n.observeProxy(ctx)
@@ -290,7 +290,7 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 	})
 
 	It("[TC-E71.27] uses packaged NFS helpers with isolated host userland and leaves no mounts or source damage", func() {
-		n := newFilesystemNetworkFixture(ctx, "E71.27", "zfs", false)
+		n := newFilesystemNetworkFixture(ctx, "E71.27", "zfs")
 		for _, node := range append(append([]string{}, n.Clients...), n.StorageNode) {
 			nfsHideClientHelpers(ctx, node)
 			node := node
@@ -323,7 +323,7 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 	})
 
 	It("[TC-E71.28] keeps installed legacy block driver fsGroup, nested files, RWO and RWOP behavior healthy beside file adoption", func() {
-		n := newFilesystemNetworkFixture(ctx, "E71.28", "zfs", false)
+		n := newFilesystemNetworkFixture(ctx, "E71.28", "zfs")
 		n.ownerConsumers(ctx)
 		n.exchange(ctx)
 		Expect(n.Must(ctx, "get", "csidriver", pillarv1.DefaultCSIDriver, "-o", "jsonpath={.spec.fsGroupPolicy}")).To(Equal("File"))

@@ -101,7 +101,9 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 	var workers []string
 	BeforeAll(func() {
 		e71RequireLane()
-		ctx, _ = e71Context()
+		var cancel context.CancelFunc
+		ctx, cancel = e71Context()
+		DeferCleanup(cancel)
 		f = NewFilesystemAdoptionFixture("E71.1")
 		Expect(f.PrepareZFS(ctx, e71Quota)).To(Succeed())
 		Expect(f.ApplyObjects(ctx, true)).To(Succeed())
@@ -115,11 +117,9 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 	})
 	AfterAll(func() {
 		if f != nil {
-			cleanup, _ := context.WithTimeout(context.Background(), 8*time.Minute)
+			cleanup, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+			defer cancel()
 			Expect(f.Cleanup(cleanup)).To(Succeed())
-		}
-		if ctx != nil {
-			_ = ctx
 		}
 	})
 

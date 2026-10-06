@@ -38,7 +38,11 @@ type filesystemNetworkFixture struct {
 	StorageClass string
 }
 
-func newFilesystemNetworkFixture(ctx context.Context, tc, kind string, local bool) *filesystemNetworkFixture {
+// newFilesystemNetworkFixture adopts the source through the owned-host NFS
+// class with ReadWriteMany. A localAttach class is local-only and rejects
+// multi-node capabilities, so storage-node direct binds are exercised through
+// this same network class: the controller publishes the storage NodeRef locally.
+func newFilesystemNetworkFixture(ctx context.Context, tc, kind string) *filesystemNetworkFixture {
 	f := NewFilesystemAdoptionFixture(tc)
 	DeferCleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -50,7 +54,7 @@ func newFilesystemNetworkFixture(ctx context.Context, tc, kind string, local boo
 	} else {
 		Expect(f.PrepareZFS(ctx, 64*1024*1024)).To(Succeed())
 	}
-	Expect(f.ApplyObjects(ctx, local)).To(Succeed())
+	Expect(f.ApplyObjects(ctx, false)).To(Succeed())
 	annotation := pillarv1.AnnotationImportZFSDataset
 	if kind == "directory" {
 		annotation = pillarv1.AnnotationImportDirectory
