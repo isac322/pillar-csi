@@ -32,8 +32,9 @@ import (
 //	PillarVolumeStatePhaseNodeStagePartial → StateNodeStagePartial
 //	PillarVolumeStatePhaseNodeStaged       → StateNodeStaged
 //	PillarVolumeStatePhaseNodePublished    → StateNodePublished
+//	PillarVolumeStatePhaseRecoveryPending  → no VolumeState mapping (non-serving recovery intent)
 //
-// +kubebuilder:validation:Enum=Provisioning;CreatePartial;Ready;ControllerPublished;NodeStagePartial;NodeStaged;NodePublished
+// +kubebuilder:validation:Enum=Provisioning;CreatePartial;Ready;ControllerPublished;NodeStagePartial;NodeStaged;NodePublished;RecoveryPending
 type PillarVolumeStatePhase string
 
 const (
@@ -75,6 +76,16 @@ const (
 	// PillarVolumeStatePhaseNodePublished means NodePublishVolume has succeeded.
 	// The staging path has been bind-mounted into a pod's target path.
 	PillarVolumeStatePhaseNodePublished PillarVolumeStatePhase = "NodePublished"
+
+	// PillarVolumeStatePhaseRecoveryPending means the volume record exists
+	// only to receive an operator-authorized ownership transfer (spec.recovery
+	// is set).  From its initial creation the object is non-serving — CSI
+	// publish, stage, expand and resync operations refuse it — and non-reapable:
+	// the abandoned-volume reaper must not release or delete it.  The phase
+	// advances only after the agent's TransferVolumeOwnership commits and the
+	// transferred mark's recorded uid/generation and authorization digest agree
+	// with spec.recovery.
+	PillarVolumeStatePhaseRecoveryPending PillarVolumeStatePhase = "RecoveryPending"
 )
 
 // PartialFailureInfo records what happened when a CSI operation partially
@@ -262,14 +273,17 @@ type VolumeClaimRef struct {
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 
-	// name is the name of the PersistentVolumeClaim.
-	// +optional
 	Name string `json:"name,omitempty"`
 }
 
 // PillarVolumeStateSpec defines the immutable identity and routing information for
 // a CSI volume.  Fields are populated by the controller at CreateVolume time
 // and never changed thereafter.
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.importedFrom) && has(self.lvmSource))",message="importedFrom and lvmSource are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="has(self.lvmSource) == has(oldSelf.lvmSource)",message="lvmSource cannot be added or removed after creation"
+// +kubebuilder:validation:XValidation:rule="!(has(self.recovery) && (has(self.lvmSource) || has(self.importedFrom)))",message="recovery is mutually exclusive with lvmSource and importedFrom"
+// +kubebuilder:validation:XValidation:rule="has(self.recovery) == has(oldSelf.recovery)",message="recovery cannot be added or removed after creation"
 type PillarVolumeStateSpec struct {
 	// volumeID is the CSI volume ID assigned by the controller.
 	// Format: <target-name>/<protocol-type>/<backend-type>/<agent-vol-id>
@@ -326,6 +340,17 @@ type PillarVolumeStateSpec struct {
 	// +optional
 	ImportedFrom string `json:"importedFrom,omitempty"`
 
+	// lvmSource pins the pre-existing LVM logical volume this volume adopted
+	// via the "pillar-csi.bhyoo.com/import-lv" PVC annotation, by name and
+	// by stable VG/LV UUIDs, together with the adoption policy.  It is set
+	// once at the first CreateVolume attempt and is immutable: it can be
+	// neither changed nor added or removed after creation.  Absent for
+	// volumes created empty and for zvol imports (see importedFrom), which
+	// keep their existing semantics.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="lvmSource is immutable"
+	LVMSource *LVMSourceRef `json:"lvmSource,omitempty"`
+
 	// resolved is the effective per-volume configuration resolved at the
 	// first CreateVolume attempt from the PillarStore, PillarProtocol,
 	// PillarStorageClass overrides, StorageClass parameter documents and PVC
@@ -334,6 +359,143 @@ type PillarVolumeStateSpec struct {
 	// claim or the CRDs behind the overrides no longer exist.
 	// +optional
 	Resolved *ResolvedVolumeConfig `json:"resolved,omitempty"`
+
+	// recovery declares that this volume record exists solely to receive an
+	// operator-authorized ownership transfer of a pre-existing adopted
+	// backend resource (see VolumeRecoveryIntent).  It is set at creation
+	// for a volume born in phase RecoveryPending and cannot be added or
+	// removed after creation.  Mutually exclusive with lvmSource and
+	// importedFrom — a recovery volume is not itself an import.
+	//
+	// The fields the operator cannot know at create time — newVolumeUID
+	// (this object's own metadata.uid), authorization and
+	// authorizationDigest — are write-once: they may be empty at create and
+	// populated exactly once afterwards; every other field is immutable
+	// from creation.
+	// +optional
+	Recovery *VolumeRecoveryIntent `json:"recovery,omitempty"`
+}
+
+// VolumeRecoveryIntent pins the operator-declared recovery intent for a
+// volume born in phase RecoveryPending: which retired lifecycle's adopted
+// backend resource transfers into this record, under which policy, and
+// bound to which signed RecoveryAuthorization.
+//
+// The operator cannot know this record's metadata.uid or produce the
+// authorization before the record exists, so intent is declared in two
+// steps: oldVolumeUID, oldGeneration, source and newGeneration are set at
+// creation and immutable; newVolumeUID (which MUST equal metadata.uid) and
+// authorizationDigest may be empty at creation and are write-once
+// afterwards — each can be set exactly once and then never changed or
+// cleared.
+//
+// Authorization (the raw serialized grant) is deliberately not
+// compared by CEL: Kubernetes CEL cannot reliably compare byte-format
+// fields across updates, and the grant's identity is already pinned by the
+// write-once authorizationDigest.  The controller requires the digest of
+// whatever authorization bytes it uses to equal authorizationDigest, and
+// the agent verifies the grant's signature against its trust anchor, so a
+// re-supplied or different payload can never authorize anything the
+// digest does not name.  The controller performs the transfer only once
+// all fields are populated and consistent.
+// +kubebuilder:validation:XValidation:rule="(!has(oldSelf.newVolumeUID) || (has(self.newVolumeUID) && self.newVolumeUID == oldSelf.newVolumeUID)) && (!has(oldSelf.authorizationDigest) || (has(self.authorizationDigest) && self.authorizationDigest == oldSelf.authorizationDigest))",message="newVolumeUID and authorizationDigest are write-once once populated"
+type VolumeRecoveryIntent struct {
+	// oldVolumeUID is the UID of the retired PillarVolumeState lifecycle
+	// whose backend resource is recovered (the fence mark's current
+	// volume_uid).  Immutable from creation.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="oldVolumeUID is immutable"
+	OldVolumeUID string `json:"oldVolumeUID"`
+
+	// oldGeneration is the exact publication generation recorded in the
+	// old lifecycle's fence mark.  Exact equality required.  Immutable
+	// from creation.
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="oldGeneration is immutable"
+	OldGeneration int64 `json:"oldGeneration"`
+
+	// source pins the adopted LVM logical volume being recovered by name
+	// and stable VG/LV UUIDs; its preserveOriginal is the recovery
+	// preserve policy.  Immutable from creation.
+	// +required
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="source is immutable"
+	Source *LVMSourceRef `json:"source"`
+
+	// newVolumeUID is the destination lifecycle UID; when set it MUST
+	// equal this PillarVolumeState's metadata.uid.  It is unknowable at
+	// create (the API server assigns metadata.uid), so it may be empty at
+	// creation and is write-once once populated.  The transfer requires
+	// it to be set.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	NewVolumeUID string `json:"newVolumeUID,omitempty"`
+
+	// newGeneration is the generation the agent writes into the
+	// transferred fence mark for the new lifecycle.  Immutable from
+	// creation.
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="newGeneration is immutable"
+	NewGeneration int64 `json:"newGeneration"`
+
+	// authorization is the serialized RecoveryAuthorization protobuf (the
+	// operator-signed grant).  It may be empty at creation — the operator
+	// can only sign once metadata.uid exists.  It is not write-once at the
+	// schema level (CEL does not compare these raw bytes); it may be
+	// re-supplied on retry, but only bytes whose canonical digest equals
+	// authorizationDigest are ever used, and the agent verifies the
+	// signature.  When absent at transfer time the authorization must be
+	// supplied out-of-band, with authorizationDigest pinning its identity.
+	// +optional
+	Authorization []byte `json:"authorization,omitempty"`
+
+	// authorizationDigest is the lowercase hex SHA-256 of the
+	// RecoveryAuthorization's deterministic protobuf encoding with its
+	// signature field cleared.  It pins the exact grant this record may
+	// consume; the fence mark stores the same digest after transfer.  It
+	// may be empty at creation and is write-once once populated.  The
+	// transfer requires it to be set.
+	// +optional
+	// +kubebuilder:validation:MinLength=64
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
+	AuthorizationDigest string `json:"authorizationDigest,omitempty"`
+}
+
+// LVMSourceRef pins the pre-existing LVM logical volume an import-lv volume
+// adopted.  It is set once at the first CreateVolume attempt and is
+// immutable.  The UUIDs are the stable identity: a VG or LV renamed or
+// recreated under the same name never matches.
+type LVMSourceRef struct {
+	// volumeGroup is the LVM volume group name of the adopted LV.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	VolumeGroup string `json:"volumeGroup"`
+
+	// logicalVolume is the LVM logical volume name of the adopted LV.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	LogicalVolume string `json:"logicalVolume"`
+
+	// volumeGroupUUID is the LVM UUID of the volume group (`vgs -o vg_uuid`).
+	// +required
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9]{6}(-[A-Za-z0-9]{4}){5}-[A-Za-z0-9]{6}$`
+	VolumeGroupUUID string `json:"volumeGroupUUID"`
+
+	// logicalVolumeUUID is the LVM UUID of the logical volume
+	// (`lvs -o lv_uuid`).
+	// +required
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9]{6}(-[A-Za-z0-9]{4}){5}-[A-Za-z0-9]{6}$`
+	LogicalVolumeUUID string `json:"logicalVolumeUUID"`
+
+	// preserveOriginal selects the adoption policy.  When true, DeleteVolume
+	// only releases the LV (never lvremove), expansion is refused, and the
+	// node never formats, fscks or resizes it.  When false (policy Managed)
+	// the adopted LV becomes a normal managed volume.
+	// +required
+	PreserveOriginal bool `json:"preserveOriginal"`
 }
 
 // ResolvedVolumeConfig is the durable record of the effective configuration
@@ -478,6 +640,7 @@ type PillarVolumeStateStatus struct {
 // +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.agentRef`
 // +kubebuilder:printcolumn:name="Backend",type=string,JSONPath=`.spec.backendType`
 // +kubebuilder:printcolumn:name="Protocol",type=string,JSONPath=`.spec.protocolType`
+// +kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.lvmSource.logicalVolumeUUID`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // PillarVolumeState tracks the lifecycle state of a single CSI volume provisioned

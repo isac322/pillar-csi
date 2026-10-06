@@ -229,10 +229,12 @@ type VolumeImporter interface {
 	) (devicePath string, sizeBytes int64, err error)
 }
 
-// ImportRefusedError is returned by VolumeImporter.Import when the resource
-// cannot safely be adopted.  Callers should map it to gRPC
+// ImportRefusedError is returned by VolumeImporter.Import, LVImporter.ImportLV
+// and LVVerifier.VerifyLV when the resource cannot safely be adopted or no
+// longer matches its pinned identity.  Callers should map it to gRPC
 // codes.FailedPrecondition.  Reason names the refusal class for operator
-// diagnosis ("missing", "wrong type", "in use", "too small", "layout").
+// diagnosis ("missing", "wrong type", "in use", "too small", "layout",
+// "inactive", [ImportRefusedReasonIdentity]).
 type ImportRefusedError struct {
 	VolumeID string
 	Reason   string
@@ -244,4 +246,136 @@ type ImportRefusedError struct {
 func (e *ImportRefusedError) Error() string {
 	return fmt.Sprintf("import of volume %q refused: %s: %s",
 		e.VolumeID, e.Reason, e.Detail)
+}
+
+// ImportRefusedReasonIdentity is the ImportRefusedError reason for an LV whose
+// VG/LV UUIDs or kernel device number differ from the expected identity: the
+// name now resolves to a different (renamed, recreated or aliased) LV.
+const ImportRefusedReasonIdentity = "identity"
+
+// LVMIdentity names a pre-existing LVM logical volume by name and by its
+// stable UUIDs (`lvs -o vg_name,lv_name,vg_uuid,lv_uuid`).
+type LVMIdentity struct {
+	VolumeGroup       string
+	LogicalVolume     string
+	VolumeGroupUUID   string
+	LogicalVolumeUUID string
+}
+
+// LVImporter is implemented by LVM backends that can adopt an existing LV
+// into a pillar-csi volume lifecycle.  It backs the agent ImportVolume RPC
+// for BACKEND_TYPE_LVM; VolumeImporter stays the ZFS contract.
+//
+// ImportLV is strictly read-only: it never activates, creates, renames,
+// resizes or formats anything.  It refuses with ImportRefusedError when the
+// LV does not resolve inside the backend's VG and layout, does not match
+// want in every field, is a snapshot/pool/mirror/raid/origin/virtual LV, is
+// inactive, is smaller than capacityBytes, or is in use on the storage node.
+//
+// Idempotent: repeated calls with the same arguments return the same device
+// path and size.
+type LVImporter interface {
+	ImportLV(
+		ctx context.Context,
+		volumeID string,
+		capacityBytes int64,
+		want LVMIdentity,
+	) (devicePath string, sizeBytes int64, err error)
+}
+
+// LVVerifier is implemented by LVM backends that can re-verify that volumeID
+// still resolves to the LV pinned at import.  It is read-only and refuses with
+// ImportRefusedError: reason "missing" when the LV is gone and
+// [ImportRefusedReasonIdentity] when any of the four identity fields differ.
+type LVVerifier interface {
+	VerifyLV(ctx context.Context, volumeID string, want LVMIdentity) error
+}
+
+// LVInspector is implemented by LVM backends that can report a read-only
+// observation of an LV.  InspectLV never runs lvchange/vgchange, never mounts
+// and writes nothing; its only side effect is one transient O_RDONLY|O_EXCL
+// open, closed immediately with no data read, that yields ExclusiveClaim.
+type LVInspector interface {
+	InspectLV(ctx context.Context, volumeID string) (LVObservation, error)
+}
+
+// Exclusive-claim observations reported in LVObservation.ExclusiveClaim.
+const (
+	// ExclusiveClaimFree means the transient O_EXCL open succeeded.
+	ExclusiveClaimFree = "free"
+	// ExclusiveClaimBusy means the transient O_EXCL open failed with EBUSY.
+	ExclusiveClaimBusy = "busy"
+	// ExclusiveClaimUnknown means any other open error, or the LV is inactive.
+	ExclusiveClaimUnknown = "unknown"
+)
+
+// Filesystem-signature probe outcomes reported in LVObservation.FSProbe.
+const (
+	// FSProbeDetected means blkid -p reported a well-formed record naming
+	// the device with a filesystem TYPE; FSType/FSUUID carry it.
+	FSProbeDetected = "detected"
+	// FSProbeUnknown means the probe did not establish what the device
+	// holds: blkid -p exited 2 with no output (util-linux reports a silent
+	// low-level read/probe failure the same way as "nothing found"),
+	// reported only a partition table or other TYPE-less records, or the
+	// LV is inactive so no probe ran.  It is never evidence that the device
+	// is blank or unformatted, and it is not a consumer observation.
+	FSProbeUnknown = "unknown"
+)
+
+// LVObservation is what InspectLV observed about an LV.  It is an
+// observation only and carries no ownership claim.
+type LVObservation struct {
+	// Identity is the observed name and UUIDs.
+	Identity LVMIdentity
+	// Attr is lvs lv_attr.
+	Attr string
+	// Segtype is lvs segtype (e.g. "linear", "thin").
+	Segtype string
+	// PoolLV is lvs pool_lv; empty for non-thin LVs.
+	PoolLV string
+	// Origin is lvs origin; non-empty for snapshots.
+	Origin string
+	// DevicePath is the LV's host device path.
+	DevicePath string
+	// DevMajorMinor is the kernel device number "<major>:<minor>"; empty
+	// when inactive.
+	DevMajorMinor string
+	// FSType and FSUUID come from blkid -p and are set only when FSProbe is
+	// FSProbeDetected.  Empty never means "no signature" by itself.
+	FSType string
+	FSUUID string
+	// FSProbe is FSProbeDetected or FSProbeUnknown.
+	FSProbe string
+	// FSProbeError explains an FSProbeUnknown outcome (exit status and
+	// output, or why no probe ran); empty when FSProbe is FSProbeDetected.
+	FSProbeError string
+	// SizeBytes is the LV size in bytes.
+	SizeBytes int64
+	// Active reports lv_attr[4] == 'a'.
+	Active bool
+	// ExclusiveClaim is one of ExclusiveClaimFree, ExclusiveClaimBusy or
+	// ExclusiveClaimUnknown.
+	ExclusiveClaim string
+	// Consumers lists the observed local consumers of the device: mounts
+	// and stacked-device holders.  It never lists exclusive opens or
+	// configured exports; ExclusiveClaim and Exports report those.
+	Consumers []DeviceConsumer
+	// Exports lists every configured export whose recorded device resolves
+	// to this LV — a LIO backstore or an nvmet namespace — whether it is
+	// the agent's own export of this volume or a foreign one.  Kind is
+	// "export" and Detail is the export's target ID verbatim (LIO IQN or
+	// nvmet NQN) when it can be resolved, otherwise a description of the
+	// backstore or namespace.  An export is configuration, not proof of a
+	// live session: callers compare Detail against the target ID their own
+	// export of this volume would use to distinguish own from foreign.
+	Exports []DeviceConsumer
+}
+
+// DeviceConsumer is one observed local consumer of a block device.  Kind is
+// one of "mount", "holder", "exclusive_open" or "foreign_export"; Detail is
+// kind-specific (mount point, holder device, export target id, ...).
+type DeviceConsumer struct {
+	Kind   string
+	Detail string
 }

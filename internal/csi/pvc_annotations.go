@@ -61,21 +61,32 @@ type pvcDocs struct {
 	// create.  Its structural validation lives in CreateVolume, which has
 	// the resolved store context the check needs.
 	ImportZvol string
+
+	// ImportLV is the raw value of the v1alpha1.AnnotationImportLV
+	// annotation ("<vg>/<lv>:<vg_uuid>:<lv_uuid>") and ImportLVPolicy the
+	// raw value of v1alpha1.AnnotationImportLVPolicy.  Empty means absent.
+	// The grammar, the policy value and the store match are validated in
+	// CreateVolume (see parseImportLV and resolveLVImportRequest).
+	ImportLV       string
+	ImportLVPolicy string
 }
 
 // decodePVCAnnotations decodes and validates the pillar-csi annotations of a
 // PVC.  It returns an error for any structural, unknown or malformed field,
 // and for any pillar-csi.bhyoo.com/ annotation that is not one of the three
-// document keys or the import-zvol key.  An absent or empty document leaves
-// its axis nil.
+// document keys or an import key.  An absent or empty document leaves its
+// axis nil.  The two import annotations are mutually exclusive, and the
+// import-lv policy is only accepted next to an import-lv annotation.
 func decodePVCAnnotations(annotations map[string]string) (pvcDocs, error) {
 	var docs pvcDocs
 
 	err := rejectUnknownPillarKeys("PVC annotation", annotations, map[string]bool{
-		configdocs.BackendDocKey:      true,
-		configdocs.ProtocolDocKey:     true,
-		configdocs.FilesystemDocKey:   true,
-		v1alpha1.AnnotationImportZvol: true,
+		configdocs.BackendDocKey:          true,
+		configdocs.ProtocolDocKey:         true,
+		configdocs.FilesystemDocKey:       true,
+		v1alpha1.AnnotationImportZvol:     true,
+		v1alpha1.AnnotationImportLV:       true,
+		v1alpha1.AnnotationImportLVPolicy: true,
 	})
 	if err != nil {
 		return docs, err
@@ -108,7 +119,37 @@ func decodePVCAnnotations(annotations map[string]string) (pvcDocs, error) {
 			"a ZFS dataset as \"<pool>[/<parent>/]<name>\", got empty",
 			v1alpha1.AnnotationImportZvol)
 	}
-	return docs, nil
+	err = decodeImportLV(annotations, &docs)
+	return docs, err
+}
+
+// decodeImportLV reads the import-lv annotation pair into docs.  Like
+// import-zvol, a present-but-empty value is malformed rather than absent:
+// an intended adoption must never silently become a fresh empty volume, and
+// an empty policy must never silently select the default.
+func decodeImportLV(annotations map[string]string, docs *pvcDocs) error {
+	raw, present := annotations[v1alpha1.AnnotationImportLV]
+	docs.ImportLV = strings.TrimSpace(raw)
+	if present && docs.ImportLV == "" {
+		return fmt.Errorf("unsupported PVC annotation %q: value must name an LVM logical "+
+			"volume as \"<vg>/<lv>:<vg_uuid>:<lv_uuid>\", got empty", v1alpha1.AnnotationImportLV)
+	}
+	rawPolicy, policyPresent := annotations[v1alpha1.AnnotationImportLVPolicy]
+	docs.ImportLVPolicy = strings.TrimSpace(rawPolicy)
+	if policyPresent && docs.ImportLVPolicy == "" {
+		return fmt.Errorf("unsupported PVC annotation %q: value must be %q or %q, got empty",
+			v1alpha1.AnnotationImportLVPolicy,
+			v1alpha1.ImportLVPolicyPreserveOriginal, v1alpha1.ImportLVPolicyManaged)
+	}
+	if policyPresent && !present {
+		return fmt.Errorf("unsupported PVC annotation %q: it selects the policy of an %q "+
+			"adoption and is invalid without it", v1alpha1.AnnotationImportLVPolicy, v1alpha1.AnnotationImportLV)
+	}
+	if present && docs.ImportZvol != "" {
+		return fmt.Errorf("PVC annotations %q and %q are mutually exclusive: a claim adopts "+
+			"at most one existing volume", v1alpha1.AnnotationImportZvol, v1alpha1.AnnotationImportLV)
+	}
+	return nil
 }
 
 // rejectUnknownPillarKeys returns an error naming every key in the

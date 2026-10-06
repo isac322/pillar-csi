@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-This page describes the current pillar-csi release. The CSI driver name is `pillar-csi.bhyoo.com`.
+This page describes the current pillar-csi release. Rows marked unreleased describe work that no release contains yet. The CSI driver name is `pillar-csi.bhyoo.com`.
 
 ## Backends and protocols
 
@@ -139,6 +139,22 @@ Volume expansion runs online. For block protocols, the agent grows the zvol or l
 | Attach before mount | Yes. The CSIDriver sets `attachRequired: true`. |
 | Reclaim policies | `Delete` (default) and `Retain` |
 | Binding modes | `Immediate` (default) and `WaitForFirstConsumer` |
+
+## Adopting existing volumes
+
+A PVC annotation can adopt a volume that already exists on a storage node instead of creating one. See [Annotations](/docs/reference/annotations/) for the keys. LVM adoption and metadata-loss recovery are implemented on the current source revision but are not in a release yet: 0.5.3 and earlier do not contain them, and they need controller, agent and node images built from a source tree that includes them. "Partial" means the listed path is implemented with the limits shown; it does not mean every LVM layout or an automatic takeover is supported.
+
+| Capability | Support | Limits |
+| --- | --- | --- |
+| Import a ZFS zvol (`import-zvol`) | Full | The zvol becomes an ordinary pillar-csi volume. With `reclaimPolicy: Delete`, deleting the PVC destroys it. Handing a zvol back intact is not supported. See [Import a zvol](/docs/how-to/import-zvol/). |
+| Adopt an LVM LV, `PreserveOriginal` (default) | Partial, unreleased | Active linear LVs, or thin LVs of the store's configured thin pool. `DeleteVolume` releases the LV and keeps it and its pool; expansion is refused; the node mounts the existing filesystem without `mkfs`, `fsck`, automatic repair or resize. Read-write mounts still allow journal replay and workload writes, so the bytes do not stay identical. |
+| Adopt an LVM LV, `Managed` (explicit) | Partial, unreleased | Same source checks. The LV then behaves like a volume pillar-csi created: `Delete` reclaim destroys it and expansion may grow it. |
+| Inspect an LV through the agent `InspectVolume` RPC | Partial, unreleased | Read-only report of identity, layout, filesystem signature, exclusive-open state, consumers and exports. An unknown filesystem probe is reported as unknown, not blank. An empty consumer list does not rule out a mount the agent cannot see, which is why the exclusive-open check is reported separately. The RPC is not a separate permission: a client certificate the agent trusts can call every agent RPC. |
+| Rebind a retained adopted volume to a new PVC | Partial, manual | The same PV, `volumeHandle` and `PillarVolumeState` are bound to a replacement claim; no new `CreateVolume` runs. The operator steps are in [Rebind a retained volume](/docs/how-to/import-lv/#rebind-a-retained-volume). |
+| Recover an adopted LV after its PV or `PillarVolumeState` is lost | Partial, unreleased | Requires an agent-signed observation, an operator-signed authorization, persistent agent state, exact old/new lifecycle and LV identity, and verified owner-stop evidence. Recovery records are non-serving and non-reapable until the transfer commits; missing or uncertain evidence refuses the transfer. See [Recover after metadata loss](/docs/how-to/import-lv/#recover-after-metadata-loss). |
+| Adopt snapshots, thin snapshot origins, thin pools, mirrors, RAID or inactive LVs | Unsupported | Import never activates or converts an LV. |
+
+The pinned LV identity lives in the agent's persistent state under `/var/lib/pillar-csi/agent`, so LV adoption needs that hostPath to survive agent and node restarts. Mounting an adopted filesystem without formatting is implemented only for Linux nodes; on other platforms the stage fails with an error and never falls back to formatting. See [Adopt an existing LVM logical volume](/docs/how-to/import-lv/) for the workflow and [What is not supported](/docs/how-to/import-lv/#what-is-not-supported) for the remaining limits.
 
 ## Security
 

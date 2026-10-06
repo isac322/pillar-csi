@@ -431,9 +431,9 @@ func TestNodeStageVolume_Local_MissingTargetIDRejected(t *testing.T) {
 }
 
 // rollbackMounter wraps the mock mounter for local-stage rollback tests: it
-// runs afterMount once a FormatAndMount or bind Mount succeeded and logs each
-// Unmount into events, which rollbackDeviceMapper shares, so the order of
-// unmount and claim removal is observable.
+// runs afterMount once a FormatAndMount, MountExisting or bind Mount
+// succeeded and logs each Unmount into events, which rollbackDeviceMapper
+// shares, so the order of unmount and claim removal is observable.
 type rollbackMounter struct {
 	*mockMounter
 	afterMount func()
@@ -444,6 +444,16 @@ func (m *rollbackMounter) FormatAndMount(
 	ctx context.Context, source, target, fsType string, options, mkfsOptions []string,
 ) error {
 	err := m.mockMounter.FormatAndMount(ctx, source, target, fsType, options, mkfsOptions)
+	if err == nil {
+		m.afterMount()
+	}
+	return err
+}
+
+func (m *rollbackMounter) MountExisting(
+	ctx context.Context, source, target, fsType string, options []string,
+) error {
+	err := m.mockMounter.MountExisting(ctx, source, target, fsType, options)
 	if err == nil {
 		m.afterMount()
 	}

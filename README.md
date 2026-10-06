@@ -64,6 +64,8 @@ What works today:
 
 Not supported yet: SMB, snapshots, and clones. Block protocols reject `ReadWriteMany`; NFS is the only RWX protocol.
 
+LVM adoption and metadata-loss recovery are implemented on the current source revision but are not in a tagged release yet. Adoption keeps the LV and its data by default: deleting the PVC releases the LV, expansion is refused, and the node mounts the existing filesystem without formatting, checking or resizing it. Recovery requires an agent-signed observation, an operator-signed authorization, persistent agent state and verified owner-stop evidence; uncertain ownership fails closed. See [Adopt an existing LVM logical volume](https://pillar-csi.bhyoo.com/docs/how-to/import-lv/) and the [support matrix](https://pillar-csi.bhyoo.com/docs/reference/support-matrix/#adopting-existing-volumes).
+
 
 ## Compared with democratic-csi
 
@@ -385,6 +387,7 @@ Security notes:
 - [Install with Helm](https://pillar-csi.bhyoo.com/docs/how-to/install-helm/)
 - [Prepare a ZFS node](https://pillar-csi.bhyoo.com/docs/how-to/prepare-zfs-node/) and [prepare an LVM node](https://pillar-csi.bhyoo.com/docs/how-to/prepare-lvm-node/)
 - [Volume overrides](https://pillar-csi.bhyoo.com/docs/how-to/volume-overrides/) and [PVC annotations](https://pillar-csi.bhyoo.com/docs/reference/annotations/)
+- [Import a zvol](https://pillar-csi.bhyoo.com/docs/how-to/import-zvol/) and [adopt an existing LVM logical volume](https://pillar-csi.bhyoo.com/docs/how-to/import-lv/) (LV adoption is not in a release yet)
 - [Tune NVMe-oF](https://pillar-csi.bhyoo.com/docs/how-to/tune-nvmeof/) and [configure iSCSI](https://pillar-csi.bhyoo.com/docs/how-to/configure-iscsi/)
 - [Expand a volume](https://pillar-csi.bhyoo.com/docs/how-to/expand-volume/) and [node maintenance](https://pillar-csi.bhyoo.com/docs/how-to/node-maintenance/)
 - [CRD reference](https://pillar-csi.bhyoo.com/docs/reference/crd/) and [Helm values](https://pillar-csi.bhyoo.com/docs/reference/helm-values/)

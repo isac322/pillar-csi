@@ -28,6 +28,7 @@ package csi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -125,6 +126,16 @@ type mockMounter struct {
 	// answer a kernel shutdown produces, which is why read-only mounts are
 	// never write-probed in production code.
 	mountRO map[string]bool
+	// diskFormat models the filesystem signature blkid reports for the
+	// devices a test registers ("" = blank).  FormatAndMount of a
+	// registered device behaves like KubeMounter (formatIfBlank +
+	// SafeFormatAndMount): a blank device is formatted (mkfsDevices), an
+	// existing filesystem is fsck-checked before a read-write mount
+	// (fsckDevices), and a filesystem of another type fails the mount.
+	// Unregistered devices keep the historical record-only behavior.
+	diskFormat  map[string]string
+	mkfsDevices []string
+	fsckDevices []string
 
 	// errors to return per method (nil = success).
 	formatAndMountErr   error
@@ -160,6 +171,7 @@ func newMockMounter() *mockMounter {
 		mountSource:  make(map[string]string),
 		unhealthy:    make(map[string]bool),
 		mountRO:      make(map[string]bool),
+		diskFormat:   make(map[string]string),
 	}
 }
 
@@ -200,12 +212,62 @@ func (m *mockMounter) FormatAndMount(
 	if m.formatAndMountErr != nil {
 		return m.formatAndMountErr
 	}
+	if existing, tracked := m.diskFormat[source]; tracked {
+		want := fsType
+		if want == "" {
+			want = defaultFsType
+		}
+		readOnly := slices.Contains(options, "ro")
+		switch {
+		case existing == "" && readOnly:
+			return fmt.Errorf("cannot mount unformatted disk %s read-only", source)
+		case existing == "":
+			m.mkfsDevices = append(m.mkfsDevices, source)
+			m.diskFormat[source] = want
+		default:
+			if !readOnly {
+				m.fsckDevices = append(m.fsckDevices, source)
+			}
+			if existing != want {
+				return fmt.Errorf("mount -t %s %s: wrong fs type, bad option, bad superblock (device carries %s)",
+					want, source, existing)
+			}
+		}
+	}
 	m.mountedPaths[target] = true
 	m.mountSource[target] = source
 	m.mountRO[target] = slices.Contains(options, "ro")
 	// Mounting a device whose dead superblock is still pinned by other
 	// mounts re-attaches the dead filesystem, so the unhealthy mark is
 	// deliberately kept; Unmount clears it when the last mount goes away.
+	return nil
+}
+
+// MountExisting mirrors KubeMounter's preserve-original mount path: it
+// reads the recorded blkid signature of the device — never echoes the
+// request — and mounts the existing filesystem as is, without mkfs, fsck
+// or any repair step.  A device with no signature answers ErrNoFilesystem
+// and one whose signature differs from the requested type answers
+// ErrFilesystemMismatch; nothing is mounted in either case.
+func (m *mockMounter) MountExisting(
+	_ context.Context, source, target, fsType string, options []string,
+) error {
+	want := fsType
+	if want == "" {
+		want = defaultFsType
+	}
+	existing := m.diskFormat[source]
+	switch {
+	case existing == "":
+		return ErrNoFilesystem
+	case existing != want:
+		return fmt.Errorf("%w (device carries %s, want %s)", ErrFilesystemMismatch, existing, want)
+	}
+	m.mountedPaths[target] = true
+	m.mountSource[target] = source
+	m.mountRO[target] = slices.Contains(options, "ro")
+	// As in FormatAndMount, re-mounting while the dead superblock is still
+	// pinned re-attaches the dead filesystem; the unhealthy mark is kept.
 	return nil
 }
 
@@ -2180,4 +2242,458 @@ func TestStageStateFromAttachResult_UnknownProtocol(t *testing.T) {
 	if s.NVMeoF != nil {
 		t.Error("NVMeoF should be nil for unknown protocol")
 	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NodeStageVolume — preserve-original adoption (issue #163)
+// ─────────────────────────────────────────────────────────────────────────────.
+
+// preserveOriginalVolumeContextKey is the wire spelling of the VolumeContext
+// key the controller sets on an adopted LV whose data must be preserved; the
+// value "true" restricts the node to mounting the filesystem already on the
+// device.
+const preserveOriginalVolumeContextKey = "pillar-csi.bhyoo.com/preserve-original"
+
+// preserveNQN is the NVMe-oF target of the adopted volume in these tests.
+const preserveNQN = "nqn.2026-01.com.bhyoo.pillar-csi:vg0.lv-adopted"
+
+// preserveVolumeID is the CSI volume ID of the adopted LV in these tests.
+const preserveVolumeID = "vg0/lv-adopted"
+
+// adoptedPreserveVolumeContext returns the mountVolumeContext of the adopted
+// volume (preserveNQN at testStorageAddr) plus the preserve-original key set
+// to "true".
+func adoptedPreserveVolumeContext() map[string]string {
+	volCtx := mountVolumeContext(preserveNQN, testStorageAddr)
+	volCtx[preserveOriginalVolumeContextKey] = "true"
+	return volCtx
+}
+
+// setPersistedStageField seeds one field of the on-disk stage record as JSON,
+// the way a record written by an earlier plugin process carries it.  It is
+// fixture setup only; tests prove the effect through later RPCs.
+func setPersistedStageField(t *testing.T, srv *NodeServer, volumeID, key string, value any) {
+	t.Helper()
+	path := srv.stateFilePath(volumeID)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: test-owned state directory
+	if err != nil {
+		t.Fatalf("read stage record of %q: %v", volumeID, err)
+	}
+	record := map[string]any{}
+	err = json.Unmarshal(data, &record)
+	if err != nil {
+		t.Fatalf("decode stage record of %q: %v", volumeID, err)
+	}
+	record[key] = value
+	data, err = json.Marshal(record)
+	if err != nil {
+		t.Fatalf("encode stage record of %q: %v", volumeID, err)
+	}
+	err = os.WriteFile(path, data, 0o600)
+	if err != nil {
+		t.Fatalf("write stage record of %q: %v", volumeID, err)
+	}
+}
+
+// requirePreservedAcrossRestart proves the preservation is durable node
+// state, not request state: a plugin restarted over the same state directory
+// receives no VolumeContext on NodeExpandVolume, yet must refuse to resize the
+// volume with FailedPrecondition and never run the resize tool.
+func requirePreservedAcrossRestart(
+	t *testing.T, conn Connector, mnt Mounter, stateDir, volumePath string, volCap *csi.VolumeCapability,
+) {
+	t.Helper()
+	resizer := &mockResizer{}
+	restarted := NewNodeServerWithStateDir("test-node", conn, mnt, stateDir).WithResizer(resizer)
+	_, err := restarted.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
+		VolumeId:          preserveVolumeID,
+		VolumePath:        volumePath,
+		StagingTargetPath: volumePath,
+		VolumeCapability:  volCap,
+		CapacityRange:     &csi.CapacityRange{RequiredBytes: 2 << 30},
+	})
+	if got := status.Code(err); got != codes.FailedPrecondition {
+		t.Errorf("NodeExpandVolume after restart: gRPC code = %v, want %v (err: %v); "+
+			"the preservation did not survive the restart", got, codes.FailedPrecondition, err)
+	}
+	if resizer.called != 0 {
+		t.Errorf("resize tool ran %d times on a preserved volume after restart, want 0", resizer.called)
+	}
+}
+
+// resetFormatJournal forgets the recorded format-and-mount, mkfs and fsck
+// history so a test asserts only what the next RPC does to the device.
+func (m *mockMounter) resetFormatJournal() {
+	m.formatAndMountCalls = nil
+	m.mkfsDevices = nil
+	m.fsckDevices = nil
+}
+
+// requireDeviceUntouched asserts that the device still carries wantFormat and
+// that nothing formatted, checked, or repaired it: the format-and-mount path
+// (mkfs on a blank device, fsck before a read-write mount) never ran.
+func requireDeviceUntouched(t *testing.T, m *mockMounter, device, wantFormat string) {
+	t.Helper()
+	if got := m.diskFormat[device]; got != wantFormat {
+		t.Errorf("device %s signature = %q, want %q unchanged", device, got, wantFormat)
+	}
+	if len(m.mkfsDevices) != 0 {
+		t.Errorf("mkfs ran on %v, want no format of a preserved device", m.mkfsDevices)
+	}
+	if len(m.fsckDevices) != 0 {
+		t.Errorf("fsck ran on %v, want no check or repair of a preserved device", m.fsckDevices)
+	}
+	if len(m.formatAndMountCalls) != 0 {
+		t.Errorf("format-and-mount path ran %d times (%+v), want 0 for a preserved device",
+			len(m.formatAndMountCalls), m.formatAndMountCalls)
+	}
+}
+
+// requireFailedPrecondition fails t (without stopping it) unless err carries
+// codes.FailedPrecondition.
+func requireFailedPrecondition(t *testing.T, err error) {
+	t.Helper()
+	if got := status.Code(err); got != codes.FailedPrecondition {
+		t.Errorf("gRPC code = %v, want %v (err: %v)", got, codes.FailedPrecondition, err)
+	}
+}
+
+// TestNodeStageVolume_PreserveOriginal_MountsExisting verifies that a
+// preserve-original volume whose device already carries the requested
+// filesystem is mounted as is — never formatted, fsck-checked or repaired —
+// and that the preservation survives a plugin restart (resize refused).
+func TestNodeStageVolume_PreserveOriginal_MountsExisting(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	device := env.connector.devicePath
+	env.mounter.diskFormat[device] = "ext4"
+	stagingPath := t.TempDir()
+
+	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          preserveVolumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext:     adoptedPreserveVolumeContext(),
+	})
+	if err != nil {
+		t.Fatalf("NodeStageVolume: %v", err)
+	}
+
+	requireDeviceUntouched(t, env.mounter, device, "ext4")
+	if source, srcErr := env.mounter.MountSource(stagingPath); srcErr != nil || source != device {
+		t.Errorf("staging mount source = %q (err %v), want %q", source, srcErr, device)
+	}
+	requirePreservedAcrossRestart(t, env.connector, env.mounter, env.stateDir, stagingPath, mountCap("ext4"))
+}
+
+// TestNodeStageVolume_PreserveOriginal_BlankOrMismatchRefused verifies that a
+// preserve-original volume is refused with FailedPrecondition when its
+// device carries no filesystem or one of another type: the device is left
+// exactly as it was and nothing is mounted.
+func TestNodeStageVolume_PreserveOriginal_BlankOrMismatchRefused(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		onDisk string
+		volCap *csi.VolumeCapability
+	}{
+		{name: "blank device", onDisk: "", volCap: mountCap("ext4")},
+		{name: "blank device staged read-only", onDisk: "", volCap: mountCapRO("ext4")},
+		{name: "xfs device for an ext4 request", onDisk: "xfs", volCap: mountCap("ext4")},
+		{name: "ext4 device for an xfs request", onDisk: "ext4", volCap: mountCap("xfs")},
+		{name: "xfs device for the default fs type", onDisk: "xfs", volCap: mountCap("")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := newNodeTestEnv(t)
+			device := env.connector.devicePath
+			env.mounter.diskFormat[device] = tc.onDisk
+			stagingPath := t.TempDir()
+
+			_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+				VolumeId:          preserveVolumeID,
+				StagingTargetPath: stagingPath,
+				VolumeCapability:  tc.volCap,
+				VolumeContext:     adoptedPreserveVolumeContext(),
+			})
+			requireFailedPrecondition(t, err)
+			requireDeviceUntouched(t, env.mounter, device, tc.onDisk)
+			if mounted, _ := env.mounter.MountEntryExists(stagingPath); mounted { //nolint:errcheck // mock never errors here
+				t.Error("staging path mounted although the stage was refused")
+			}
+		})
+	}
+}
+
+// stagePreservedForRestage stages a preserve-original ext4 volume, pins the
+// preservation in its stage record (as the stage that adopted it recorded
+// it), and clears the format journal so the caller observes only the
+// re-stage.
+func stagePreservedForRestage(t *testing.T, env *nodeTestEnv, stagingPath string) {
+	t.Helper()
+	env.mounter.diskFormat[env.connector.devicePath] = "ext4"
+	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          preserveVolumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext:     adoptedPreserveVolumeContext(),
+	})
+	if err != nil {
+		t.Fatalf("initial NodeStageVolume: %v", err)
+	}
+	setPersistedStageField(t, env.srv, preserveVolumeID, "preserve_original", true)
+	env.mounter.resetFormatJournal()
+}
+
+// rebootNode drops the staging mount the way a node reboot does and returns
+// a fresh NodeServer over the same state directory (a restarted plugin).
+func rebootNode(t *testing.T, env *nodeTestEnv, stagingPath string) *NodeServer {
+	t.Helper()
+	err := env.mounter.Unmount(stagingPath)
+	if err != nil {
+		t.Fatalf("simulate reboot: %v", err)
+	}
+	env.mounter.resetFormatJournal()
+	return NewNodeServerWithStateDir("test-node", env.connector, env.mounter, env.stateDir)
+}
+
+// TestNodeStageVolume_PreservePinSurvivesMissingVC verifies that the
+// preservation pinned in the stage record governs every later stage of the
+// volume, even one whose VolumeContext lacks the key, and that the key
+// upgrades an unpinned record but nothing downgrades a pinned one.
+func TestNodeStageVolume_PreservePinSurvivesMissingVC(t *testing.T) {
+	t.Parallel()
+
+	t.Run("pinned record remounts the existing filesystem", func(t *testing.T) {
+		t.Parallel()
+		env := newNodeTestEnv(t)
+		stagingPath := t.TempDir()
+		stagePreservedForRestage(t, env, stagingPath)
+		restarted := rebootNode(t, env, stagingPath)
+
+		_, err := restarted.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+			VolumeId:          preserveVolumeID,
+			StagingTargetPath: stagingPath,
+			VolumeCapability:  mountCap("ext4"),
+			VolumeContext:     mountVolumeContext(preserveNQN, testStorageAddr),
+		})
+		if err != nil {
+			t.Fatalf("re-stage after reboot: %v", err)
+		}
+		requireDeviceUntouched(t, env.mounter, env.connector.devicePath, "ext4")
+		if source, srcErr := env.mounter.MountSource(stagingPath); srcErr != nil || source != env.connector.devicePath {
+			t.Errorf("staging mount source = %q (err %v), want %q", source, srcErr, env.connector.devicePath)
+		}
+		requirePreservedAcrossRestart(t, env.connector, env.mounter, env.stateDir, stagingPath, mountCap("ext4"))
+	})
+
+	t.Run("pinned record refuses a blank device", func(t *testing.T) {
+		t.Parallel()
+		env := newNodeTestEnv(t)
+		stagingPath := t.TempDir()
+		stagePreservedForRestage(t, env, stagingPath)
+		restarted := rebootNode(t, env, stagingPath)
+		// The signature is gone (e.g. wiped out of band): the pinned volume
+		// must not be re-created empty.
+		env.mounter.diskFormat[env.connector.devicePath] = ""
+
+		_, err := restarted.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+			VolumeId:          preserveVolumeID,
+			StagingTargetPath: stagingPath,
+			VolumeCapability:  mountCap("ext4"),
+			VolumeContext:     mountVolumeContext(preserveNQN, testStorageAddr),
+		})
+		requireFailedPrecondition(t, err)
+		requireDeviceUntouched(t, env.mounter, env.connector.devicePath, "")
+		if mounted, _ := env.mounter.MountEntryExists(stagingPath); mounted { //nolint:errcheck // mock never errors here
+			t.Error("staging path mounted although the stage was refused")
+		}
+		requirePreservedAcrossRestart(t, env.connector, env.mounter, env.stateDir, stagingPath, mountCap("ext4"))
+	})
+
+	t.Run("key upgrades an unpinned record", func(t *testing.T) {
+		t.Parallel()
+		env := newNodeTestEnv(t)
+		stagingPath := t.TempDir()
+		env.mounter.diskFormat[env.connector.devicePath] = "ext4"
+		_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+			VolumeId:          preserveVolumeID,
+			StagingTargetPath: stagingPath,
+			VolumeCapability:  mountCap("ext4"),
+			VolumeContext:     mountVolumeContext(preserveNQN, testStorageAddr),
+		})
+		if err != nil {
+			t.Fatalf("initial NodeStageVolume without the key: %v", err)
+		}
+		restarted := rebootNode(t, env, stagingPath)
+
+		_, err = restarted.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+			VolumeId:          preserveVolumeID,
+			StagingTargetPath: stagingPath,
+			VolumeCapability:  mountCap("ext4"),
+			VolumeContext:     adoptedPreserveVolumeContext(),
+		})
+		if err != nil {
+			t.Fatalf("re-stage with the key: %v", err)
+		}
+		requireDeviceUntouched(t, env.mounter, env.connector.devicePath, "ext4")
+		requirePreservedAcrossRestart(t, env.connector, env.mounter, env.stateDir, stagingPath, mountCap("ext4"))
+	})
+
+	t.Run("idempotent restage without the key keeps the pin", func(t *testing.T) {
+		t.Parallel()
+		env := newNodeTestEnv(t)
+		stagingPath := t.TempDir()
+		stagePreservedForRestage(t, env, stagingPath)
+
+		// Still mounted: the restage takes the idempotent path and rewrites
+		// the record; a request without the key must not clear the pin.
+		_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+			VolumeId:          preserveVolumeID,
+			StagingTargetPath: stagingPath,
+			VolumeCapability:  mountCap("ext4"),
+			VolumeContext:     mountVolumeContext(preserveNQN, testStorageAddr),
+		})
+		if err != nil {
+			t.Fatalf("idempotent re-stage without the key: %v", err)
+		}
+		requireDeviceUntouched(t, env.mounter, env.connector.devicePath, "ext4")
+		requirePreservedAcrossRestart(t, env.connector, env.mounter, env.stateDir, stagingPath, mountCap("ext4"))
+	})
+}
+
+// TestNodeStageVolume_PreserveOriginal_DeadStageRemountsExisting verifies
+// that re-staging a pinned volume whose staged filesystem entered kernel
+// shutdown drops the dead mount and re-mounts the existing filesystem
+// without the format-and-mount path (no fsck or repair step).
+func TestNodeStageVolume_PreserveOriginal_DeadStageRemountsExisting(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	stagePreservedForRestage(t, env, stagingPath)
+	env.mounter.markUnhealthy(env.connector.devicePath)
+
+	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          preserveVolumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext:     mountVolumeContext(preserveNQN, testStorageAddr),
+	})
+	if err != nil {
+		t.Fatalf("re-stage of a dead preserved filesystem: %v", err)
+	}
+	requireDeviceUntouched(t, env.mounter, env.connector.devicePath, "ext4")
+	if healthErr := env.mounter.CheckMountHealth(stagingPath); healthErr != nil {
+		t.Errorf("staged filesystem not re-mounted healthy: %v", healthErr)
+	}
+	requirePreservedAcrossRestart(t, env.connector, env.mounter, env.stateDir, stagingPath, mountCap("ext4"))
+}
+
+// TestNodeStageVolume_PreserveKeyRestagesUnpinnedDeadMount verifies that the
+// VolumeContext key upgrades the preservation before the dead-mount repair
+// of a record staged without the pin: the still-mounted, kernel-shutdown
+// staged filesystem is dropped and re-mounted from the unchanged device
+// with no mkfs, fsck or format-and-mount, it comes back healthy, and the
+// upgraded pin survives a plugin restart (resize refused).
+func TestNodeStageVolume_PreserveKeyRestagesUnpinnedDeadMount(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	device := env.connector.devicePath
+	env.mounter.diskFormat[device] = "ext4"
+	stagingPath := t.TempDir()
+	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          preserveVolumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext:     mountVolumeContext(preserveNQN, testStorageAddr),
+	})
+	if err != nil {
+		t.Fatalf("unpinned NodeStageVolume: %v", err)
+	}
+	env.mounter.markUnhealthy(device)
+	env.mounter.resetFormatJournal()
+
+	_, err = env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          preserveVolumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext:     adoptedPreserveVolumeContext(),
+	})
+	if err != nil {
+		t.Fatalf("re-stage of a dead unpinned filesystem with the key: %v", err)
+	}
+	requireDeviceUntouched(t, env.mounter, device, "ext4")
+	if healthErr := env.mounter.CheckMountHealth(stagingPath); healthErr != nil {
+		t.Errorf("staged filesystem not re-mounted healthy: %v", healthErr)
+	}
+	requirePreservedAcrossRestart(t, env.connector, env.mounter, env.stateDir, stagingPath, mountCap("ext4"))
+}
+
+// TestNodeStageVolume_PreserveOriginal_BlockMode verifies that a raw block
+// preserve-original volume is bound without any filesystem probe or format
+// — even on a blank device — and that the preservation survives a plugin
+// restart (resize refused).
+func TestNodeStageVolume_PreserveOriginal_BlockMode(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	device := env.connector.devicePath
+	env.mounter.diskFormat[device] = ""
+	stagingPath := t.TempDir()
+
+	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          preserveVolumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  blockCap(),
+		VolumeContext:     adoptedPreserveVolumeContext(),
+	})
+	if err != nil {
+		t.Fatalf("NodeStageVolume (block): %v", err)
+	}
+	requireDeviceUntouched(t, env.mounter, device, "")
+	bindTarget := blockStagingDevicePath(stagingPath)
+	if source, srcErr := env.mounter.MountSource(bindTarget); srcErr != nil || source != device {
+		t.Errorf("block bind source = %q (err %v), want %q", source, srcErr, device)
+	}
+	requirePreservedAcrossRestart(t, env.connector, env.mounter, env.stateDir, stagingPath, blockCap())
+}
+
+// TestNodeStageVolume_PreserveOriginal_ReadOnlyStage verifies that a
+// preserve-original volume staged read-only is mounted read-only from its
+// existing filesystem and is health-checked only with the non-writing probe,
+// both when staged and when the stage is repeated.
+func TestNodeStageVolume_PreserveOriginal_ReadOnlyStage(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	device := env.connector.devicePath
+	env.mounter.diskFormat[device] = "ext4"
+	stagingPath := t.TempDir()
+	req := &csi.NodeStageVolumeRequest{
+		VolumeId:          preserveVolumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCapRO("ext4"),
+		VolumeContext:     adoptedPreserveVolumeContext(),
+	}
+
+	for attempt := range 2 {
+		_, err := env.srv.NodeStageVolume(context.Background(), req)
+		if err != nil {
+			t.Fatalf("NodeStageVolume attempt %d: %v", attempt+1, err)
+		}
+	}
+	requireDeviceUntouched(t, env.mounter, device, "ext4")
+	if !env.mounter.mountRO[stagingPath] {
+		t.Error("read-only stage of a preserved volume is not mounted read-only")
+	}
+	if slices.Contains(env.mounter.checkHealthCalls, stagingPath) {
+		t.Errorf("read-only staged mount was write-probed: %v", env.mounter.checkHealthCalls)
+	}
+	requirePreservedAcrossRestart(t, env.connector, env.mounter, env.stateDir, stagingPath, mountCapRO("ext4"))
 }

@@ -28,11 +28,15 @@ Rules:
 - Structural fields fail with `<key>: <path> is structural and cannot be set per volume`. Unknown fields fail with `unknown field`.
 `pillar-csi.bhyoo.com/filesystem` is rejected on a PVC with `volumeMode: Block`. For NFS, `fsType` may be omitted or `nfs`; nonempty `mkfsOptions`, enabled periodic trim, and contradictory mount flags are rejected.
 
-One more PVC annotation is not a configuration document:
+Three more PVC annotations are not configuration documents. They adopt an existing volume instead of creating one, and they are valid only on a PVC, not as StorageClass parameters. A claim may carry `import-zvol` or `import-lv`, not both.
 
 | Key | Value |
 |---|---|
-| `pillar-csi.bhyoo.com/import-zvol` | full name of an existing ZFS zvol, for example `hot-data/k8s/pvc-0d52...`. `CreateVolume` adopts that zvol instead of creating a volume. The zvol must sit directly under the store's `pool` and `parentDataset` (exactly `<pool>/<parentDataset>/<name>`, or `<pool>/<name>` without a `parentDataset`), be unused on the storage node and be at least the requested size. Valid only on a PVC, not as a StorageClass parameter. See [Import a zvol from another CSI driver](/docs/how-to/import-zvol/). |
+| `pillar-csi.bhyoo.com/import-zvol` | full name of an existing ZFS zvol, for example `hot-data/k8s/pvc-0d52...`. `CreateVolume` adopts that zvol instead of creating a volume. The zvol must sit directly under the store's `pool` and `parentDataset` (exactly `<pool>/<parentDataset>/<name>`, or `<pool>/<name>` without a `parentDataset`), be unused on the storage node and be at least the requested size. See [Import a zvol from another CSI driver](/docs/how-to/import-zvol/). |
+| `pillar-csi.bhyoo.com/import-lv` | existing LVM logical volume as `<vg>/<lv>:<vg_uuid>:<lv_uuid>`, for example `data-vg/legacy:<vg_uuid>:<lv_uuid>`. All four parts are required; read the UUIDs with `lvs -o vg_uuid,lv_uuid`. The store must use the `lvm` backend with the same volume group. The LV must be active, at least the requested size, unused on the storage node, linear when the store has no thin pool, and a thin LV of the store's configured thin pool when it has one. Snapshots, thin snapshot origins, pools, mirrors, RAID and other LV types are refused. Not in a release yet. See [Adopt an existing LVM logical volume](/docs/how-to/import-lv/). |
+| `pillar-csi.bhyoo.com/import-lv-policy` | `PreserveOriginal` (the default when the key is absent) or `Managed`; the value is case-sensitive and anything else is refused. `PreserveOriginal` keeps the LV and its data: `DeleteVolume` only releases it, expansion is refused, and the node mounts the existing filesystem without `mkfs`, `fsck` or resize. `Managed` turns the LV into an ordinary volume that a `Delete` reclaim policy destroys and expansion may grow; you get it only by writing `Managed`. Valid only together with `import-lv`. |
+
+The first `CreateVolume` pins the adopted LV's names, UUIDs and policy in the `PillarVolumeState` and in the agent's persistent state under `/var/lib/pillar-csi/agent`. Retries replay that record: an annotation that later names another LV, other UUIDs or another policy fails with `InvalidArgument`, and the agent refuses to retarget the volume or downgrade `PreserveOriginal` to `Managed`. Import never activates, renames, resizes or otherwise changes the volume group or the LV. `import-zvol` behavior is unchanged.
 
 ### StorageClass parameters
 

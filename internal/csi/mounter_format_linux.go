@@ -57,6 +57,51 @@ func (m *KubeMounter) FormatAndMount(
 	return nil
 }
 
+// MountExisting mounts the filesystem already present on source at target
+// without ever writing to the device: no mkfs, fsck, repair or resize step
+// runs.  It is the mount path of preserve-original volumes, whose data must
+// survive untouched.
+//
+// The device is proven readable first so a blank verdict from blkid can
+// never come from a device that merely was not ready, then the recorded
+// signature must match the requested fsType ("" defaults to ext4 exactly as
+// FormatAndMount does): a blank device answers ErrNoFilesystem and a
+// different filesystem answers ErrFilesystemMismatch.  The only data-path
+// effect allowed is what the kernel itself does in an ordinary mount(2),
+// e.g. ext4/xfs journal replay on a read-write mount.
+//
+// Callers distinguish the refusals with errors.Is on ErrNoFilesystem and
+// ErrFilesystemMismatch; any other failure is the readability probe or the
+// mount itself.
+func (m *KubeMounter) MountExisting(
+	ctx context.Context, source, target, fsType string, options []string,
+) error {
+	if fsType == "" {
+		fsType = defaultFsType
+	}
+	err := m.checkReadable(source)
+	if err != nil {
+		return fmt.Errorf("detect existing filesystem on %s: %w", source, err)
+	}
+	existing, err := m.inner.GetDiskFormat(source)
+	if err != nil {
+		return fmt.Errorf("detect existing filesystem on %s: %w", source, err)
+	}
+	trace.SpanFromContext(ctx).SetAttributes(telemetry.KeyFSDetected.String(existing))
+	switch {
+	case existing == "":
+		return fmt.Errorf("MountExisting %s → %s: %w", source, target, ErrNoFilesystem)
+	case existing != fsType:
+		return fmt.Errorf("MountExisting %s → %s: %w (device carries %s, want %s)",
+			source, target, ErrFilesystemMismatch, existing, fsType)
+	}
+	err = m.inner.Mount(source, target, fsType, options)
+	if err != nil {
+		return fmt.Errorf("MountExisting %s → %s as %s: %w", source, target, fsType, err)
+	}
+	return nil
+}
+
 // formatIfBlank runs mkfs.<fsType> on source when blkid finds no filesystem
 // or partition table on it.  A device that already carries data is left
 // untouched, and a read-only mount request leaves a blank device alone so

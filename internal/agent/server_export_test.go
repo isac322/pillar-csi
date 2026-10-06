@@ -526,3 +526,92 @@ func TestListExports_ReturnsEmpty(t *testing.T) {
 		t.Errorf("expected empty exports map, got %d entries", len(resp.GetExports()))
 	}
 }
+
+// A volume pinned to a pre-existing LV is re-verified before any export or
+// access grant: an LV recreated or removed under the same name is refused
+// before any configfs write, the durable mark is left byte-identical, and
+// the refusal survives an agent restart.  The healthy pinned LV still
+// exports, and an unpinned volume is never verified.
+func TestPinnedSource_RecheckedBeforeExport(t *testing.T) {
+	t.Parallel()
+	changes := map[string]struct {
+		change  func(*mockLVBackend)
+		succeed bool
+	}{
+		"verified": {change: func(*mockLVBackend) {}, succeed: true},
+		"replaced": {change: func(b *mockLVBackend) { b.replaceLV() }},
+		"missing":  {change: func(b *mockLVBackend) { delete(b.lvs, testVolumeID) }},
+	}
+	for name, tc := range changes {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := newMockLVBackend()
+			srv, stateDir, cfgRoot := newLVTestServer(t, b)
+			seeded := seedMark(t, stateDir, pinnedMark("lifecycle-a", 5, testLVSource(), true))
+			tc.change(b)
+
+			_, err := srv.ExportVolume(context.Background(), pinnedExportRequest())
+			if tc.succeed {
+				if err != nil {
+					t.Fatalf("ExportVolume of the pinned LV: %v", err)
+				}
+				if n := nvmetSubsystems(t, cfgRoot); n != 1 {
+					t.Fatalf("NVMe-oF subsystems = %d, want 1", n)
+				}
+				return
+			}
+			requireExportAndGrantRefused(t, srv, cfgRoot, name, err)
+			requireMarkUnchanged(t, stateDir, seeded, "refused export")
+
+			// After an agent restart the replacement is still not the pinned
+			// LV: the export is refused again and nothing is written.
+			srv = restartLVServer(t, b, stateDir, cfgRoot)
+			_, err = srv.ExportVolume(context.Background(), pinnedExportRequest())
+			requireCode(t, "post-restart ExportVolume of a "+name+" LV", err, codes.FailedPrecondition)
+			if n := nvmetSubsystems(t, cfgRoot); n != 0 {
+				t.Fatalf("post-restart refused export created %d NVMe-oF subsystems", n)
+			}
+			requireMarkUnchanged(t, stateDir, seeded, "post-restart refused export")
+		})
+	}
+}
+
+// pinnedExportRequest exports testVolumeID's pinned LV over NVMe-oF for
+// lifecycle-a.
+func pinnedExportRequest() *agentv1.ExportVolumeRequest {
+	return &agentv1.ExportVolumeRequest{
+		VolumeId:     testVolumeID,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+		ExportParams: nvmeofExportParams("10.0.0.1", 4420),
+		DevicePath:   testLVDevicePath,
+		Fence:        token2("lifecycle-a", 6),
+	}
+}
+
+// requireExportAndGrantRefused asserts exportErr refused the export of a
+// name LV without creating an NVMe-oF subsystem, and that the grant path is
+// refused for the same reason without creating a host entry.
+func requireExportAndGrantRefused(t *testing.T, srv *agent.Server, cfgRoot, name string, exportErr error) {
+	t.Helper()
+	requireCode(t, "ExportVolume of a "+name+" LV", exportErr, codes.FailedPrecondition)
+	if msg := status.Convert(exportErr).Message(); !strings.Contains(msg, testVolumeID) {
+		t.Fatalf("refusal %q does not name volume %q", msg, testVolumeID)
+	}
+	if n := nvmetSubsystems(t, cfgRoot); n != 0 {
+		t.Fatalf("refused export created %d NVMe-oF subsystems", n)
+	}
+
+	// The grant path is refused for the same reason: no host is
+	// admitted to an export that must not exist.
+	_, err := srv.AllowInitiator(context.Background(), &agentv1.AllowInitiatorRequest{
+		VolumeId:     testVolumeID,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+		InitiatorId:  testHostNQN,
+		Fence:        token2("lifecycle-a", 6),
+	})
+	requireCode(t, "AllowInitiator on a "+name+" LV", err, codes.FailedPrecondition)
+	hostDir := filepath.Join(cfgRoot, "nvmet", "hosts", testHostNQN)
+	if _, statErr := os.Stat(hostDir); !os.IsNotExist(statErr) {
+		t.Fatalf("refused grant created host dir %q: stat=%v", hostDir, statErr)
+	}
+}

@@ -241,6 +241,68 @@ func (VolumeAccessType) EnumDescriptor() ([]byte, []int) {
 	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{2}
 }
 
+// TransferOutcome reports what happened to the atomic mark write.
+type TransferOutcome int32
+
+const (
+	TransferOutcome_TRANSFER_OUTCOME_UNSPECIFIED TransferOutcome = 0
+	// The mark write committed: rename + fsync confirmed.  The new lifecycle
+	// owns the volume ID.
+	TransferOutcome_TRANSFER_OUTCOME_COMMITTED TransferOutcome = 1
+	// An identical transfer (same snapshot digest, same authorization digest,
+	// same destination uid/generation) was already committed; this call was
+	// an idempotent retry.
+	TransferOutcome_TRANSFER_OUTCOME_ALREADY_COMMITTED TransferOutcome = 2
+	// The outcome of the mark write is uncertain (failure after or during the
+	// atomic rename/fsync).  The agent performed NO rollback and the mark may
+	// or may not have committed; the caller must re-inspect.  The operation
+	// remains idempotent for the exact same request.
+	TransferOutcome_TRANSFER_OUTCOME_UNKNOWN TransferOutcome = 3
+)
+
+// Enum value maps for TransferOutcome.
+var (
+	TransferOutcome_name = map[int32]string{
+		0: "TRANSFER_OUTCOME_UNSPECIFIED",
+		1: "TRANSFER_OUTCOME_COMMITTED",
+		2: "TRANSFER_OUTCOME_ALREADY_COMMITTED",
+		3: "TRANSFER_OUTCOME_UNKNOWN",
+	}
+	TransferOutcome_value = map[string]int32{
+		"TRANSFER_OUTCOME_UNSPECIFIED":       0,
+		"TRANSFER_OUTCOME_COMMITTED":         1,
+		"TRANSFER_OUTCOME_ALREADY_COMMITTED": 2,
+		"TRANSFER_OUTCOME_UNKNOWN":           3,
+	}
+)
+
+func (x TransferOutcome) Enum() *TransferOutcome {
+	p := new(TransferOutcome)
+	*p = x
+	return p
+}
+
+func (x TransferOutcome) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TransferOutcome) Descriptor() protoreflect.EnumDescriptor {
+	return file_pillar_csi_agent_v1_agent_proto_enumTypes[3].Descriptor()
+}
+
+func (TransferOutcome) Type() protoreflect.EnumType {
+	return &file_pillar_csi_agent_v1_agent_proto_enumTypes[3]
+}
+
+func (x TransferOutcome) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TransferOutcome.Descriptor instead.
+func (TransferOutcome) EnumDescriptor() ([]byte, []int) {
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{3}
+}
+
 // FencingToken orders every mutation of one volume's resources.
 //
 // volume_uid is the UID of the volume's PillarVolumeState and identifies one
@@ -2040,8 +2102,8 @@ type ImportVolumeRequest struct {
 	// Minimum required storage size in bytes.  The existing resource must be
 	// at least this large; it is never resized or truncated.
 	CapacityBytes int64 `protobuf:"varint,2,opt,name=capacity_bytes,json=capacityBytes,proto3" json:"capacity_bytes,omitempty"`
-	// Backend implementation to use.  Only BACKEND_TYPE_ZFS_ZVOL supports
-	// import; other backends return UNIMPLEMENTED.
+	// Backend implementation to use.  BACKEND_TYPE_ZFS_ZVOL and
+	// BACKEND_TYPE_LVM support import; other backends return UNIMPLEMENTED.
 	BackendType BackendType `protobuf:"varint,3,opt,name=backend_type,json=backendType,proto3,enum=pillar_csi.agent.v1.BackendType" json:"backend_type,omitempty"`
 	// Fencing token: the PillarVolumeState UID and the publicationGeneration
 	// the controller committed for this operation.  See FencingToken.
@@ -2054,8 +2116,25 @@ type ImportVolumeRequest struct {
 	// parentDataset differs from the controller's would silently adopt a
 	// different dataset.  Empty disables the check for older controllers.
 	ExpectedDataset string `protobuf:"bytes,5,opt,name=expected_dataset,json=expectedDataset,proto3" json:"expected_dataset,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// The LVM logical volume the caller expects volume_id to resolve to, by
+	// name and by stable VG/LV UUIDs.  Required (INVALID_ARGUMENT when unset)
+	// iff backend_type is BACKEND_TYPE_LVM, and INVALID_ARGUMENT when set for
+	// any other backend.  The agent refuses unless the live LV matches all
+	// four fields, and pins the identity into the volume's durable fence mark
+	// on first success; a different source for the same volume_id is refused
+	// with FAILED_PRECONDITION and the pin is never cleared or retargeted.
+	ExpectedLvmSource *LvmSourceIdentity `protobuf:"bytes,6,opt,name=expected_lvm_source,json=expectedLvmSource,proto3" json:"expected_lvm_source,omitempty"`
+	// Adoption policy for an LVM import, pinned into the durable fence mark.
+	// Unset means PreserveOriginal (true), so a caller that omits it never
+	// gets destructive Managed semantics; only an explicit false opts into
+	// Managed.  When preserving, the agent refuses DeleteVolume and
+	// ExpandVolume, and ReleaseVolume retires the lifecycle only after
+	// verifying no local consumer.  Once pinned true it is never downgraded: a
+	// later import with an explicit false is refused with FAILED_PRECONDITION.
+	// Ignored for non-LVM imports; ZFS behavior is unaffected.
+	PreserveOriginal *bool `protobuf:"varint,7,opt,name=preserve_original,json=preserveOriginal,proto3,oneof" json:"preserve_original,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ImportVolumeRequest) Reset() {
@@ -2123,6 +2202,674 @@ func (x *ImportVolumeRequest) GetExpectedDataset() string {
 	return ""
 }
 
+func (x *ImportVolumeRequest) GetExpectedLvmSource() *LvmSourceIdentity {
+	if x != nil {
+		return x.ExpectedLvmSource
+	}
+	return nil
+}
+
+func (x *ImportVolumeRequest) GetPreserveOriginal() bool {
+	if x != nil && x.PreserveOriginal != nil {
+		return *x.PreserveOriginal
+	}
+	return false
+}
+
+// LvmSourceIdentity names a pre-existing LVM logical volume and its stable
+// UUIDs (`lvs -o vg_name,lv_name,vg_uuid,lv_uuid`).
+type LvmSourceIdentity struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	VolumeGroup       string                 `protobuf:"bytes,1,opt,name=volume_group,json=volumeGroup,proto3" json:"volume_group,omitempty"`
+	LogicalVolume     string                 `protobuf:"bytes,2,opt,name=logical_volume,json=logicalVolume,proto3" json:"logical_volume,omitempty"`
+	VolumeGroupUuid   string                 `protobuf:"bytes,3,opt,name=volume_group_uuid,json=volumeGroupUuid,proto3" json:"volume_group_uuid,omitempty"`
+	LogicalVolumeUuid string                 `protobuf:"bytes,4,opt,name=logical_volume_uuid,json=logicalVolumeUuid,proto3" json:"logical_volume_uuid,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *LvmSourceIdentity) Reset() {
+	*x = LvmSourceIdentity{}
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LvmSourceIdentity) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LvmSourceIdentity) ProtoMessage() {}
+
+func (x *LvmSourceIdentity) ProtoReflect() protoreflect.Message {
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LvmSourceIdentity.ProtoReflect.Descriptor instead.
+func (*LvmSourceIdentity) Descriptor() ([]byte, []int) {
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *LvmSourceIdentity) GetVolumeGroup() string {
+	if x != nil {
+		return x.VolumeGroup
+	}
+	return ""
+}
+
+func (x *LvmSourceIdentity) GetLogicalVolume() string {
+	if x != nil {
+		return x.LogicalVolume
+	}
+	return ""
+}
+
+func (x *LvmSourceIdentity) GetVolumeGroupUuid() string {
+	if x != nil {
+		return x.VolumeGroupUuid
+	}
+	return ""
+}
+
+func (x *LvmSourceIdentity) GetLogicalVolumeUuid() string {
+	if x != nil {
+		return x.LogicalVolumeUuid
+	}
+	return ""
+}
+
+type InspectVolumeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Unique volume identifier within the agent, as in ImportVolumeRequest.
+	VolumeId string `protobuf:"bytes,1,opt,name=volume_id,json=volumeId,proto3" json:"volume_id,omitempty"`
+	// Backend implementation to inspect.  Only BACKEND_TYPE_LVM is supported.
+	BackendType   BackendType `protobuf:"varint,2,opt,name=backend_type,json=backendType,proto3,enum=pillar_csi.agent.v1.BackendType" json:"backend_type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InspectVolumeRequest) Reset() {
+	*x = InspectVolumeRequest{}
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InspectVolumeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InspectVolumeRequest) ProtoMessage() {}
+
+func (x *InspectVolumeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InspectVolumeRequest.ProtoReflect.Descriptor instead.
+func (*InspectVolumeRequest) Descriptor() ([]byte, []int) {
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *InspectVolumeRequest) GetVolumeId() string {
+	if x != nil {
+		return x.VolumeId
+	}
+	return ""
+}
+
+func (x *InspectVolumeRequest) GetBackendType() BackendType {
+	if x != nil {
+		return x.BackendType
+	}
+	return BackendType_BACKEND_TYPE_UNSPECIFIED
+}
+
+// InspectVolumeResponse is an observation, never an ownership claim.
+type InspectVolumeResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Live LVM observation; unset for non-LVM backends.
+	Lvm *LvmObservation `protobuf:"bytes,1,opt,name=lvm,proto3" json:"lvm,omitempty"`
+	// Filesystem signature type (blkid -p TYPE); set only when
+	// filesystem_probe_state is "detected".  Empty never by itself means the
+	// device is blank or unformatted.
+	FilesystemType string `protobuf:"bytes,2,opt,name=filesystem_type,json=filesystemType,proto3" json:"filesystem_type,omitempty"`
+	// Filesystem UUID from the same probe; set only with filesystem_type.
+	FilesystemUuid string `protobuf:"bytes,3,opt,name=filesystem_uuid,json=filesystemUuid,proto3" json:"filesystem_uuid,omitempty"`
+	// Local consumers of the device observed on the storage node.  The
+	// agent's own exports are reported in exports, not here.
+	Consumers []*DeviceConsumer `protobuf:"bytes,4,rep,name=consumers,proto3" json:"consumers,omitempty"`
+	// The agent's durable fence mark for volume_id, read without persisting.
+	Fence *FenceObservation `protobuf:"bytes,5,opt,name=fence,proto3" json:"fence,omitempty"`
+	// The agent's own configured exports of volume_id.
+	Exports []*ExportObservation `protobuf:"bytes,6,rep,name=exports,proto3" json:"exports,omitempty"`
+	// Outcome of the read-only blkid -p signature probe: "detected"
+	// (filesystem_type/filesystem_uuid are the reported signature) or
+	// "unknown" (blkid exited 2 with no output, which util-linux also returns
+	// for a silent low-level read failure; or it reported only a partition
+	// table or other TYPE-less records; or the LV is inactive so no probe
+	// ran).  "unknown" is never evidence that the device is blank and is not
+	// a consumer observation.  A blkid execution failure or malformed output
+	// fails the RPC instead.
+	FilesystemProbeState string `protobuf:"bytes,7,opt,name=filesystem_probe_state,json=filesystemProbeState,proto3" json:"filesystem_probe_state,omitempty"`
+	// Why the probe is "unknown" (blkid exit status and output, or why no
+	// probe ran); empty when "detected".
+	FilesystemProbeError string `protobuf:"bytes,8,opt,name=filesystem_probe_error,json=filesystemProbeError,proto3" json:"filesystem_probe_error,omitempty"`
+	// Signed recovery snapshot of this exact observation, populated only when
+	// the agent holds a signing identity (its server TLS key).  The signature
+	// covers the deterministic protobuf encoding of the RecoverySnapshot with
+	// the signature field cleared (SHA-256, RSA PKCS#1 v1.5 or ECDSA).  Unset
+	// when the agent cannot sign; absence never means the volume is safe to
+	// recover.  See RecoverySnapshot and TransferVolumeOwnership.
+	Snapshot      *RecoverySnapshot `protobuf:"bytes,9,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InspectVolumeResponse) Reset() {
+	*x = InspectVolumeResponse{}
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InspectVolumeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InspectVolumeResponse) ProtoMessage() {}
+
+func (x *InspectVolumeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InspectVolumeResponse.ProtoReflect.Descriptor instead.
+func (*InspectVolumeResponse) Descriptor() ([]byte, []int) {
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *InspectVolumeResponse) GetLvm() *LvmObservation {
+	if x != nil {
+		return x.Lvm
+	}
+	return nil
+}
+
+func (x *InspectVolumeResponse) GetFilesystemType() string {
+	if x != nil {
+		return x.FilesystemType
+	}
+	return ""
+}
+
+func (x *InspectVolumeResponse) GetFilesystemUuid() string {
+	if x != nil {
+		return x.FilesystemUuid
+	}
+	return ""
+}
+
+func (x *InspectVolumeResponse) GetConsumers() []*DeviceConsumer {
+	if x != nil {
+		return x.Consumers
+	}
+	return nil
+}
+
+func (x *InspectVolumeResponse) GetFence() *FenceObservation {
+	if x != nil {
+		return x.Fence
+	}
+	return nil
+}
+
+func (x *InspectVolumeResponse) GetExports() []*ExportObservation {
+	if x != nil {
+		return x.Exports
+	}
+	return nil
+}
+
+func (x *InspectVolumeResponse) GetFilesystemProbeState() string {
+	if x != nil {
+		return x.FilesystemProbeState
+	}
+	return ""
+}
+
+func (x *InspectVolumeResponse) GetFilesystemProbeError() string {
+	if x != nil {
+		return x.FilesystemProbeError
+	}
+	return ""
+}
+
+func (x *InspectVolumeResponse) GetSnapshot() *RecoverySnapshot {
+	if x != nil {
+		return x.Snapshot
+	}
+	return nil
+}
+
+type LvmObservation struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Observed name and UUIDs of the LV.
+	Identity *LvmSourceIdentity `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
+	// lvs lv_attr.
+	LvAttr string `protobuf:"bytes,2,opt,name=lv_attr,json=lvAttr,proto3" json:"lv_attr,omitempty"`
+	// lvs segtype (e.g. "linear", "thin").
+	Segtype string `protobuf:"bytes,3,opt,name=segtype,proto3" json:"segtype,omitempty"`
+	// lvs pool_lv; empty for non-thin LVs.
+	PoolLv string `protobuf:"bytes,4,opt,name=pool_lv,json=poolLv,proto3" json:"pool_lv,omitempty"`
+	// LV size in bytes.
+	SizeBytes int64 `protobuf:"varint,5,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	// Whether the LV is active (lv_attr[4] == 'a').
+	Active bool `protobuf:"varint,6,opt,name=active,proto3" json:"active,omitempty"`
+	// Device path of the LV on the storage node.
+	DevicePath string `protobuf:"bytes,7,opt,name=device_path,json=devicePath,proto3" json:"device_path,omitempty"`
+	// Kernel device number "<major>:<minor>"; empty when inactive.
+	DevMajorMinor string `protobuf:"bytes,8,opt,name=dev_major_minor,json=devMajorMinor,proto3" json:"dev_major_minor,omitempty"`
+	// lvs origin; non-empty for snapshots.
+	Origin string `protobuf:"bytes,9,opt,name=origin,proto3" json:"origin,omitempty"`
+	// Result of one ephemeral O_RDONLY|O_EXCL open (closed immediately, no
+	// data read): "free" (open succeeded), "busy" (EBUSY) or "unknown" (any
+	// other error, or the LV is inactive).
+	ExclusiveClaim string `protobuf:"bytes,10,opt,name=exclusive_claim,json=exclusiveClaim,proto3" json:"exclusive_claim,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *LvmObservation) Reset() {
+	*x = LvmObservation{}
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LvmObservation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LvmObservation) ProtoMessage() {}
+
+func (x *LvmObservation) ProtoReflect() protoreflect.Message {
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LvmObservation.ProtoReflect.Descriptor instead.
+func (*LvmObservation) Descriptor() ([]byte, []int) {
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *LvmObservation) GetIdentity() *LvmSourceIdentity {
+	if x != nil {
+		return x.Identity
+	}
+	return nil
+}
+
+func (x *LvmObservation) GetLvAttr() string {
+	if x != nil {
+		return x.LvAttr
+	}
+	return ""
+}
+
+func (x *LvmObservation) GetSegtype() string {
+	if x != nil {
+		return x.Segtype
+	}
+	return ""
+}
+
+func (x *LvmObservation) GetPoolLv() string {
+	if x != nil {
+		return x.PoolLv
+	}
+	return ""
+}
+
+func (x *LvmObservation) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *LvmObservation) GetActive() bool {
+	if x != nil {
+		return x.Active
+	}
+	return false
+}
+
+func (x *LvmObservation) GetDevicePath() string {
+	if x != nil {
+		return x.DevicePath
+	}
+	return ""
+}
+
+func (x *LvmObservation) GetDevMajorMinor() string {
+	if x != nil {
+		return x.DevMajorMinor
+	}
+	return ""
+}
+
+func (x *LvmObservation) GetOrigin() string {
+	if x != nil {
+		return x.Origin
+	}
+	return ""
+}
+
+func (x *LvmObservation) GetExclusiveClaim() string {
+	if x != nil {
+		return x.ExclusiveClaim
+	}
+	return ""
+}
+
+// DeviceConsumer is one observed local consumer of the device.
+type DeviceConsumer struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// One of "mount", "holder", "exclusive_open", "foreign_export".
+	Kind string `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	// Kind-specific detail (mount point, holder device, export path, ...).
+	Detail        string `protobuf:"bytes,2,opt,name=detail,proto3" json:"detail,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeviceConsumer) Reset() {
+	*x = DeviceConsumer{}
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeviceConsumer) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeviceConsumer) ProtoMessage() {}
+
+func (x *DeviceConsumer) ProtoReflect() protoreflect.Message {
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeviceConsumer.ProtoReflect.Descriptor instead.
+func (*DeviceConsumer) Descriptor() ([]byte, []int) {
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *DeviceConsumer) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *DeviceConsumer) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+// ExportObservation is the agent's own configured export of the volume ID.
+// It is configuration, not a consumer: no session inventory exists, so it is
+// never evidence that the volume is idle or in use.
+type ExportObservation struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	TargetId         string                 `protobuf:"bytes,1,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"`
+	NamespaceEnabled bool                   `protobuf:"varint,2,opt,name=namespace_enabled,json=namespaceEnabled,proto3" json:"namespace_enabled,omitempty"`
+	AclEnabled       bool                   `protobuf:"varint,3,opt,name=acl_enabled,json=aclEnabled,proto3" json:"acl_enabled,omitempty"`
+	AllowedHosts     []string               `protobuf:"bytes,4,rep,name=allowed_hosts,json=allowedHosts,proto3" json:"allowed_hosts,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ExportObservation) Reset() {
+	*x = ExportObservation{}
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExportObservation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExportObservation) ProtoMessage() {}
+
+func (x *ExportObservation) ProtoReflect() protoreflect.Message {
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExportObservation.ProtoReflect.Descriptor instead.
+func (*ExportObservation) Descriptor() ([]byte, []int) {
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *ExportObservation) GetTargetId() string {
+	if x != nil {
+		return x.TargetId
+	}
+	return ""
+}
+
+func (x *ExportObservation) GetNamespaceEnabled() bool {
+	if x != nil {
+		return x.NamespaceEnabled
+	}
+	return false
+}
+
+func (x *ExportObservation) GetAclEnabled() bool {
+	if x != nil {
+		return x.AclEnabled
+	}
+	return false
+}
+
+func (x *ExportObservation) GetAllowedHosts() []string {
+	if x != nil {
+		return x.AllowedHosts
+	}
+	return nil
+}
+
+// FenceObservation is the agent's durable fence mark for the volume ID.
+// volume_uid is the recorded lifecycle, not an ownership claim.
+type FenceObservation struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Whether a mark exists; all other fields are unset when false.
+	Exists     bool     `protobuf:"varint,1,opt,name=exists,proto3" json:"exists,omitempty"`
+	VolumeUid  string   `protobuf:"bytes,2,opt,name=volume_uid,json=volumeUid,proto3" json:"volume_uid,omitempty"`
+	Generation uint64   `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
+	Ended      bool     `protobuf:"varint,4,opt,name=ended,proto3" json:"ended,omitempty"`
+	EndedUids  []string `protobuf:"bytes,5,rep,name=ended_uids,json=endedUids,proto3" json:"ended_uids,omitempty"`
+	// Adoption policy pinned by the first successful LVM import.
+	PreserveOriginal bool `protobuf:"varint,6,opt,name=preserve_original,json=preserveOriginal,proto3" json:"preserve_original,omitempty"`
+	// Source identity pinned by the first successful LVM import; unset for
+	// volumes never adopted from an existing LV.
+	LvmSource *LvmSourceIdentity `protobuf:"bytes,7,opt,name=lvm_source,json=lvmSource,proto3" json:"lvm_source,omitempty"`
+	// Durable identity of the recovery transfer that last changed this mark.
+	// A controller may resume a committed transfer after later fencing
+	// generations advance only when all of these fields still identify the
+	// exact operator authorization and lifecycle endpoints.
+	TransferAuthorizationDigest string `protobuf:"bytes,8,opt,name=transfer_authorization_digest,json=transferAuthorizationDigest,proto3" json:"transfer_authorization_digest,omitempty"`
+	TransferFromUid             string `protobuf:"bytes,9,opt,name=transfer_from_uid,json=transferFromUid,proto3" json:"transfer_from_uid,omitempty"`
+	TransferFromGeneration      uint64 `protobuf:"varint,10,opt,name=transfer_from_generation,json=transferFromGeneration,proto3" json:"transfer_from_generation,omitempty"`
+	TransferToUid               string `protobuf:"bytes,11,opt,name=transfer_to_uid,json=transferToUid,proto3" json:"transfer_to_uid,omitempty"`
+	TransferToGeneration        uint64 `protobuf:"varint,12,opt,name=transfer_to_generation,json=transferToGeneration,proto3" json:"transfer_to_generation,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
+}
+
+func (x *FenceObservation) Reset() {
+	*x = FenceObservation{}
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FenceObservation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FenceObservation) ProtoMessage() {}
+
+func (x *FenceObservation) ProtoReflect() protoreflect.Message {
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FenceObservation.ProtoReflect.Descriptor instead.
+func (*FenceObservation) Descriptor() ([]byte, []int) {
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *FenceObservation) GetExists() bool {
+	if x != nil {
+		return x.Exists
+	}
+	return false
+}
+
+func (x *FenceObservation) GetVolumeUid() string {
+	if x != nil {
+		return x.VolumeUid
+	}
+	return ""
+}
+
+func (x *FenceObservation) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *FenceObservation) GetEnded() bool {
+	if x != nil {
+		return x.Ended
+	}
+	return false
+}
+
+func (x *FenceObservation) GetEndedUids() []string {
+	if x != nil {
+		return x.EndedUids
+	}
+	return nil
+}
+
+func (x *FenceObservation) GetPreserveOriginal() bool {
+	if x != nil {
+		return x.PreserveOriginal
+	}
+	return false
+}
+
+func (x *FenceObservation) GetLvmSource() *LvmSourceIdentity {
+	if x != nil {
+		return x.LvmSource
+	}
+	return nil
+}
+
+func (x *FenceObservation) GetTransferAuthorizationDigest() string {
+	if x != nil {
+		return x.TransferAuthorizationDigest
+	}
+	return ""
+}
+
+func (x *FenceObservation) GetTransferFromUid() string {
+	if x != nil {
+		return x.TransferFromUid
+	}
+	return ""
+}
+
+func (x *FenceObservation) GetTransferFromGeneration() uint64 {
+	if x != nil {
+		return x.TransferFromGeneration
+	}
+	return 0
+}
+
+func (x *FenceObservation) GetTransferToUid() string {
+	if x != nil {
+		return x.TransferToUid
+	}
+	return ""
+}
+
+func (x *FenceObservation) GetTransferToGeneration() uint64 {
+	if x != nil {
+		return x.TransferToGeneration
+	}
+	return 0
+}
+
 type ImportVolumeResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Path to the adopted backend resource on the storage node
@@ -2136,7 +2883,7 @@ type ImportVolumeResponse struct {
 
 func (x *ImportVolumeResponse) Reset() {
 	*x = ImportVolumeResponse{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[27]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2148,7 +2895,7 @@ func (x *ImportVolumeResponse) String() string {
 func (*ImportVolumeResponse) ProtoMessage() {}
 
 func (x *ImportVolumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[27]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2161,7 +2908,7 @@ func (x *ImportVolumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportVolumeResponse.ProtoReflect.Descriptor instead.
 func (*ImportVolumeResponse) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{27}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ImportVolumeResponse) GetDevicePath() string {
@@ -2193,7 +2940,7 @@ type DeleteVolumeRequest struct {
 
 func (x *DeleteVolumeRequest) Reset() {
 	*x = DeleteVolumeRequest{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[28]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2205,7 +2952,7 @@ func (x *DeleteVolumeRequest) String() string {
 func (*DeleteVolumeRequest) ProtoMessage() {}
 
 func (x *DeleteVolumeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[28]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2218,7 +2965,7 @@ func (x *DeleteVolumeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteVolumeRequest.ProtoReflect.Descriptor instead.
 func (*DeleteVolumeRequest) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{28}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *DeleteVolumeRequest) GetVolumeId() string {
@@ -2250,7 +2997,7 @@ type DeleteVolumeResponse struct {
 
 func (x *DeleteVolumeResponse) Reset() {
 	*x = DeleteVolumeResponse{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[29]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2262,7 +3009,7 @@ func (x *DeleteVolumeResponse) String() string {
 func (*DeleteVolumeResponse) ProtoMessage() {}
 
 func (x *DeleteVolumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[29]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2275,7 +3022,7 @@ func (x *DeleteVolumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteVolumeResponse.ProtoReflect.Descriptor instead.
 func (*DeleteVolumeResponse) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{29}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{36}
 }
 
 type ReleaseVolumeRequest struct {
@@ -2293,7 +3040,7 @@ type ReleaseVolumeRequest struct {
 
 func (x *ReleaseVolumeRequest) Reset() {
 	*x = ReleaseVolumeRequest{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[30]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2305,7 +3052,7 @@ func (x *ReleaseVolumeRequest) String() string {
 func (*ReleaseVolumeRequest) ProtoMessage() {}
 
 func (x *ReleaseVolumeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[30]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2318,7 +3065,7 @@ func (x *ReleaseVolumeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseVolumeRequest.ProtoReflect.Descriptor instead.
 func (*ReleaseVolumeRequest) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{30}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ReleaseVolumeRequest) GetVolumeId() string {
@@ -2350,7 +3097,7 @@ type ReleaseVolumeResponse struct {
 
 func (x *ReleaseVolumeResponse) Reset() {
 	*x = ReleaseVolumeResponse{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[31]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2362,7 +3109,7 @@ func (x *ReleaseVolumeResponse) String() string {
 func (*ReleaseVolumeResponse) ProtoMessage() {}
 
 func (x *ReleaseVolumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[31]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2375,7 +3122,7 @@ func (x *ReleaseVolumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseVolumeResponse.ProtoReflect.Descriptor instead.
 func (*ReleaseVolumeResponse) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{31}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{38}
 }
 
 type ExpandVolumeRequest struct {
@@ -2395,7 +3142,7 @@ type ExpandVolumeRequest struct {
 
 func (x *ExpandVolumeRequest) Reset() {
 	*x = ExpandVolumeRequest{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[32]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2407,7 +3154,7 @@ func (x *ExpandVolumeRequest) String() string {
 func (*ExpandVolumeRequest) ProtoMessage() {}
 
 func (x *ExpandVolumeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[32]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2420,7 +3167,7 @@ func (x *ExpandVolumeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExpandVolumeRequest.ProtoReflect.Descriptor instead.
 func (*ExpandVolumeRequest) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{32}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ExpandVolumeRequest) GetVolumeId() string {
@@ -2461,7 +3208,7 @@ type ExpandVolumeResponse struct {
 
 func (x *ExpandVolumeResponse) Reset() {
 	*x = ExpandVolumeResponse{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[33]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2473,7 +3220,7 @@ func (x *ExpandVolumeResponse) String() string {
 func (*ExpandVolumeResponse) ProtoMessage() {}
 
 func (x *ExpandVolumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[33]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2486,7 +3233,7 @@ func (x *ExpandVolumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExpandVolumeResponse.ProtoReflect.Descriptor instead.
 func (*ExpandVolumeResponse) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{33}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ExpandVolumeResponse) GetCapacityBytes() int64 {
@@ -2521,7 +3268,7 @@ type ExportVolumeRequest struct {
 
 func (x *ExportVolumeRequest) Reset() {
 	*x = ExportVolumeRequest{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[34]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2533,7 +3280,7 @@ func (x *ExportVolumeRequest) String() string {
 func (*ExportVolumeRequest) ProtoMessage() {}
 
 func (x *ExportVolumeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[34]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2546,7 +3293,7 @@ func (x *ExportVolumeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportVolumeRequest.ProtoReflect.Descriptor instead.
 func (*ExportVolumeRequest) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{34}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ExportVolumeRequest) GetVolumeId() string {
@@ -2602,7 +3349,7 @@ type ExportVolumeResponse struct {
 
 func (x *ExportVolumeResponse) Reset() {
 	*x = ExportVolumeResponse{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[35]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2614,7 +3361,7 @@ func (x *ExportVolumeResponse) String() string {
 func (*ExportVolumeResponse) ProtoMessage() {}
 
 func (x *ExportVolumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[35]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2627,7 +3374,7 @@ func (x *ExportVolumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportVolumeResponse.ProtoReflect.Descriptor instead.
 func (*ExportVolumeResponse) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{35}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ExportVolumeResponse) GetExportInfo() *ExportInfo {
@@ -2652,7 +3399,7 @@ type UnexportVolumeRequest struct {
 
 func (x *UnexportVolumeRequest) Reset() {
 	*x = UnexportVolumeRequest{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[36]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2664,7 +3411,7 @@ func (x *UnexportVolumeRequest) String() string {
 func (*UnexportVolumeRequest) ProtoMessage() {}
 
 func (x *UnexportVolumeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[36]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2677,7 +3424,7 @@ func (x *UnexportVolumeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnexportVolumeRequest.ProtoReflect.Descriptor instead.
 func (*UnexportVolumeRequest) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{36}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *UnexportVolumeRequest) GetVolumeId() string {
@@ -2709,7 +3456,7 @@ type UnexportVolumeResponse struct {
 
 func (x *UnexportVolumeResponse) Reset() {
 	*x = UnexportVolumeResponse{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[37]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2721,7 +3468,7 @@ func (x *UnexportVolumeResponse) String() string {
 func (*UnexportVolumeResponse) ProtoMessage() {}
 
 func (x *UnexportVolumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[37]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2734,7 +3481,7 @@ func (x *UnexportVolumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnexportVolumeResponse.ProtoReflect.Descriptor instead.
 func (*UnexportVolumeResponse) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{37}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{44}
 }
 
 // SendVolumeRequest initiates a volume data send stream.
@@ -2756,7 +3503,7 @@ type SendVolumeRequest struct {
 
 func (x *SendVolumeRequest) Reset() {
 	*x = SendVolumeRequest{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[38]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2768,7 +3515,7 @@ func (x *SendVolumeRequest) String() string {
 func (*SendVolumeRequest) ProtoMessage() {}
 
 func (x *SendVolumeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[38]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2781,7 +3528,7 @@ func (x *SendVolumeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendVolumeRequest.ProtoReflect.Descriptor instead.
 func (*SendVolumeRequest) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{38}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *SendVolumeRequest) GetVolumeId() string {
@@ -2824,7 +3571,7 @@ type SendVolumeChunk struct {
 
 func (x *SendVolumeChunk) Reset() {
 	*x = SendVolumeChunk{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[39]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2836,7 +3583,7 @@ func (x *SendVolumeChunk) String() string {
 func (*SendVolumeChunk) ProtoMessage() {}
 
 func (x *SendVolumeChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[39]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2849,7 +3596,7 @@ func (x *SendVolumeChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendVolumeChunk.ProtoReflect.Descriptor instead.
 func (*SendVolumeChunk) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{39}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *SendVolumeChunk) GetSequence() uint64 {
@@ -2903,7 +3650,7 @@ type ReceiveVolumeChunk struct {
 
 func (x *ReceiveVolumeChunk) Reset() {
 	*x = ReceiveVolumeChunk{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[40]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2915,7 +3662,7 @@ func (x *ReceiveVolumeChunk) String() string {
 func (*ReceiveVolumeChunk) ProtoMessage() {}
 
 func (x *ReceiveVolumeChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[40]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2928,7 +3675,7 @@ func (x *ReceiveVolumeChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReceiveVolumeChunk.ProtoReflect.Descriptor instead.
 func (*ReceiveVolumeChunk) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{40}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ReceiveVolumeChunk) GetVolumeId() string {
@@ -2978,7 +3725,7 @@ type ReceiveVolumeResponse struct {
 
 func (x *ReceiveVolumeResponse) Reset() {
 	*x = ReceiveVolumeResponse{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[41]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2990,7 +3737,7 @@ func (x *ReceiveVolumeResponse) String() string {
 func (*ReceiveVolumeResponse) ProtoMessage() {}
 
 func (x *ReceiveVolumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[41]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3003,7 +3750,7 @@ func (x *ReceiveVolumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReceiveVolumeResponse.ProtoReflect.Descriptor instead.
 func (*ReceiveVolumeResponse) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{41}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *ReceiveVolumeResponse) GetBytesWritten() int64 {
@@ -3036,7 +3783,7 @@ type AllowInitiatorRequest struct {
 
 func (x *AllowInitiatorRequest) Reset() {
 	*x = AllowInitiatorRequest{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[42]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3048,7 +3795,7 @@ func (x *AllowInitiatorRequest) String() string {
 func (*AllowInitiatorRequest) ProtoMessage() {}
 
 func (x *AllowInitiatorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[42]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3061,7 +3808,7 @@ func (x *AllowInitiatorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AllowInitiatorRequest.ProtoReflect.Descriptor instead.
 func (*AllowInitiatorRequest) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{42}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *AllowInitiatorRequest) GetVolumeId() string {
@@ -3107,7 +3854,7 @@ type AllowInitiatorResponse struct {
 
 func (x *AllowInitiatorResponse) Reset() {
 	*x = AllowInitiatorResponse{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[43]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3119,7 +3866,7 @@ func (x *AllowInitiatorResponse) String() string {
 func (*AllowInitiatorResponse) ProtoMessage() {}
 
 func (x *AllowInitiatorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[43]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3132,7 +3879,7 @@ func (x *AllowInitiatorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AllowInitiatorResponse.ProtoReflect.Descriptor instead.
 func (*AllowInitiatorResponse) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{43}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{50}
 }
 
 type DenyInitiatorRequest struct {
@@ -3152,7 +3899,7 @@ type DenyInitiatorRequest struct {
 
 func (x *DenyInitiatorRequest) Reset() {
 	*x = DenyInitiatorRequest{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[44]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3164,7 +3911,7 @@ func (x *DenyInitiatorRequest) String() string {
 func (*DenyInitiatorRequest) ProtoMessage() {}
 
 func (x *DenyInitiatorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[44]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3177,7 +3924,7 @@ func (x *DenyInitiatorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DenyInitiatorRequest.ProtoReflect.Descriptor instead.
 func (*DenyInitiatorRequest) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{44}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *DenyInitiatorRequest) GetVolumeId() string {
@@ -3216,7 +3963,7 @@ type DenyInitiatorResponse struct {
 
 func (x *DenyInitiatorResponse) Reset() {
 	*x = DenyInitiatorResponse{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[45]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3228,7 +3975,7 @@ func (x *DenyInitiatorResponse) String() string {
 func (*DenyInitiatorResponse) ProtoMessage() {}
 
 func (x *DenyInitiatorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[45]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3241,7 +3988,7 @@ func (x *DenyInitiatorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DenyInitiatorResponse.ProtoReflect.Descriptor instead.
 func (*DenyInitiatorResponse) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{45}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{52}
 }
 
 type SetLocalAttachRequest struct {
@@ -3262,7 +4009,7 @@ type SetLocalAttachRequest struct {
 
 func (x *SetLocalAttachRequest) Reset() {
 	*x = SetLocalAttachRequest{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[46]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3274,7 +4021,7 @@ func (x *SetLocalAttachRequest) String() string {
 func (*SetLocalAttachRequest) ProtoMessage() {}
 
 func (x *SetLocalAttachRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[46]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3287,7 +4034,7 @@ func (x *SetLocalAttachRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetLocalAttachRequest.ProtoReflect.Descriptor instead.
 func (*SetLocalAttachRequest) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{46}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *SetLocalAttachRequest) GetVolumeId() string {
@@ -3329,7 +4076,7 @@ type SetLocalAttachResponse struct {
 
 func (x *SetLocalAttachResponse) Reset() {
 	*x = SetLocalAttachResponse{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[47]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3341,7 +4088,7 @@ func (x *SetLocalAttachResponse) String() string {
 func (*SetLocalAttachResponse) ProtoMessage() {}
 
 func (x *SetLocalAttachResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[47]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3354,7 +4101,7 @@ func (x *SetLocalAttachResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetLocalAttachResponse.ProtoReflect.Descriptor instead.
 func (*SetLocalAttachResponse) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{47}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *SetLocalAttachResponse) GetDevicePath() string {
@@ -3387,7 +4134,7 @@ type VolumeDesiredState struct {
 
 func (x *VolumeDesiredState) Reset() {
 	*x = VolumeDesiredState{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[48]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3399,7 +4146,7 @@ func (x *VolumeDesiredState) String() string {
 func (*VolumeDesiredState) ProtoMessage() {}
 
 func (x *VolumeDesiredState) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[48]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3412,7 +4159,7 @@ func (x *VolumeDesiredState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VolumeDesiredState.ProtoReflect.Descriptor instead.
 func (*VolumeDesiredState) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{48}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *VolumeDesiredState) GetVolumeId() string {
@@ -3484,7 +4231,7 @@ type ExportDesiredState struct {
 
 func (x *ExportDesiredState) Reset() {
 	*x = ExportDesiredState{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[49]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3496,7 +4243,7 @@ func (x *ExportDesiredState) String() string {
 func (*ExportDesiredState) ProtoMessage() {}
 
 func (x *ExportDesiredState) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[49]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3509,7 +4256,7 @@ func (x *ExportDesiredState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportDesiredState.ProtoReflect.Descriptor instead.
 func (*ExportDesiredState) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{49}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *ExportDesiredState) GetProtocolType() ProtocolType {
@@ -3564,7 +4311,7 @@ type ReconcileStateRequest struct {
 
 func (x *ReconcileStateRequest) Reset() {
 	*x = ReconcileStateRequest{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[50]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3576,7 +4323,7 @@ func (x *ReconcileStateRequest) String() string {
 func (*ReconcileStateRequest) ProtoMessage() {}
 
 func (x *ReconcileStateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[50]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3589,7 +4336,7 @@ func (x *ReconcileStateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReconcileStateRequest.ProtoReflect.Descriptor instead.
 func (*ReconcileStateRequest) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{50}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *ReconcileStateRequest) GetVolumes() []*VolumeDesiredState {
@@ -3621,7 +4368,7 @@ type ReconcileItemResult struct {
 
 func (x *ReconcileItemResult) Reset() {
 	*x = ReconcileItemResult{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[51]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3633,7 +4380,7 @@ func (x *ReconcileItemResult) String() string {
 func (*ReconcileItemResult) ProtoMessage() {}
 
 func (x *ReconcileItemResult) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[51]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3646,7 +4393,7 @@ func (x *ReconcileItemResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReconcileItemResult.ProtoReflect.Descriptor instead.
 func (*ReconcileItemResult) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{51}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *ReconcileItemResult) GetVolumeId() string {
@@ -3682,7 +4429,7 @@ type ReconcileStateResponse struct {
 
 func (x *ReconcileStateResponse) Reset() {
 	*x = ReconcileStateResponse{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[52]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3694,7 +4441,7 @@ func (x *ReconcileStateResponse) String() string {
 func (*ReconcileStateResponse) ProtoMessage() {}
 
 func (x *ReconcileStateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[52]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3707,7 +4454,7 @@ func (x *ReconcileStateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReconcileStateResponse.ProtoReflect.Descriptor instead.
 func (*ReconcileStateResponse) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{52}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *ReconcileStateResponse) GetResults() []*ReconcileItemResult {
@@ -3732,7 +4479,7 @@ type DrainRequest struct {
 
 func (x *DrainRequest) Reset() {
 	*x = DrainRequest{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[53]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3744,7 +4491,7 @@ func (x *DrainRequest) String() string {
 func (*DrainRequest) ProtoMessage() {}
 
 func (x *DrainRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[53]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3757,7 +4504,7 @@ func (x *DrainRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DrainRequest.ProtoReflect.Descriptor instead.
 func (*DrainRequest) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{53}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{60}
 }
 
 type DrainResponse struct {
@@ -3772,7 +4519,7 @@ type DrainResponse struct {
 
 func (x *DrainResponse) Reset() {
 	*x = DrainResponse{}
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[54]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3784,7 +4531,7 @@ func (x *DrainResponse) String() string {
 func (*DrainResponse) ProtoMessage() {}
 
 func (x *DrainResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[54]
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3797,7 +4544,7 @@ func (x *DrainResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DrainResponse.ProtoReflect.Descriptor instead.
 func (*DrainResponse) Descriptor() ([]byte, []int) {
-	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{54}
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *DrainResponse) GetWasAlreadyDrained() bool {
@@ -3805,6 +4552,457 @@ func (x *DrainResponse) GetWasAlreadyDrained() bool {
 		return x.WasAlreadyDrained
 	}
 	return false
+}
+
+// RecoverySnapshot is the agent's signed self-attestation of what it observed
+// about a backend volume while healthy.  signature is produced by the agent's
+// own server TLS identity key over the deterministic protobuf encoding
+// (proto.MarshalOptions{Deterministic: true}) of this message with the
+// signature field cleared, using SHA-256 with RSA PKCS#1 v1.5 or ECDSA; other
+// key types are rejected.  The snapshot is data, not authority: it is only
+// valid when presented together with a RecoveryAuthorization whose
+// snapshot_digest matches, and every observation is re-verified live under
+// the per-volume lock before a transfer commits.
+//
+// The snapshot_digest referenced by RecoveryAuthorization is the SHA-256 of
+// the deterministic encoding of this message with the signature field
+// cleared — the digest of the observation, not of one signature artifact.
+type RecoverySnapshot struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Unique volume identifier within the agent: "<pool>/<volume-name>".
+	VolumeId string `protobuf:"bytes,1,opt,name=volume_id,json=volumeId,proto3" json:"volume_id,omitempty"`
+	// Backend implementation the observation describes.  Only
+	// BACKEND_TYPE_LVM participates in ownership recovery.
+	BackendType BackendType `protobuf:"varint,2,opt,name=backend_type,json=backendType,proto3,enum=pillar_csi.agent.v1.BackendType" json:"backend_type,omitempty"`
+	// The adopted LVM logical volume's stable identity as observed.
+	LvmSource *LvmSourceIdentity `protobuf:"bytes,3,opt,name=lvm_source,json=lvmSource,proto3" json:"lvm_source,omitempty"`
+	// The lifecycle the observation belongs to: the uid and generation the
+	// durable fence mark recorded at observe time.  Both MUST equal
+	// fence.volume_uid and fence.generation respectively; a signer MUST NOT
+	// produce, and a verifier MUST reject, a snapshot where they disagree.
+	OldVolumeUid  string `protobuf:"bytes,4,opt,name=old_volume_uid,json=oldVolumeUid,proto3" json:"old_volume_uid,omitempty"`
+	OldGeneration uint64 `protobuf:"varint,5,opt,name=old_generation,json=oldGeneration,proto3" json:"old_generation,omitempty"`
+	// The preserve policy pinned in the fence mark at observe time.
+	PreserveOriginal bool `protobuf:"varint,6,opt,name=preserve_original,json=preserveOriginal,proto3" json:"preserve_original,omitempty"`
+	// The ephemeral O_RDONLY|O_EXCL claim result at observe time:
+	// "free", "busy" or "unknown" (see LvmObservation.exclusive_claim).
+	// A transfer requires the live re-check to report "free".
+	ExclusiveClaim string `protobuf:"bytes,7,opt,name=exclusive_claim,json=exclusiveClaim,proto3" json:"exclusive_claim,omitempty"`
+	// Local device consumers observed at sign time.  Must be empty for a
+	// transferable volume; the agent re-checks live before committing.
+	Consumers []*DeviceConsumer `protobuf:"bytes,8,rep,name=consumers,proto3" json:"consumers,omitempty"`
+	// The agent's own configured exports observed at sign time.  A disabled
+	// namespace or an enforced empty ACL is stopped evidence and may be
+	// present; a transfer requires that no export admits a remote initiator,
+	// and the agent re-checks live before committing.
+	Exports []*ExportObservation `protobuf:"bytes,9,rep,name=exports,proto3" json:"exports,omitempty"`
+	// The durable fence mark read at observe time.
+	Fence *FenceObservation `protobuf:"bytes,10,opt,name=fence,proto3" json:"fence,omitempty"`
+	// Identity of the signing agent: the Subject Common Name (or first DNS
+	// SAN) of the server TLS certificate that produced signature.  A verifier
+	// checking against a certificate MUST require this to match.
+	AgentIdentity string `protobuf:"bytes,11,opt,name=agent_identity,json=agentIdentity,proto3" json:"agent_identity,omitempty"`
+	// Time the snapshot was signed.  Bounded freshness applies on verify;
+	// stale or future-dated snapshots are rejected.
+	IssuedAt *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
+	// Signature over the deterministic encoding of this message with this
+	// field cleared.  See the message comment for the exact scheme.
+	Signature     []byte `protobuf:"bytes,13,opt,name=signature,proto3" json:"signature,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RecoverySnapshot) Reset() {
+	*x = RecoverySnapshot{}
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[62]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecoverySnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecoverySnapshot) ProtoMessage() {}
+
+func (x *RecoverySnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[62]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecoverySnapshot.ProtoReflect.Descriptor instead.
+func (*RecoverySnapshot) Descriptor() ([]byte, []int) {
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{62}
+}
+
+func (x *RecoverySnapshot) GetVolumeId() string {
+	if x != nil {
+		return x.VolumeId
+	}
+	return ""
+}
+
+func (x *RecoverySnapshot) GetBackendType() BackendType {
+	if x != nil {
+		return x.BackendType
+	}
+	return BackendType_BACKEND_TYPE_UNSPECIFIED
+}
+
+func (x *RecoverySnapshot) GetLvmSource() *LvmSourceIdentity {
+	if x != nil {
+		return x.LvmSource
+	}
+	return nil
+}
+
+func (x *RecoverySnapshot) GetOldVolumeUid() string {
+	if x != nil {
+		return x.OldVolumeUid
+	}
+	return ""
+}
+
+func (x *RecoverySnapshot) GetOldGeneration() uint64 {
+	if x != nil {
+		return x.OldGeneration
+	}
+	return 0
+}
+
+func (x *RecoverySnapshot) GetPreserveOriginal() bool {
+	if x != nil {
+		return x.PreserveOriginal
+	}
+	return false
+}
+
+func (x *RecoverySnapshot) GetExclusiveClaim() string {
+	if x != nil {
+		return x.ExclusiveClaim
+	}
+	return ""
+}
+
+func (x *RecoverySnapshot) GetConsumers() []*DeviceConsumer {
+	if x != nil {
+		return x.Consumers
+	}
+	return nil
+}
+
+func (x *RecoverySnapshot) GetExports() []*ExportObservation {
+	if x != nil {
+		return x.Exports
+	}
+	return nil
+}
+
+func (x *RecoverySnapshot) GetFence() *FenceObservation {
+	if x != nil {
+		return x.Fence
+	}
+	return nil
+}
+
+func (x *RecoverySnapshot) GetAgentIdentity() string {
+	if x != nil {
+		return x.AgentIdentity
+	}
+	return ""
+}
+
+func (x *RecoverySnapshot) GetIssuedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.IssuedAt
+	}
+	return nil
+}
+
+func (x *RecoverySnapshot) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
+// RecoveryAuthorization is the operator's signed grant to transfer one
+// specific volume's ownership to one specific new lifecycle.  signature is
+// produced by an operator-held private key (the configured
+// --recovery-trust-anchor file holds the corresponding public keys) over the
+// deterministic protobuf encoding of this message with the signature field
+// cleared, using the same digest and signature schemes as RecoverySnapshot.
+//
+// The authorization_digest recorded in the transferred fence mark and in
+// PillarVolumeState.spec.recovery.authorizationDigest is the SHA-256 of the
+// deterministic encoding of this message with the signature field cleared.
+type RecoveryAuthorization struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// SHA-256 digest of the presented RecoverySnapshot's deterministic
+	// encoding with its signature field cleared.  Binds this grant to exactly
+	// one observation; a different or re-signed-but-modified snapshot does
+	// not match.
+	SnapshotDigest []byte `protobuf:"bytes,1,opt,name=snapshot_digest,json=snapshotDigest,proto3" json:"snapshot_digest,omitempty"`
+	// The volume the grant applies to.  volume_id, backend_type, lvm_source,
+	// old_volume_uid and old_generation MUST equal the corresponding
+	// RecoverySnapshot fields exactly; any mismatch refuses the transfer.
+	VolumeId     string             `protobuf:"bytes,2,opt,name=volume_id,json=volumeId,proto3" json:"volume_id,omitempty"`
+	BackendType  BackendType        `protobuf:"varint,3,opt,name=backend_type,json=backendType,proto3,enum=pillar_csi.agent.v1.BackendType" json:"backend_type,omitempty"`
+	LvmSource    *LvmSourceIdentity `protobuf:"bytes,4,opt,name=lvm_source,json=lvmSource,proto3" json:"lvm_source,omitempty"`
+	OldVolumeUid string             `protobuf:"bytes,5,opt,name=old_volume_uid,json=oldVolumeUid,proto3" json:"old_volume_uid,omitempty"`
+	// The old lifecycle's exact generation.  Exact equality required: a newer
+	// or older generation on the live mark refuses the transfer.
+	OldGeneration uint64 `protobuf:"varint,6,opt,name=old_generation,json=oldGeneration,proto3" json:"old_generation,omitempty"`
+	// Destination lifecycle: the PillarVolumeState UID (the recovery
+	// PillarVolumeState's metadata.uid, created in phase RecoveryPending) and
+	// the generation written into the transferred mark.
+	NewVolumeUid  string `protobuf:"bytes,7,opt,name=new_volume_uid,json=newVolumeUid,proto3" json:"new_volume_uid,omitempty"`
+	NewGeneration uint64 `protobuf:"varint,8,opt,name=new_generation,json=newGeneration,proto3" json:"new_generation,omitempty"`
+	// The preserve policy the transferred lifecycle adopts.  Explicit
+	// presence required: an unset field is INVALID_ARGUMENT, mirroring
+	// ImportVolumeRequest.preserve_original (unset never yields destructive
+	// Managed semantics silently — here it yields refusal).
+	PreserveOriginal *bool `protobuf:"varint,9,opt,name=preserve_original,json=preserveOriginal,proto3,oneof" json:"preserve_original,omitempty"`
+	// Validity window.  A transfer presented before issued_at (beyond clock
+	// skew) or after expires_at is refused; the window length is bounded.
+	IssuedAt  *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
+	ExpiresAt *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	// Operator signature over the deterministic encoding of this message
+	// with this field cleared.
+	Signature     []byte `protobuf:"bytes,12,opt,name=signature,proto3" json:"signature,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RecoveryAuthorization) Reset() {
+	*x = RecoveryAuthorization{}
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[63]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecoveryAuthorization) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecoveryAuthorization) ProtoMessage() {}
+
+func (x *RecoveryAuthorization) ProtoReflect() protoreflect.Message {
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[63]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecoveryAuthorization.ProtoReflect.Descriptor instead.
+func (*RecoveryAuthorization) Descriptor() ([]byte, []int) {
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{63}
+}
+
+func (x *RecoveryAuthorization) GetSnapshotDigest() []byte {
+	if x != nil {
+		return x.SnapshotDigest
+	}
+	return nil
+}
+
+func (x *RecoveryAuthorization) GetVolumeId() string {
+	if x != nil {
+		return x.VolumeId
+	}
+	return ""
+}
+
+func (x *RecoveryAuthorization) GetBackendType() BackendType {
+	if x != nil {
+		return x.BackendType
+	}
+	return BackendType_BACKEND_TYPE_UNSPECIFIED
+}
+
+func (x *RecoveryAuthorization) GetLvmSource() *LvmSourceIdentity {
+	if x != nil {
+		return x.LvmSource
+	}
+	return nil
+}
+
+func (x *RecoveryAuthorization) GetOldVolumeUid() string {
+	if x != nil {
+		return x.OldVolumeUid
+	}
+	return ""
+}
+
+func (x *RecoveryAuthorization) GetOldGeneration() uint64 {
+	if x != nil {
+		return x.OldGeneration
+	}
+	return 0
+}
+
+func (x *RecoveryAuthorization) GetNewVolumeUid() string {
+	if x != nil {
+		return x.NewVolumeUid
+	}
+	return ""
+}
+
+func (x *RecoveryAuthorization) GetNewGeneration() uint64 {
+	if x != nil {
+		return x.NewGeneration
+	}
+	return 0
+}
+
+func (x *RecoveryAuthorization) GetPreserveOriginal() bool {
+	if x != nil && x.PreserveOriginal != nil {
+		return *x.PreserveOriginal
+	}
+	return false
+}
+
+func (x *RecoveryAuthorization) GetIssuedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.IssuedAt
+	}
+	return nil
+}
+
+func (x *RecoveryAuthorization) GetExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return nil
+}
+
+func (x *RecoveryAuthorization) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
+// TransferVolumeOwnershipRequest carries the full proof for one transfer:
+// the agent-signed observation and the operator-signed grant bound to it.
+// No FencingToken field exists — the authorization is the authority.
+type TransferVolumeOwnershipRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Snapshot      *RecoverySnapshot      `protobuf:"bytes,1,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
+	Authorization *RecoveryAuthorization `protobuf:"bytes,2,opt,name=authorization,proto3" json:"authorization,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransferVolumeOwnershipRequest) Reset() {
+	*x = TransferVolumeOwnershipRequest{}
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[64]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransferVolumeOwnershipRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransferVolumeOwnershipRequest) ProtoMessage() {}
+
+func (x *TransferVolumeOwnershipRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[64]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransferVolumeOwnershipRequest.ProtoReflect.Descriptor instead.
+func (*TransferVolumeOwnershipRequest) Descriptor() ([]byte, []int) {
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{64}
+}
+
+func (x *TransferVolumeOwnershipRequest) GetSnapshot() *RecoverySnapshot {
+	if x != nil {
+		return x.Snapshot
+	}
+	return nil
+}
+
+func (x *TransferVolumeOwnershipRequest) GetAuthorization() *RecoveryAuthorization {
+	if x != nil {
+		return x.Authorization
+	}
+	return nil
+}
+
+type TransferVolumeOwnershipResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Outcome TransferOutcome        `protobuf:"varint,1,opt,name=outcome,proto3,enum=pillar_csi.agent.v1.TransferOutcome" json:"outcome,omitempty"`
+	// SHA-256 digest of the committed RecoveryAuthorization's deterministic
+	// encoding with its signature field cleared.  Echoed so the controller can
+	// record exactly which grant committed.
+	AuthorizationDigest []byte `protobuf:"bytes,2,opt,name=authorization_digest,json=authorizationDigest,proto3" json:"authorization_digest,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *TransferVolumeOwnershipResponse) Reset() {
+	*x = TransferVolumeOwnershipResponse{}
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[65]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransferVolumeOwnershipResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransferVolumeOwnershipResponse) ProtoMessage() {}
+
+func (x *TransferVolumeOwnershipResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pillar_csi_agent_v1_agent_proto_msgTypes[65]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransferVolumeOwnershipResponse.ProtoReflect.Descriptor instead.
+func (*TransferVolumeOwnershipResponse) Descriptor() ([]byte, []int) {
+	return file_pillar_csi_agent_v1_agent_proto_rawDescGZIP(), []int{65}
+}
+
+func (x *TransferVolumeOwnershipResponse) GetOutcome() TransferOutcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return TransferOutcome_TRANSFER_OUTCOME_UNSPECIFIED
+}
+
+func (x *TransferVolumeOwnershipResponse) GetAuthorizationDigest() []byte {
+	if x != nil {
+		return x.AuthorizationDigest
+	}
+	return nil
 }
 
 var File_pillar_csi_agent_v1_agent_proto protoreflect.FileDescriptor
@@ -3944,13 +5142,76 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"\x14CreateVolumeResponse\x12\x1f\n" +
 	"\vdevice_path\x18\x01 \x01(\tR\n" +
 	"devicePath\x12%\n" +
-	"\x0ecapacity_bytes\x18\x02 \x01(\x03R\rcapacityBytes\"\x82\x02\n" +
+	"\x0ecapacity_bytes\x18\x02 \x01(\x03R\rcapacityBytes\"\xa2\x03\n" +
 	"\x13ImportVolumeRequest\x12\x1b\n" +
 	"\tvolume_id\x18\x01 \x01(\tR\bvolumeId\x12%\n" +
 	"\x0ecapacity_bytes\x18\x02 \x01(\x03R\rcapacityBytes\x12C\n" +
 	"\fbackend_type\x18\x03 \x01(\x0e2 .pillar_csi.agent.v1.BackendTypeR\vbackendType\x127\n" +
 	"\x05fence\x18\x04 \x01(\v2!.pillar_csi.agent.v1.FencingTokenR\x05fence\x12)\n" +
-	"\x10expected_dataset\x18\x05 \x01(\tR\x0fexpectedDataset\"^\n" +
+	"\x10expected_dataset\x18\x05 \x01(\tR\x0fexpectedDataset\x12V\n" +
+	"\x13expected_lvm_source\x18\x06 \x01(\v2&.pillar_csi.agent.v1.LvmSourceIdentityR\x11expectedLvmSource\x120\n" +
+	"\x11preserve_original\x18\a \x01(\bH\x00R\x10preserveOriginal\x88\x01\x01B\x14\n" +
+	"\x12_preserve_original\"\xb9\x01\n" +
+	"\x11LvmSourceIdentity\x12!\n" +
+	"\fvolume_group\x18\x01 \x01(\tR\vvolumeGroup\x12%\n" +
+	"\x0elogical_volume\x18\x02 \x01(\tR\rlogicalVolume\x12*\n" +
+	"\x11volume_group_uuid\x18\x03 \x01(\tR\x0fvolumeGroupUuid\x12.\n" +
+	"\x13logical_volume_uuid\x18\x04 \x01(\tR\x11logicalVolumeUuid\"x\n" +
+	"\x14InspectVolumeRequest\x12\x1b\n" +
+	"\tvolume_id\x18\x01 \x01(\tR\bvolumeId\x12C\n" +
+	"\fbackend_type\x18\x02 \x01(\x0e2 .pillar_csi.agent.v1.BackendTypeR\vbackendType\"\x91\x04\n" +
+	"\x15InspectVolumeResponse\x125\n" +
+	"\x03lvm\x18\x01 \x01(\v2#.pillar_csi.agent.v1.LvmObservationR\x03lvm\x12'\n" +
+	"\x0ffilesystem_type\x18\x02 \x01(\tR\x0efilesystemType\x12'\n" +
+	"\x0ffilesystem_uuid\x18\x03 \x01(\tR\x0efilesystemUuid\x12A\n" +
+	"\tconsumers\x18\x04 \x03(\v2#.pillar_csi.agent.v1.DeviceConsumerR\tconsumers\x12;\n" +
+	"\x05fence\x18\x05 \x01(\v2%.pillar_csi.agent.v1.FenceObservationR\x05fence\x12@\n" +
+	"\aexports\x18\x06 \x03(\v2&.pillar_csi.agent.v1.ExportObservationR\aexports\x124\n" +
+	"\x16filesystem_probe_state\x18\a \x01(\tR\x14filesystemProbeState\x124\n" +
+	"\x16filesystem_probe_error\x18\b \x01(\tR\x14filesystemProbeError\x12A\n" +
+	"\bsnapshot\x18\t \x01(\v2%.pillar_csi.agent.v1.RecoverySnapshotR\bsnapshot\"\xe1\x02\n" +
+	"\x0eLvmObservation\x12B\n" +
+	"\bidentity\x18\x01 \x01(\v2&.pillar_csi.agent.v1.LvmSourceIdentityR\bidentity\x12\x17\n" +
+	"\alv_attr\x18\x02 \x01(\tR\x06lvAttr\x12\x18\n" +
+	"\asegtype\x18\x03 \x01(\tR\asegtype\x12\x17\n" +
+	"\apool_lv\x18\x04 \x01(\tR\x06poolLv\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x05 \x01(\x03R\tsizeBytes\x12\x16\n" +
+	"\x06active\x18\x06 \x01(\bR\x06active\x12\x1f\n" +
+	"\vdevice_path\x18\a \x01(\tR\n" +
+	"devicePath\x12&\n" +
+	"\x0fdev_major_minor\x18\b \x01(\tR\rdevMajorMinor\x12\x16\n" +
+	"\x06origin\x18\t \x01(\tR\x06origin\x12'\n" +
+	"\x0fexclusive_claim\x18\n" +
+	" \x01(\tR\x0eexclusiveClaim\"<\n" +
+	"\x0eDeviceConsumer\x12\x12\n" +
+	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x16\n" +
+	"\x06detail\x18\x02 \x01(\tR\x06detail\"\xa3\x01\n" +
+	"\x11ExportObservation\x12\x1b\n" +
+	"\ttarget_id\x18\x01 \x01(\tR\btargetId\x12+\n" +
+	"\x11namespace_enabled\x18\x02 \x01(\bR\x10namespaceEnabled\x12\x1f\n" +
+	"\vacl_enabled\x18\x03 \x01(\bR\n" +
+	"aclEnabled\x12#\n" +
+	"\rallowed_hosts\x18\x04 \x03(\tR\fallowedHosts\"\x9a\x04\n" +
+	"\x10FenceObservation\x12\x16\n" +
+	"\x06exists\x18\x01 \x01(\bR\x06exists\x12\x1d\n" +
+	"\n" +
+	"volume_uid\x18\x02 \x01(\tR\tvolumeUid\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x03 \x01(\x04R\n" +
+	"generation\x12\x14\n" +
+	"\x05ended\x18\x04 \x01(\bR\x05ended\x12\x1d\n" +
+	"\n" +
+	"ended_uids\x18\x05 \x03(\tR\tendedUids\x12+\n" +
+	"\x11preserve_original\x18\x06 \x01(\bR\x10preserveOriginal\x12E\n" +
+	"\n" +
+	"lvm_source\x18\a \x01(\v2&.pillar_csi.agent.v1.LvmSourceIdentityR\tlvmSource\x12B\n" +
+	"\x1dtransfer_authorization_digest\x18\b \x01(\tR\x1btransferAuthorizationDigest\x12*\n" +
+	"\x11transfer_from_uid\x18\t \x01(\tR\x0ftransferFromUid\x128\n" +
+	"\x18transfer_from_generation\x18\n" +
+	" \x01(\x04R\x16transferFromGeneration\x12&\n" +
+	"\x0ftransfer_to_uid\x18\v \x01(\tR\rtransferToUid\x124\n" +
+	"\x16transfer_to_generation\x18\f \x01(\x04R\x14transferToGeneration\"^\n" +
 	"\x14ImportVolumeResponse\x12\x1f\n" +
 	"\vdevice_path\x18\x01 \x01(\tR\n" +
 	"devicePath\x12%\n" +
@@ -4055,7 +5316,46 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"\rreconciled_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\freconciledAt\"\x0e\n" +
 	"\fDrainRequest\"?\n" +
 	"\rDrainResponse\x12.\n" +
-	"\x13was_already_drained\x18\x01 \x01(\bR\x11wasAlreadyDrained*\xb5\x01\n" +
+	"\x13was_already_drained\x18\x01 \x01(\bR\x11wasAlreadyDrained\"\x9e\x05\n" +
+	"\x10RecoverySnapshot\x12\x1b\n" +
+	"\tvolume_id\x18\x01 \x01(\tR\bvolumeId\x12C\n" +
+	"\fbackend_type\x18\x02 \x01(\x0e2 .pillar_csi.agent.v1.BackendTypeR\vbackendType\x12E\n" +
+	"\n" +
+	"lvm_source\x18\x03 \x01(\v2&.pillar_csi.agent.v1.LvmSourceIdentityR\tlvmSource\x12$\n" +
+	"\x0eold_volume_uid\x18\x04 \x01(\tR\foldVolumeUid\x12%\n" +
+	"\x0eold_generation\x18\x05 \x01(\x04R\roldGeneration\x12+\n" +
+	"\x11preserve_original\x18\x06 \x01(\bR\x10preserveOriginal\x12'\n" +
+	"\x0fexclusive_claim\x18\a \x01(\tR\x0eexclusiveClaim\x12A\n" +
+	"\tconsumers\x18\b \x03(\v2#.pillar_csi.agent.v1.DeviceConsumerR\tconsumers\x12@\n" +
+	"\aexports\x18\t \x03(\v2&.pillar_csi.agent.v1.ExportObservationR\aexports\x12;\n" +
+	"\x05fence\x18\n" +
+	" \x01(\v2%.pillar_csi.agent.v1.FenceObservationR\x05fence\x12%\n" +
+	"\x0eagent_identity\x18\v \x01(\tR\ragentIdentity\x127\n" +
+	"\tissued_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\bissuedAt\x12\x1c\n" +
+	"\tsignature\x18\r \x01(\fR\tsignature\"\xdd\x04\n" +
+	"\x15RecoveryAuthorization\x12'\n" +
+	"\x0fsnapshot_digest\x18\x01 \x01(\fR\x0esnapshotDigest\x12\x1b\n" +
+	"\tvolume_id\x18\x02 \x01(\tR\bvolumeId\x12C\n" +
+	"\fbackend_type\x18\x03 \x01(\x0e2 .pillar_csi.agent.v1.BackendTypeR\vbackendType\x12E\n" +
+	"\n" +
+	"lvm_source\x18\x04 \x01(\v2&.pillar_csi.agent.v1.LvmSourceIdentityR\tlvmSource\x12$\n" +
+	"\x0eold_volume_uid\x18\x05 \x01(\tR\foldVolumeUid\x12%\n" +
+	"\x0eold_generation\x18\x06 \x01(\x04R\roldGeneration\x12$\n" +
+	"\x0enew_volume_uid\x18\a \x01(\tR\fnewVolumeUid\x12%\n" +
+	"\x0enew_generation\x18\b \x01(\x04R\rnewGeneration\x120\n" +
+	"\x11preserve_original\x18\t \x01(\bH\x00R\x10preserveOriginal\x88\x01\x01\x127\n" +
+	"\tissued_at\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\bissuedAt\x129\n" +
+	"\n" +
+	"expires_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12\x1c\n" +
+	"\tsignature\x18\f \x01(\fR\tsignatureB\x14\n" +
+	"\x12_preserve_original\"\xb5\x01\n" +
+	"\x1eTransferVolumeOwnershipRequest\x12A\n" +
+	"\bsnapshot\x18\x01 \x01(\v2%.pillar_csi.agent.v1.RecoverySnapshotR\bsnapshot\x12P\n" +
+	"\rauthorization\x18\x02 \x01(\v2*.pillar_csi.agent.v1.RecoveryAuthorizationR\rauthorization\"\x94\x01\n" +
+	"\x1fTransferVolumeOwnershipResponse\x12>\n" +
+	"\aoutcome\x18\x01 \x01(\x0e2$.pillar_csi.agent.v1.TransferOutcomeR\aoutcome\x121\n" +
+	"\x14authorization_digest\x18\x02 \x01(\fR\x13authorizationDigest*\xb5\x01\n" +
 	"\vBackendType\x12\x1c\n" +
 	"\x18BACKEND_TYPE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15BACKEND_TYPE_ZFS_ZVOL\x10\x01\x12\x1c\n" +
@@ -4072,7 +5372,12 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"\x10VolumeAccessType\x12\"\n" +
 	"\x1eVOLUME_ACCESS_TYPE_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18VOLUME_ACCESS_TYPE_BLOCK\x10\x01\x12\x1c\n" +
-	"\x18VOLUME_ACCESS_TYPE_MOUNT\x10\x022\x8f\x0f\n" +
+	"\x18VOLUME_ACCESS_TYPE_MOUNT\x10\x02*\x99\x01\n" +
+	"\x0fTransferOutcome\x12 \n" +
+	"\x1cTRANSFER_OUTCOME_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aTRANSFER_OUTCOME_COMMITTED\x10\x01\x12&\n" +
+	"\"TRANSFER_OUTCOME_ALREADY_COMMITTED\x10\x02\x12\x1c\n" +
+	"\x18TRANSFER_OUTCOME_UNKNOWN\x10\x032\xfe\x10\n" +
 	"\fAgentService\x12l\n" +
 	"\x0fGetCapabilities\x12+.pillar_csi.agent.v1.GetCapabilitiesRequest\x1a,.pillar_csi.agent.v1.GetCapabilitiesResponse\x12`\n" +
 	"\vGetCapacity\x12'.pillar_csi.agent.v1.GetCapacityRequest\x1a(.pillar_csi.agent.v1.GetCapacityResponse\x12`\n" +
@@ -4080,10 +5385,12 @@ const file_pillar_csi_agent_v1_agent_proto_rawDesc = "" +
 	"\vListExports\x12'.pillar_csi.agent.v1.ListExportsRequest\x1a(.pillar_csi.agent.v1.ListExportsResponse\x12`\n" +
 	"\vHealthCheck\x12'.pillar_csi.agent.v1.HealthCheckRequest\x1a(.pillar_csi.agent.v1.HealthCheckResponse\x12c\n" +
 	"\fCreateVolume\x12(.pillar_csi.agent.v1.CreateVolumeRequest\x1a).pillar_csi.agent.v1.CreateVolumeResponse\x12c\n" +
-	"\fImportVolume\x12(.pillar_csi.agent.v1.ImportVolumeRequest\x1a).pillar_csi.agent.v1.ImportVolumeResponse\x12c\n" +
+	"\fImportVolume\x12(.pillar_csi.agent.v1.ImportVolumeRequest\x1a).pillar_csi.agent.v1.ImportVolumeResponse\x12f\n" +
+	"\rInspectVolume\x12).pillar_csi.agent.v1.InspectVolumeRequest\x1a*.pillar_csi.agent.v1.InspectVolumeResponse\x12c\n" +
 	"\fDeleteVolume\x12(.pillar_csi.agent.v1.DeleteVolumeRequest\x1a).pillar_csi.agent.v1.DeleteVolumeResponse\x12c\n" +
 	"\fExpandVolume\x12(.pillar_csi.agent.v1.ExpandVolumeRequest\x1a).pillar_csi.agent.v1.ExpandVolumeResponse\x12f\n" +
-	"\rReleaseVolume\x12).pillar_csi.agent.v1.ReleaseVolumeRequest\x1a*.pillar_csi.agent.v1.ReleaseVolumeResponse\x12c\n" +
+	"\rReleaseVolume\x12).pillar_csi.agent.v1.ReleaseVolumeRequest\x1a*.pillar_csi.agent.v1.ReleaseVolumeResponse\x12\x84\x01\n" +
+	"\x17TransferVolumeOwnership\x123.pillar_csi.agent.v1.TransferVolumeOwnershipRequest\x1a4.pillar_csi.agent.v1.TransferVolumeOwnershipResponse\x12c\n" +
 	"\fExportVolume\x12(.pillar_csi.agent.v1.ExportVolumeRequest\x1a).pillar_csi.agent.v1.ExportVolumeResponse\x12i\n" +
 	"\x0eUnexportVolume\x12*.pillar_csi.agent.v1.UnexportVolumeRequest\x1a+.pillar_csi.agent.v1.UnexportVolumeResponse\x12i\n" +
 	"\x0eAllowInitiator\x12*.pillar_csi.agent.v1.AllowInitiatorRequest\x1a+.pillar_csi.agent.v1.AllowInitiatorResponse\x12f\n" +
@@ -4107,171 +5414,209 @@ func file_pillar_csi_agent_v1_agent_proto_rawDescGZIP() []byte {
 	return file_pillar_csi_agent_v1_agent_proto_rawDescData
 }
 
-var file_pillar_csi_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_pillar_csi_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 57)
+var file_pillar_csi_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_pillar_csi_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 68)
 var file_pillar_csi_agent_v1_agent_proto_goTypes = []any{
-	(BackendType)(0),                // 0: pillar_csi.agent.v1.BackendType
-	(ProtocolType)(0),               // 1: pillar_csi.agent.v1.ProtocolType
-	(VolumeAccessType)(0),           // 2: pillar_csi.agent.v1.VolumeAccessType
-	(*FencingToken)(nil),            // 3: pillar_csi.agent.v1.FencingToken
-	(*ZfsVolumeParams)(nil),         // 4: pillar_csi.agent.v1.ZfsVolumeParams
-	(*LvmVolumeParams)(nil),         // 5: pillar_csi.agent.v1.LvmVolumeParams
-	(*BackendParams)(nil),           // 6: pillar_csi.agent.v1.BackendParams
-	(*NvmeofTcpExportParams)(nil),   // 7: pillar_csi.agent.v1.NvmeofTcpExportParams
-	(*IscsiExportParams)(nil),       // 8: pillar_csi.agent.v1.IscsiExportParams
-	(*IscsiChap)(nil),               // 9: pillar_csi.agent.v1.IscsiChap
-	(*NfsExportParams)(nil),         // 10: pillar_csi.agent.v1.NfsExportParams
-	(*SmbExportParams)(nil),         // 11: pillar_csi.agent.v1.SmbExportParams
-	(*ExportParams)(nil),            // 12: pillar_csi.agent.v1.ExportParams
-	(*ExportInfo)(nil),              // 13: pillar_csi.agent.v1.ExportInfo
-	(*VolumeInfo)(nil),              // 14: pillar_csi.agent.v1.VolumeInfo
-	(*PoolInfo)(nil),                // 15: pillar_csi.agent.v1.PoolInfo
-	(*GetCapabilitiesRequest)(nil),  // 16: pillar_csi.agent.v1.GetCapabilitiesRequest
-	(*GetCapabilitiesResponse)(nil), // 17: pillar_csi.agent.v1.GetCapabilitiesResponse
-	(*GetCapacityRequest)(nil),      // 18: pillar_csi.agent.v1.GetCapacityRequest
-	(*GetCapacityResponse)(nil),     // 19: pillar_csi.agent.v1.GetCapacityResponse
-	(*ListVolumesRequest)(nil),      // 20: pillar_csi.agent.v1.ListVolumesRequest
-	(*ListVolumesResponse)(nil),     // 21: pillar_csi.agent.v1.ListVolumesResponse
-	(*ListExportsRequest)(nil),      // 22: pillar_csi.agent.v1.ListExportsRequest
-	(*ListExportsResponse)(nil),     // 23: pillar_csi.agent.v1.ListExportsResponse
-	(*SubsystemStatus)(nil),         // 24: pillar_csi.agent.v1.SubsystemStatus
-	(*HealthCheckRequest)(nil),      // 25: pillar_csi.agent.v1.HealthCheckRequest
-	(*HealthCheckResponse)(nil),     // 26: pillar_csi.agent.v1.HealthCheckResponse
-	(*CreateVolumeRequest)(nil),     // 27: pillar_csi.agent.v1.CreateVolumeRequest
-	(*CreateVolumeResponse)(nil),    // 28: pillar_csi.agent.v1.CreateVolumeResponse
-	(*ImportVolumeRequest)(nil),     // 29: pillar_csi.agent.v1.ImportVolumeRequest
-	(*ImportVolumeResponse)(nil),    // 30: pillar_csi.agent.v1.ImportVolumeResponse
-	(*DeleteVolumeRequest)(nil),     // 31: pillar_csi.agent.v1.DeleteVolumeRequest
-	(*DeleteVolumeResponse)(nil),    // 32: pillar_csi.agent.v1.DeleteVolumeResponse
-	(*ReleaseVolumeRequest)(nil),    // 33: pillar_csi.agent.v1.ReleaseVolumeRequest
-	(*ReleaseVolumeResponse)(nil),   // 34: pillar_csi.agent.v1.ReleaseVolumeResponse
-	(*ExpandVolumeRequest)(nil),     // 35: pillar_csi.agent.v1.ExpandVolumeRequest
-	(*ExpandVolumeResponse)(nil),    // 36: pillar_csi.agent.v1.ExpandVolumeResponse
-	(*ExportVolumeRequest)(nil),     // 37: pillar_csi.agent.v1.ExportVolumeRequest
-	(*ExportVolumeResponse)(nil),    // 38: pillar_csi.agent.v1.ExportVolumeResponse
-	(*UnexportVolumeRequest)(nil),   // 39: pillar_csi.agent.v1.UnexportVolumeRequest
-	(*UnexportVolumeResponse)(nil),  // 40: pillar_csi.agent.v1.UnexportVolumeResponse
-	(*SendVolumeRequest)(nil),       // 41: pillar_csi.agent.v1.SendVolumeRequest
-	(*SendVolumeChunk)(nil),         // 42: pillar_csi.agent.v1.SendVolumeChunk
-	(*ReceiveVolumeChunk)(nil),      // 43: pillar_csi.agent.v1.ReceiveVolumeChunk
-	(*ReceiveVolumeResponse)(nil),   // 44: pillar_csi.agent.v1.ReceiveVolumeResponse
-	(*AllowInitiatorRequest)(nil),   // 45: pillar_csi.agent.v1.AllowInitiatorRequest
-	(*AllowInitiatorResponse)(nil),  // 46: pillar_csi.agent.v1.AllowInitiatorResponse
-	(*DenyInitiatorRequest)(nil),    // 47: pillar_csi.agent.v1.DenyInitiatorRequest
-	(*DenyInitiatorResponse)(nil),   // 48: pillar_csi.agent.v1.DenyInitiatorResponse
-	(*SetLocalAttachRequest)(nil),   // 49: pillar_csi.agent.v1.SetLocalAttachRequest
-	(*SetLocalAttachResponse)(nil),  // 50: pillar_csi.agent.v1.SetLocalAttachResponse
-	(*VolumeDesiredState)(nil),      // 51: pillar_csi.agent.v1.VolumeDesiredState
-	(*ExportDesiredState)(nil),      // 52: pillar_csi.agent.v1.ExportDesiredState
-	(*ReconcileStateRequest)(nil),   // 53: pillar_csi.agent.v1.ReconcileStateRequest
-	(*ReconcileItemResult)(nil),     // 54: pillar_csi.agent.v1.ReconcileItemResult
-	(*ReconcileStateResponse)(nil),  // 55: pillar_csi.agent.v1.ReconcileStateResponse
-	(*DrainRequest)(nil),            // 56: pillar_csi.agent.v1.DrainRequest
-	(*DrainResponse)(nil),           // 57: pillar_csi.agent.v1.DrainResponse
-	nil,                             // 58: pillar_csi.agent.v1.ZfsVolumeParams.PropertiesEntry
-	nil,                             // 59: pillar_csi.agent.v1.ListExportsResponse.ExportsEntry
-	(*timestamppb.Timestamp)(nil),   // 60: google.protobuf.Timestamp
+	(BackendType)(0),                        // 0: pillar_csi.agent.v1.BackendType
+	(ProtocolType)(0),                       // 1: pillar_csi.agent.v1.ProtocolType
+	(VolumeAccessType)(0),                   // 2: pillar_csi.agent.v1.VolumeAccessType
+	(TransferOutcome)(0),                    // 3: pillar_csi.agent.v1.TransferOutcome
+	(*FencingToken)(nil),                    // 4: pillar_csi.agent.v1.FencingToken
+	(*ZfsVolumeParams)(nil),                 // 5: pillar_csi.agent.v1.ZfsVolumeParams
+	(*LvmVolumeParams)(nil),                 // 6: pillar_csi.agent.v1.LvmVolumeParams
+	(*BackendParams)(nil),                   // 7: pillar_csi.agent.v1.BackendParams
+	(*NvmeofTcpExportParams)(nil),           // 8: pillar_csi.agent.v1.NvmeofTcpExportParams
+	(*IscsiExportParams)(nil),               // 9: pillar_csi.agent.v1.IscsiExportParams
+	(*IscsiChap)(nil),                       // 10: pillar_csi.agent.v1.IscsiChap
+	(*NfsExportParams)(nil),                 // 11: pillar_csi.agent.v1.NfsExportParams
+	(*SmbExportParams)(nil),                 // 12: pillar_csi.agent.v1.SmbExportParams
+	(*ExportParams)(nil),                    // 13: pillar_csi.agent.v1.ExportParams
+	(*ExportInfo)(nil),                      // 14: pillar_csi.agent.v1.ExportInfo
+	(*VolumeInfo)(nil),                      // 15: pillar_csi.agent.v1.VolumeInfo
+	(*PoolInfo)(nil),                        // 16: pillar_csi.agent.v1.PoolInfo
+	(*GetCapabilitiesRequest)(nil),          // 17: pillar_csi.agent.v1.GetCapabilitiesRequest
+	(*GetCapabilitiesResponse)(nil),         // 18: pillar_csi.agent.v1.GetCapabilitiesResponse
+	(*GetCapacityRequest)(nil),              // 19: pillar_csi.agent.v1.GetCapacityRequest
+	(*GetCapacityResponse)(nil),             // 20: pillar_csi.agent.v1.GetCapacityResponse
+	(*ListVolumesRequest)(nil),              // 21: pillar_csi.agent.v1.ListVolumesRequest
+	(*ListVolumesResponse)(nil),             // 22: pillar_csi.agent.v1.ListVolumesResponse
+	(*ListExportsRequest)(nil),              // 23: pillar_csi.agent.v1.ListExportsRequest
+	(*ListExportsResponse)(nil),             // 24: pillar_csi.agent.v1.ListExportsResponse
+	(*SubsystemStatus)(nil),                 // 25: pillar_csi.agent.v1.SubsystemStatus
+	(*HealthCheckRequest)(nil),              // 26: pillar_csi.agent.v1.HealthCheckRequest
+	(*HealthCheckResponse)(nil),             // 27: pillar_csi.agent.v1.HealthCheckResponse
+	(*CreateVolumeRequest)(nil),             // 28: pillar_csi.agent.v1.CreateVolumeRequest
+	(*CreateVolumeResponse)(nil),            // 29: pillar_csi.agent.v1.CreateVolumeResponse
+	(*ImportVolumeRequest)(nil),             // 30: pillar_csi.agent.v1.ImportVolumeRequest
+	(*LvmSourceIdentity)(nil),               // 31: pillar_csi.agent.v1.LvmSourceIdentity
+	(*InspectVolumeRequest)(nil),            // 32: pillar_csi.agent.v1.InspectVolumeRequest
+	(*InspectVolumeResponse)(nil),           // 33: pillar_csi.agent.v1.InspectVolumeResponse
+	(*LvmObservation)(nil),                  // 34: pillar_csi.agent.v1.LvmObservation
+	(*DeviceConsumer)(nil),                  // 35: pillar_csi.agent.v1.DeviceConsumer
+	(*ExportObservation)(nil),               // 36: pillar_csi.agent.v1.ExportObservation
+	(*FenceObservation)(nil),                // 37: pillar_csi.agent.v1.FenceObservation
+	(*ImportVolumeResponse)(nil),            // 38: pillar_csi.agent.v1.ImportVolumeResponse
+	(*DeleteVolumeRequest)(nil),             // 39: pillar_csi.agent.v1.DeleteVolumeRequest
+	(*DeleteVolumeResponse)(nil),            // 40: pillar_csi.agent.v1.DeleteVolumeResponse
+	(*ReleaseVolumeRequest)(nil),            // 41: pillar_csi.agent.v1.ReleaseVolumeRequest
+	(*ReleaseVolumeResponse)(nil),           // 42: pillar_csi.agent.v1.ReleaseVolumeResponse
+	(*ExpandVolumeRequest)(nil),             // 43: pillar_csi.agent.v1.ExpandVolumeRequest
+	(*ExpandVolumeResponse)(nil),            // 44: pillar_csi.agent.v1.ExpandVolumeResponse
+	(*ExportVolumeRequest)(nil),             // 45: pillar_csi.agent.v1.ExportVolumeRequest
+	(*ExportVolumeResponse)(nil),            // 46: pillar_csi.agent.v1.ExportVolumeResponse
+	(*UnexportVolumeRequest)(nil),           // 47: pillar_csi.agent.v1.UnexportVolumeRequest
+	(*UnexportVolumeResponse)(nil),          // 48: pillar_csi.agent.v1.UnexportVolumeResponse
+	(*SendVolumeRequest)(nil),               // 49: pillar_csi.agent.v1.SendVolumeRequest
+	(*SendVolumeChunk)(nil),                 // 50: pillar_csi.agent.v1.SendVolumeChunk
+	(*ReceiveVolumeChunk)(nil),              // 51: pillar_csi.agent.v1.ReceiveVolumeChunk
+	(*ReceiveVolumeResponse)(nil),           // 52: pillar_csi.agent.v1.ReceiveVolumeResponse
+	(*AllowInitiatorRequest)(nil),           // 53: pillar_csi.agent.v1.AllowInitiatorRequest
+	(*AllowInitiatorResponse)(nil),          // 54: pillar_csi.agent.v1.AllowInitiatorResponse
+	(*DenyInitiatorRequest)(nil),            // 55: pillar_csi.agent.v1.DenyInitiatorRequest
+	(*DenyInitiatorResponse)(nil),           // 56: pillar_csi.agent.v1.DenyInitiatorResponse
+	(*SetLocalAttachRequest)(nil),           // 57: pillar_csi.agent.v1.SetLocalAttachRequest
+	(*SetLocalAttachResponse)(nil),          // 58: pillar_csi.agent.v1.SetLocalAttachResponse
+	(*VolumeDesiredState)(nil),              // 59: pillar_csi.agent.v1.VolumeDesiredState
+	(*ExportDesiredState)(nil),              // 60: pillar_csi.agent.v1.ExportDesiredState
+	(*ReconcileStateRequest)(nil),           // 61: pillar_csi.agent.v1.ReconcileStateRequest
+	(*ReconcileItemResult)(nil),             // 62: pillar_csi.agent.v1.ReconcileItemResult
+	(*ReconcileStateResponse)(nil),          // 63: pillar_csi.agent.v1.ReconcileStateResponse
+	(*DrainRequest)(nil),                    // 64: pillar_csi.agent.v1.DrainRequest
+	(*DrainResponse)(nil),                   // 65: pillar_csi.agent.v1.DrainResponse
+	(*RecoverySnapshot)(nil),                // 66: pillar_csi.agent.v1.RecoverySnapshot
+	(*RecoveryAuthorization)(nil),           // 67: pillar_csi.agent.v1.RecoveryAuthorization
+	(*TransferVolumeOwnershipRequest)(nil),  // 68: pillar_csi.agent.v1.TransferVolumeOwnershipRequest
+	(*TransferVolumeOwnershipResponse)(nil), // 69: pillar_csi.agent.v1.TransferVolumeOwnershipResponse
+	nil,                                     // 70: pillar_csi.agent.v1.ZfsVolumeParams.PropertiesEntry
+	nil,                                     // 71: pillar_csi.agent.v1.ListExportsResponse.ExportsEntry
+	(*timestamppb.Timestamp)(nil),           // 72: google.protobuf.Timestamp
 }
 var file_pillar_csi_agent_v1_agent_proto_depIdxs = []int32{
-	58, // 0: pillar_csi.agent.v1.ZfsVolumeParams.properties:type_name -> pillar_csi.agent.v1.ZfsVolumeParams.PropertiesEntry
-	4,  // 1: pillar_csi.agent.v1.BackendParams.zfs:type_name -> pillar_csi.agent.v1.ZfsVolumeParams
-	5,  // 2: pillar_csi.agent.v1.BackendParams.lvm:type_name -> pillar_csi.agent.v1.LvmVolumeParams
-	9,  // 3: pillar_csi.agent.v1.IscsiExportParams.chap:type_name -> pillar_csi.agent.v1.IscsiChap
-	7,  // 4: pillar_csi.agent.v1.ExportParams.nvmeof_tcp:type_name -> pillar_csi.agent.v1.NvmeofTcpExportParams
-	8,  // 5: pillar_csi.agent.v1.ExportParams.iscsi:type_name -> pillar_csi.agent.v1.IscsiExportParams
-	10, // 6: pillar_csi.agent.v1.ExportParams.nfs:type_name -> pillar_csi.agent.v1.NfsExportParams
-	11, // 7: pillar_csi.agent.v1.ExportParams.smb:type_name -> pillar_csi.agent.v1.SmbExportParams
+	70, // 0: pillar_csi.agent.v1.ZfsVolumeParams.properties:type_name -> pillar_csi.agent.v1.ZfsVolumeParams.PropertiesEntry
+	5,  // 1: pillar_csi.agent.v1.BackendParams.zfs:type_name -> pillar_csi.agent.v1.ZfsVolumeParams
+	6,  // 2: pillar_csi.agent.v1.BackendParams.lvm:type_name -> pillar_csi.agent.v1.LvmVolumeParams
+	10, // 3: pillar_csi.agent.v1.IscsiExportParams.chap:type_name -> pillar_csi.agent.v1.IscsiChap
+	8,  // 4: pillar_csi.agent.v1.ExportParams.nvmeof_tcp:type_name -> pillar_csi.agent.v1.NvmeofTcpExportParams
+	9,  // 5: pillar_csi.agent.v1.ExportParams.iscsi:type_name -> pillar_csi.agent.v1.IscsiExportParams
+	11, // 6: pillar_csi.agent.v1.ExportParams.nfs:type_name -> pillar_csi.agent.v1.NfsExportParams
+	12, // 7: pillar_csi.agent.v1.ExportParams.smb:type_name -> pillar_csi.agent.v1.SmbExportParams
 	0,  // 8: pillar_csi.agent.v1.PoolInfo.backend_type:type_name -> pillar_csi.agent.v1.BackendType
 	0,  // 9: pillar_csi.agent.v1.GetCapabilitiesResponse.supported_backends:type_name -> pillar_csi.agent.v1.BackendType
 	1,  // 10: pillar_csi.agent.v1.GetCapabilitiesResponse.supported_protocols:type_name -> pillar_csi.agent.v1.ProtocolType
-	15, // 11: pillar_csi.agent.v1.GetCapabilitiesResponse.discovered_pools:type_name -> pillar_csi.agent.v1.PoolInfo
+	16, // 11: pillar_csi.agent.v1.GetCapabilitiesResponse.discovered_pools:type_name -> pillar_csi.agent.v1.PoolInfo
 	0,  // 12: pillar_csi.agent.v1.GetCapacityRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
 	0,  // 13: pillar_csi.agent.v1.ListVolumesRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	14, // 14: pillar_csi.agent.v1.ListVolumesResponse.volumes:type_name -> pillar_csi.agent.v1.VolumeInfo
+	15, // 14: pillar_csi.agent.v1.ListVolumesResponse.volumes:type_name -> pillar_csi.agent.v1.VolumeInfo
 	1,  // 15: pillar_csi.agent.v1.ListExportsRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	59, // 16: pillar_csi.agent.v1.ListExportsResponse.exports:type_name -> pillar_csi.agent.v1.ListExportsResponse.ExportsEntry
-	24, // 17: pillar_csi.agent.v1.HealthCheckResponse.subsystems:type_name -> pillar_csi.agent.v1.SubsystemStatus
-	60, // 18: pillar_csi.agent.v1.HealthCheckResponse.checked_at:type_name -> google.protobuf.Timestamp
+	71, // 16: pillar_csi.agent.v1.ListExportsResponse.exports:type_name -> pillar_csi.agent.v1.ListExportsResponse.ExportsEntry
+	25, // 17: pillar_csi.agent.v1.HealthCheckResponse.subsystems:type_name -> pillar_csi.agent.v1.SubsystemStatus
+	72, // 18: pillar_csi.agent.v1.HealthCheckResponse.checked_at:type_name -> google.protobuf.Timestamp
 	0,  // 19: pillar_csi.agent.v1.CreateVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	6,  // 20: pillar_csi.agent.v1.CreateVolumeRequest.backend_params:type_name -> pillar_csi.agent.v1.BackendParams
+	7,  // 20: pillar_csi.agent.v1.CreateVolumeRequest.backend_params:type_name -> pillar_csi.agent.v1.BackendParams
 	2,  // 21: pillar_csi.agent.v1.CreateVolumeRequest.access_type:type_name -> pillar_csi.agent.v1.VolumeAccessType
-	3,  // 22: pillar_csi.agent.v1.CreateVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	4,  // 22: pillar_csi.agent.v1.CreateVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
 	0,  // 23: pillar_csi.agent.v1.ImportVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	3,  // 24: pillar_csi.agent.v1.ImportVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	0,  // 25: pillar_csi.agent.v1.DeleteVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	3,  // 26: pillar_csi.agent.v1.DeleteVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	1,  // 27: pillar_csi.agent.v1.ReleaseVolumeRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	3,  // 28: pillar_csi.agent.v1.ReleaseVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	0,  // 29: pillar_csi.agent.v1.ExpandVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	3,  // 30: pillar_csi.agent.v1.ExpandVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	1,  // 31: pillar_csi.agent.v1.ExportVolumeRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	12, // 32: pillar_csi.agent.v1.ExportVolumeRequest.export_params:type_name -> pillar_csi.agent.v1.ExportParams
-	3,  // 33: pillar_csi.agent.v1.ExportVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	13, // 34: pillar_csi.agent.v1.ExportVolumeResponse.export_info:type_name -> pillar_csi.agent.v1.ExportInfo
-	1,  // 35: pillar_csi.agent.v1.UnexportVolumeRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	3,  // 36: pillar_csi.agent.v1.UnexportVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	0,  // 37: pillar_csi.agent.v1.SendVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	0,  // 38: pillar_csi.agent.v1.ReceiveVolumeChunk.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	1,  // 39: pillar_csi.agent.v1.AllowInitiatorRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	3,  // 40: pillar_csi.agent.v1.AllowInitiatorRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	12, // 41: pillar_csi.agent.v1.AllowInitiatorRequest.export_params:type_name -> pillar_csi.agent.v1.ExportParams
-	1,  // 42: pillar_csi.agent.v1.DenyInitiatorRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	3,  // 43: pillar_csi.agent.v1.DenyInitiatorRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	1,  // 44: pillar_csi.agent.v1.SetLocalAttachRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	3,  // 45: pillar_csi.agent.v1.SetLocalAttachRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	0,  // 46: pillar_csi.agent.v1.VolumeDesiredState.backend_type:type_name -> pillar_csi.agent.v1.BackendType
-	6,  // 47: pillar_csi.agent.v1.VolumeDesiredState.backend_params:type_name -> pillar_csi.agent.v1.BackendParams
-	52, // 48: pillar_csi.agent.v1.VolumeDesiredState.exports:type_name -> pillar_csi.agent.v1.ExportDesiredState
-	3,  // 49: pillar_csi.agent.v1.VolumeDesiredState.fence:type_name -> pillar_csi.agent.v1.FencingToken
-	1,  // 50: pillar_csi.agent.v1.ExportDesiredState.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
-	12, // 51: pillar_csi.agent.v1.ExportDesiredState.export_params:type_name -> pillar_csi.agent.v1.ExportParams
-	51, // 52: pillar_csi.agent.v1.ReconcileStateRequest.volumes:type_name -> pillar_csi.agent.v1.VolumeDesiredState
-	54, // 53: pillar_csi.agent.v1.ReconcileStateResponse.results:type_name -> pillar_csi.agent.v1.ReconcileItemResult
-	60, // 54: pillar_csi.agent.v1.ReconcileStateResponse.reconciled_at:type_name -> google.protobuf.Timestamp
-	13, // 55: pillar_csi.agent.v1.ListExportsResponse.ExportsEntry.value:type_name -> pillar_csi.agent.v1.ExportInfo
-	16, // 56: pillar_csi.agent.v1.AgentService.GetCapabilities:input_type -> pillar_csi.agent.v1.GetCapabilitiesRequest
-	18, // 57: pillar_csi.agent.v1.AgentService.GetCapacity:input_type -> pillar_csi.agent.v1.GetCapacityRequest
-	20, // 58: pillar_csi.agent.v1.AgentService.ListVolumes:input_type -> pillar_csi.agent.v1.ListVolumesRequest
-	22, // 59: pillar_csi.agent.v1.AgentService.ListExports:input_type -> pillar_csi.agent.v1.ListExportsRequest
-	25, // 60: pillar_csi.agent.v1.AgentService.HealthCheck:input_type -> pillar_csi.agent.v1.HealthCheckRequest
-	27, // 61: pillar_csi.agent.v1.AgentService.CreateVolume:input_type -> pillar_csi.agent.v1.CreateVolumeRequest
-	29, // 62: pillar_csi.agent.v1.AgentService.ImportVolume:input_type -> pillar_csi.agent.v1.ImportVolumeRequest
-	31, // 63: pillar_csi.agent.v1.AgentService.DeleteVolume:input_type -> pillar_csi.agent.v1.DeleteVolumeRequest
-	35, // 64: pillar_csi.agent.v1.AgentService.ExpandVolume:input_type -> pillar_csi.agent.v1.ExpandVolumeRequest
-	33, // 65: pillar_csi.agent.v1.AgentService.ReleaseVolume:input_type -> pillar_csi.agent.v1.ReleaseVolumeRequest
-	37, // 66: pillar_csi.agent.v1.AgentService.ExportVolume:input_type -> pillar_csi.agent.v1.ExportVolumeRequest
-	39, // 67: pillar_csi.agent.v1.AgentService.UnexportVolume:input_type -> pillar_csi.agent.v1.UnexportVolumeRequest
-	45, // 68: pillar_csi.agent.v1.AgentService.AllowInitiator:input_type -> pillar_csi.agent.v1.AllowInitiatorRequest
-	47, // 69: pillar_csi.agent.v1.AgentService.DenyInitiator:input_type -> pillar_csi.agent.v1.DenyInitiatorRequest
-	49, // 70: pillar_csi.agent.v1.AgentService.SetLocalAttach:input_type -> pillar_csi.agent.v1.SetLocalAttachRequest
-	41, // 71: pillar_csi.agent.v1.AgentService.SendVolume:input_type -> pillar_csi.agent.v1.SendVolumeRequest
-	43, // 72: pillar_csi.agent.v1.AgentService.ReceiveVolume:input_type -> pillar_csi.agent.v1.ReceiveVolumeChunk
-	53, // 73: pillar_csi.agent.v1.AgentService.ReconcileState:input_type -> pillar_csi.agent.v1.ReconcileStateRequest
-	56, // 74: pillar_csi.agent.v1.AgentService.Drain:input_type -> pillar_csi.agent.v1.DrainRequest
-	17, // 75: pillar_csi.agent.v1.AgentService.GetCapabilities:output_type -> pillar_csi.agent.v1.GetCapabilitiesResponse
-	19, // 76: pillar_csi.agent.v1.AgentService.GetCapacity:output_type -> pillar_csi.agent.v1.GetCapacityResponse
-	21, // 77: pillar_csi.agent.v1.AgentService.ListVolumes:output_type -> pillar_csi.agent.v1.ListVolumesResponse
-	23, // 78: pillar_csi.agent.v1.AgentService.ListExports:output_type -> pillar_csi.agent.v1.ListExportsResponse
-	26, // 79: pillar_csi.agent.v1.AgentService.HealthCheck:output_type -> pillar_csi.agent.v1.HealthCheckResponse
-	28, // 80: pillar_csi.agent.v1.AgentService.CreateVolume:output_type -> pillar_csi.agent.v1.CreateVolumeResponse
-	30, // 81: pillar_csi.agent.v1.AgentService.ImportVolume:output_type -> pillar_csi.agent.v1.ImportVolumeResponse
-	32, // 82: pillar_csi.agent.v1.AgentService.DeleteVolume:output_type -> pillar_csi.agent.v1.DeleteVolumeResponse
-	36, // 83: pillar_csi.agent.v1.AgentService.ExpandVolume:output_type -> pillar_csi.agent.v1.ExpandVolumeResponse
-	34, // 84: pillar_csi.agent.v1.AgentService.ReleaseVolume:output_type -> pillar_csi.agent.v1.ReleaseVolumeResponse
-	38, // 85: pillar_csi.agent.v1.AgentService.ExportVolume:output_type -> pillar_csi.agent.v1.ExportVolumeResponse
-	40, // 86: pillar_csi.agent.v1.AgentService.UnexportVolume:output_type -> pillar_csi.agent.v1.UnexportVolumeResponse
-	46, // 87: pillar_csi.agent.v1.AgentService.AllowInitiator:output_type -> pillar_csi.agent.v1.AllowInitiatorResponse
-	48, // 88: pillar_csi.agent.v1.AgentService.DenyInitiator:output_type -> pillar_csi.agent.v1.DenyInitiatorResponse
-	50, // 89: pillar_csi.agent.v1.AgentService.SetLocalAttach:output_type -> pillar_csi.agent.v1.SetLocalAttachResponse
-	42, // 90: pillar_csi.agent.v1.AgentService.SendVolume:output_type -> pillar_csi.agent.v1.SendVolumeChunk
-	44, // 91: pillar_csi.agent.v1.AgentService.ReceiveVolume:output_type -> pillar_csi.agent.v1.ReceiveVolumeResponse
-	55, // 92: pillar_csi.agent.v1.AgentService.ReconcileState:output_type -> pillar_csi.agent.v1.ReconcileStateResponse
-	57, // 93: pillar_csi.agent.v1.AgentService.Drain:output_type -> pillar_csi.agent.v1.DrainResponse
-	75, // [75:94] is the sub-list for method output_type
-	56, // [56:75] is the sub-list for method input_type
-	56, // [56:56] is the sub-list for extension type_name
-	56, // [56:56] is the sub-list for extension extendee
-	0,  // [0:56] is the sub-list for field type_name
+	4,  // 24: pillar_csi.agent.v1.ImportVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	31, // 25: pillar_csi.agent.v1.ImportVolumeRequest.expected_lvm_source:type_name -> pillar_csi.agent.v1.LvmSourceIdentity
+	0,  // 26: pillar_csi.agent.v1.InspectVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
+	34, // 27: pillar_csi.agent.v1.InspectVolumeResponse.lvm:type_name -> pillar_csi.agent.v1.LvmObservation
+	35, // 28: pillar_csi.agent.v1.InspectVolumeResponse.consumers:type_name -> pillar_csi.agent.v1.DeviceConsumer
+	37, // 29: pillar_csi.agent.v1.InspectVolumeResponse.fence:type_name -> pillar_csi.agent.v1.FenceObservation
+	36, // 30: pillar_csi.agent.v1.InspectVolumeResponse.exports:type_name -> pillar_csi.agent.v1.ExportObservation
+	66, // 31: pillar_csi.agent.v1.InspectVolumeResponse.snapshot:type_name -> pillar_csi.agent.v1.RecoverySnapshot
+	31, // 32: pillar_csi.agent.v1.LvmObservation.identity:type_name -> pillar_csi.agent.v1.LvmSourceIdentity
+	31, // 33: pillar_csi.agent.v1.FenceObservation.lvm_source:type_name -> pillar_csi.agent.v1.LvmSourceIdentity
+	0,  // 34: pillar_csi.agent.v1.DeleteVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
+	4,  // 35: pillar_csi.agent.v1.DeleteVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	1,  // 36: pillar_csi.agent.v1.ReleaseVolumeRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
+	4,  // 37: pillar_csi.agent.v1.ReleaseVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	0,  // 38: pillar_csi.agent.v1.ExpandVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
+	4,  // 39: pillar_csi.agent.v1.ExpandVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	1,  // 40: pillar_csi.agent.v1.ExportVolumeRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
+	13, // 41: pillar_csi.agent.v1.ExportVolumeRequest.export_params:type_name -> pillar_csi.agent.v1.ExportParams
+	4,  // 42: pillar_csi.agent.v1.ExportVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	14, // 43: pillar_csi.agent.v1.ExportVolumeResponse.export_info:type_name -> pillar_csi.agent.v1.ExportInfo
+	1,  // 44: pillar_csi.agent.v1.UnexportVolumeRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
+	4,  // 45: pillar_csi.agent.v1.UnexportVolumeRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	0,  // 46: pillar_csi.agent.v1.SendVolumeRequest.backend_type:type_name -> pillar_csi.agent.v1.BackendType
+	0,  // 47: pillar_csi.agent.v1.ReceiveVolumeChunk.backend_type:type_name -> pillar_csi.agent.v1.BackendType
+	1,  // 48: pillar_csi.agent.v1.AllowInitiatorRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
+	4,  // 49: pillar_csi.agent.v1.AllowInitiatorRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	13, // 50: pillar_csi.agent.v1.AllowInitiatorRequest.export_params:type_name -> pillar_csi.agent.v1.ExportParams
+	1,  // 51: pillar_csi.agent.v1.DenyInitiatorRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
+	4,  // 52: pillar_csi.agent.v1.DenyInitiatorRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	1,  // 53: pillar_csi.agent.v1.SetLocalAttachRequest.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
+	4,  // 54: pillar_csi.agent.v1.SetLocalAttachRequest.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	0,  // 55: pillar_csi.agent.v1.VolumeDesiredState.backend_type:type_name -> pillar_csi.agent.v1.BackendType
+	7,  // 56: pillar_csi.agent.v1.VolumeDesiredState.backend_params:type_name -> pillar_csi.agent.v1.BackendParams
+	60, // 57: pillar_csi.agent.v1.VolumeDesiredState.exports:type_name -> pillar_csi.agent.v1.ExportDesiredState
+	4,  // 58: pillar_csi.agent.v1.VolumeDesiredState.fence:type_name -> pillar_csi.agent.v1.FencingToken
+	1,  // 59: pillar_csi.agent.v1.ExportDesiredState.protocol_type:type_name -> pillar_csi.agent.v1.ProtocolType
+	13, // 60: pillar_csi.agent.v1.ExportDesiredState.export_params:type_name -> pillar_csi.agent.v1.ExportParams
+	59, // 61: pillar_csi.agent.v1.ReconcileStateRequest.volumes:type_name -> pillar_csi.agent.v1.VolumeDesiredState
+	62, // 62: pillar_csi.agent.v1.ReconcileStateResponse.results:type_name -> pillar_csi.agent.v1.ReconcileItemResult
+	72, // 63: pillar_csi.agent.v1.ReconcileStateResponse.reconciled_at:type_name -> google.protobuf.Timestamp
+	0,  // 64: pillar_csi.agent.v1.RecoverySnapshot.backend_type:type_name -> pillar_csi.agent.v1.BackendType
+	31, // 65: pillar_csi.agent.v1.RecoverySnapshot.lvm_source:type_name -> pillar_csi.agent.v1.LvmSourceIdentity
+	35, // 66: pillar_csi.agent.v1.RecoverySnapshot.consumers:type_name -> pillar_csi.agent.v1.DeviceConsumer
+	36, // 67: pillar_csi.agent.v1.RecoverySnapshot.exports:type_name -> pillar_csi.agent.v1.ExportObservation
+	37, // 68: pillar_csi.agent.v1.RecoverySnapshot.fence:type_name -> pillar_csi.agent.v1.FenceObservation
+	72, // 69: pillar_csi.agent.v1.RecoverySnapshot.issued_at:type_name -> google.protobuf.Timestamp
+	0,  // 70: pillar_csi.agent.v1.RecoveryAuthorization.backend_type:type_name -> pillar_csi.agent.v1.BackendType
+	31, // 71: pillar_csi.agent.v1.RecoveryAuthorization.lvm_source:type_name -> pillar_csi.agent.v1.LvmSourceIdentity
+	72, // 72: pillar_csi.agent.v1.RecoveryAuthorization.issued_at:type_name -> google.protobuf.Timestamp
+	72, // 73: pillar_csi.agent.v1.RecoveryAuthorization.expires_at:type_name -> google.protobuf.Timestamp
+	66, // 74: pillar_csi.agent.v1.TransferVolumeOwnershipRequest.snapshot:type_name -> pillar_csi.agent.v1.RecoverySnapshot
+	67, // 75: pillar_csi.agent.v1.TransferVolumeOwnershipRequest.authorization:type_name -> pillar_csi.agent.v1.RecoveryAuthorization
+	3,  // 76: pillar_csi.agent.v1.TransferVolumeOwnershipResponse.outcome:type_name -> pillar_csi.agent.v1.TransferOutcome
+	14, // 77: pillar_csi.agent.v1.ListExportsResponse.ExportsEntry.value:type_name -> pillar_csi.agent.v1.ExportInfo
+	17, // 78: pillar_csi.agent.v1.AgentService.GetCapabilities:input_type -> pillar_csi.agent.v1.GetCapabilitiesRequest
+	19, // 79: pillar_csi.agent.v1.AgentService.GetCapacity:input_type -> pillar_csi.agent.v1.GetCapacityRequest
+	21, // 80: pillar_csi.agent.v1.AgentService.ListVolumes:input_type -> pillar_csi.agent.v1.ListVolumesRequest
+	23, // 81: pillar_csi.agent.v1.AgentService.ListExports:input_type -> pillar_csi.agent.v1.ListExportsRequest
+	26, // 82: pillar_csi.agent.v1.AgentService.HealthCheck:input_type -> pillar_csi.agent.v1.HealthCheckRequest
+	28, // 83: pillar_csi.agent.v1.AgentService.CreateVolume:input_type -> pillar_csi.agent.v1.CreateVolumeRequest
+	30, // 84: pillar_csi.agent.v1.AgentService.ImportVolume:input_type -> pillar_csi.agent.v1.ImportVolumeRequest
+	32, // 85: pillar_csi.agent.v1.AgentService.InspectVolume:input_type -> pillar_csi.agent.v1.InspectVolumeRequest
+	39, // 86: pillar_csi.agent.v1.AgentService.DeleteVolume:input_type -> pillar_csi.agent.v1.DeleteVolumeRequest
+	43, // 87: pillar_csi.agent.v1.AgentService.ExpandVolume:input_type -> pillar_csi.agent.v1.ExpandVolumeRequest
+	41, // 88: pillar_csi.agent.v1.AgentService.ReleaseVolume:input_type -> pillar_csi.agent.v1.ReleaseVolumeRequest
+	68, // 89: pillar_csi.agent.v1.AgentService.TransferVolumeOwnership:input_type -> pillar_csi.agent.v1.TransferVolumeOwnershipRequest
+	45, // 90: pillar_csi.agent.v1.AgentService.ExportVolume:input_type -> pillar_csi.agent.v1.ExportVolumeRequest
+	47, // 91: pillar_csi.agent.v1.AgentService.UnexportVolume:input_type -> pillar_csi.agent.v1.UnexportVolumeRequest
+	53, // 92: pillar_csi.agent.v1.AgentService.AllowInitiator:input_type -> pillar_csi.agent.v1.AllowInitiatorRequest
+	55, // 93: pillar_csi.agent.v1.AgentService.DenyInitiator:input_type -> pillar_csi.agent.v1.DenyInitiatorRequest
+	57, // 94: pillar_csi.agent.v1.AgentService.SetLocalAttach:input_type -> pillar_csi.agent.v1.SetLocalAttachRequest
+	49, // 95: pillar_csi.agent.v1.AgentService.SendVolume:input_type -> pillar_csi.agent.v1.SendVolumeRequest
+	51, // 96: pillar_csi.agent.v1.AgentService.ReceiveVolume:input_type -> pillar_csi.agent.v1.ReceiveVolumeChunk
+	61, // 97: pillar_csi.agent.v1.AgentService.ReconcileState:input_type -> pillar_csi.agent.v1.ReconcileStateRequest
+	64, // 98: pillar_csi.agent.v1.AgentService.Drain:input_type -> pillar_csi.agent.v1.DrainRequest
+	18, // 99: pillar_csi.agent.v1.AgentService.GetCapabilities:output_type -> pillar_csi.agent.v1.GetCapabilitiesResponse
+	20, // 100: pillar_csi.agent.v1.AgentService.GetCapacity:output_type -> pillar_csi.agent.v1.GetCapacityResponse
+	22, // 101: pillar_csi.agent.v1.AgentService.ListVolumes:output_type -> pillar_csi.agent.v1.ListVolumesResponse
+	24, // 102: pillar_csi.agent.v1.AgentService.ListExports:output_type -> pillar_csi.agent.v1.ListExportsResponse
+	27, // 103: pillar_csi.agent.v1.AgentService.HealthCheck:output_type -> pillar_csi.agent.v1.HealthCheckResponse
+	29, // 104: pillar_csi.agent.v1.AgentService.CreateVolume:output_type -> pillar_csi.agent.v1.CreateVolumeResponse
+	38, // 105: pillar_csi.agent.v1.AgentService.ImportVolume:output_type -> pillar_csi.agent.v1.ImportVolumeResponse
+	33, // 106: pillar_csi.agent.v1.AgentService.InspectVolume:output_type -> pillar_csi.agent.v1.InspectVolumeResponse
+	40, // 107: pillar_csi.agent.v1.AgentService.DeleteVolume:output_type -> pillar_csi.agent.v1.DeleteVolumeResponse
+	44, // 108: pillar_csi.agent.v1.AgentService.ExpandVolume:output_type -> pillar_csi.agent.v1.ExpandVolumeResponse
+	42, // 109: pillar_csi.agent.v1.AgentService.ReleaseVolume:output_type -> pillar_csi.agent.v1.ReleaseVolumeResponse
+	69, // 110: pillar_csi.agent.v1.AgentService.TransferVolumeOwnership:output_type -> pillar_csi.agent.v1.TransferVolumeOwnershipResponse
+	46, // 111: pillar_csi.agent.v1.AgentService.ExportVolume:output_type -> pillar_csi.agent.v1.ExportVolumeResponse
+	48, // 112: pillar_csi.agent.v1.AgentService.UnexportVolume:output_type -> pillar_csi.agent.v1.UnexportVolumeResponse
+	54, // 113: pillar_csi.agent.v1.AgentService.AllowInitiator:output_type -> pillar_csi.agent.v1.AllowInitiatorResponse
+	56, // 114: pillar_csi.agent.v1.AgentService.DenyInitiator:output_type -> pillar_csi.agent.v1.DenyInitiatorResponse
+	58, // 115: pillar_csi.agent.v1.AgentService.SetLocalAttach:output_type -> pillar_csi.agent.v1.SetLocalAttachResponse
+	50, // 116: pillar_csi.agent.v1.AgentService.SendVolume:output_type -> pillar_csi.agent.v1.SendVolumeChunk
+	52, // 117: pillar_csi.agent.v1.AgentService.ReceiveVolume:output_type -> pillar_csi.agent.v1.ReceiveVolumeResponse
+	63, // 118: pillar_csi.agent.v1.AgentService.ReconcileState:output_type -> pillar_csi.agent.v1.ReconcileStateResponse
+	65, // 119: pillar_csi.agent.v1.AgentService.Drain:output_type -> pillar_csi.agent.v1.DrainResponse
+	99, // [99:120] is the sub-list for method output_type
+	78, // [78:99] is the sub-list for method input_type
+	78, // [78:78] is the sub-list for extension type_name
+	78, // [78:78] is the sub-list for extension extendee
+	0,  // [0:78] is the sub-list for field type_name
 }
 
 func init() { file_pillar_csi_agent_v1_agent_proto_init() }
@@ -4291,13 +5636,15 @@ func file_pillar_csi_agent_v1_agent_proto_init() {
 		(*ExportParams_Nfs)(nil),
 		(*ExportParams_Smb)(nil),
 	}
+	file_pillar_csi_agent_v1_agent_proto_msgTypes[26].OneofWrappers = []any{}
+	file_pillar_csi_agent_v1_agent_proto_msgTypes[63].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pillar_csi_agent_v1_agent_proto_rawDesc), len(file_pillar_csi_agent_v1_agent_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   57,
+			NumEnums:      4,
+			NumMessages:   68,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -934,6 +934,19 @@ func (m *mkdirMounter) FormatAndMount(
 	return m.wrapped.FormatAndMount(ctx, source, target, fsType, options, formatOptions)
 }
 
+// MountExisting creates the target directory if it does not exist, then
+// delegates to the wrapped Mounter's MountExisting: the same provisioning
+// as FormatAndMount for the preserve-original mount path.
+func (m *mkdirMounter) MountExisting(
+	ctx context.Context, source, target, fsType string, options []string,
+) error {
+	mkdirErr := os.MkdirAll(target, 0o750)
+	if mkdirErr != nil {
+		return fmt.Errorf("mkdirMounter: create mount target %q: %w", target, mkdirErr)
+	}
+	return m.wrapped.MountExisting(ctx, source, target, fsType, options)
+}
+
 // Mount provisions the target before delegating to the wrapped Mounter.
 // Non-bind filesystem mounts need a directory target; their source may be a
 // remote export rather than a local path. Bind mounts need a directory target

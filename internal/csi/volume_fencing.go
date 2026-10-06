@@ -447,7 +447,9 @@ func (s *ControllerServer) releasePublication(
 // such a volume owns nothing and there is nothing to delete.  A retry after
 // deleting was set returns the already committed generation.  A non-nil admit
 // is evaluated on the fresh object inside the same compare-and-swap before
-// deleting is first set; its error aborts the mark.
+// deleting is first set; its error aborts the mark.  A recovery record whose
+// transfer has not committed (spec.recovery set, no Ready yet) is always
+// refused: it is non-serving and non-deletable by definition.
 func (s *ControllerServer) markVolumeDeleting(
 	ctx context.Context,
 	pvName, volumeID string,
@@ -463,6 +465,10 @@ func (s *ControllerServer) markVolumeDeleting(
 		return nil, nil, nil
 	}
 	pvs, err := s.updateVolumeState(ctx, pvName, current.UID, true, func(pvs *v1alpha1.PillarVolumeState) error {
+		refuseErr := refuseRecoveryPending(pvs, volumeID)
+		if refuseErr != nil {
+			return refuseErr
+		}
 		if pvs.Status.Deleting {
 			return errNoStatusChange
 		}
@@ -567,11 +573,12 @@ func (s *ControllerServer) persistCreatePartial(
 		pvs.Status.Phase = v1alpha1.PillarVolumeStatePhaseCreatePartial
 		pvs.Status.BackendDevicePath = devicePath
 		pvs.Status.ExportSpec = exportSpec
-		if pvs.Spec.ImportedFrom != "" {
+		if pvs.Spec.ImportedFrom != "" || pvs.Spec.LVMSource != nil {
 			// ImportVolume succeeded: the agent durably adopted the
-			// pre-existing zvol, so a later teardown may delete it.  While
-			// this is unset the lifecycle cannot prove ownership and cleanup
-			// must retire the record without touching the dataset.
+			// pre-existing zvol or LV.  While this is unset the lifecycle
+			// cannot prove ownership and cleanup must retire the record
+			// without touching the source.  (A PreserveOriginal LV is
+			// released, never deleted, either way; see releaseOnlyTeardown.)
 			pvs.Status.ImportAcquired = true
 		}
 		pvs.Status.PartialFailure = &v1alpha1.PartialFailureInfo{

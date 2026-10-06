@@ -32,6 +32,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -190,5 +191,154 @@ var _ = Describe("PillarVolumeState CRD Schema Validation", func() {
 			"error should be HTTP 422 for Minimum=0 violation")
 
 		DeferCleanup(func() { deleteVolumeIfExists(objName) })
+	})
+
+	// ── Issue #163 — spec.lvmSource is pinned at creation ──────────────────────
+	// The apiserver itself (CEL rules generated from the kubebuilder markers)
+	// must refuse every attempt to retarget, downgrade, add or remove the
+	// adopted LV source; the controller is never the only guard.
+	Describe("spec.lvmSource (import-lv)", func() {
+		const (
+			vgUUID    = "Ab12Cd-Ef34-Gh56-Ij78-Kl90-Mn12-Op34Qr"
+			lvUUID    = "Zy98Xw-Vu76-Ts54-Rq32-Po10-Nm98-Lk76Ji"
+			otherUUID = "Qq11Ww-Ee22-Rr33-Tt44-Yy55-Uu66-Ii77Oo"
+		)
+		newSource := func() *pillarcsiv1alpha1.LVMSourceRef {
+			return &pillarcsiv1alpha1.LVMSourceRef{
+				VolumeGroup:       "data-vg",
+				LogicalVolume:     "legacy",
+				VolumeGroupUUID:   vgUUID,
+				LogicalVolumeUUID: lvUUID,
+				PreserveOriginal:  true,
+			}
+		}
+		newLVMVolume := func(name string, src *pillarcsiv1alpha1.LVMSourceRef) *pillarcsiv1alpha1.PillarVolumeState {
+			return &pillarcsiv1alpha1.PillarVolumeState{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec: pillarcsiv1alpha1.PillarVolumeStateSpec{
+					VolumeID:      "storage-1/nvmeof-tcp/lvm-lv/data-vg/legacy",
+					AgentVolumeID: "data-vg/legacy",
+					AgentRef:      "storage-1",
+					BackendType:   "lvm-lv",
+					ProtocolType:  "nvmeof-tcp",
+					CapacityBytes: 1 << 30,
+					LVMSource:     src,
+				},
+			}
+		}
+		createLVMVolume := func(name string, src *pillarcsiv1alpha1.LVMSourceRef) {
+			Expect(k8sClient.Create(crdCtx, newLVMVolume(name, src))).To(Succeed())
+			DeferCleanup(func() { deleteVolumeIfExists(name) })
+		}
+		getVolume := func(name string) *pillarcsiv1alpha1.PillarVolumeState {
+			v := &pillarcsiv1alpha1.PillarVolumeState{}
+			Expect(k8sClient.Get(crdCtx, types.NamespacedName{Name: name}, v)).To(Succeed())
+			return v
+		}
+		expectRejected := func(err error, message string) {
+			Expect(err).To(HaveOccurred())
+			Expect(errors.IsInvalid(err)).To(BeTrue(), "want HTTP 422, got %v", err)
+			Expect(err.Error()).To(ContainSubstring(message))
+		}
+
+		It("accepts a complete source and persists it", func() {
+			const objName = "i163-lvmsource-create"
+			createLVMVolume(objName, newSource())
+			Expect(getVolume(objName).Spec.LVMSource).To(Equal(newSource()))
+		})
+
+		It("rejects changing any lvmSource field and keeps the stored source", func() {
+			for name, mutate := range map[string]func(*pillarcsiv1alpha1.LVMSourceRef){
+				"volumeGroup":       func(s *pillarcsiv1alpha1.LVMSourceRef) { s.VolumeGroup = "other-vg" },
+				"logicalVolume":     func(s *pillarcsiv1alpha1.LVMSourceRef) { s.LogicalVolume = "renamed" },
+				"volumeGroupUUID":   func(s *pillarcsiv1alpha1.LVMSourceRef) { s.VolumeGroupUUID = otherUUID },
+				"logicalVolumeUUID": func(s *pillarcsiv1alpha1.LVMSourceRef) { s.LogicalVolumeUUID = otherUUID },
+				"preserveOriginal":  func(s *pillarcsiv1alpha1.LVMSourceRef) { s.PreserveOriginal = false },
+			} {
+				By("changing " + name)
+				objName := "i163-lvmsource-mut-" + strings.ToLower(name)
+				createLVMVolume(objName, newSource())
+				stored := getVolume(objName)
+				mutate(stored.Spec.LVMSource)
+				expectRejected(k8sClient.Update(crdCtx, stored), "lvmSource is immutable")
+				Expect(getVolume(objName).Spec.LVMSource).To(Equal(newSource()))
+			}
+		})
+
+		It("rejects removing lvmSource after creation", func() {
+			const objName = "i163-lvmsource-remove"
+			createLVMVolume(objName, newSource())
+			stored := getVolume(objName)
+			stored.Spec.LVMSource = nil
+			expectRejected(k8sClient.Update(crdCtx, stored), "lvmSource cannot be added or removed after creation")
+			Expect(getVolume(objName).Spec.LVMSource).To(Equal(newSource()))
+		})
+
+		It("rejects adding lvmSource to a volume created without it", func() {
+			const objName = "i163-lvmsource-add"
+			createLVMVolume(objName, nil)
+			stored := getVolume(objName)
+			stored.Spec.LVMSource = newSource()
+			expectRejected(k8sClient.Update(crdCtx, stored), "lvmSource cannot be added or removed after creation")
+			Expect(getVolume(objName).Spec.LVMSource).To(BeNil())
+		})
+
+		It("rejects creating with both importedFrom and lvmSource", func() {
+			const objName = "i163-lvmsource-with-zvol"
+			vol := newLVMVolume(objName, newSource())
+			vol.Spec.ImportedFrom = "hot-data/k8s/legacy"
+			DeferCleanup(func() { deleteVolumeIfExists(objName) })
+			expectRejected(k8sClient.Create(crdCtx, vol), "importedFrom and lvmSource are mutually exclusive")
+		})
+
+		It("rejects UUIDs outside the LVM 6-4-4-4-4-4-6 format", func() {
+			for name, uuid := range map[string]string{
+				"short":         "Ab12Cd-Ef34",
+				"bad separator": "Ab12Cd_Ef34-Gh56-Ij78-Kl90-Mn12-Op34Qr",
+				"symbol":        "Ab12C!-Ef34-Gh56-Ij78-Kl90-Mn12-Op34Qr",
+				"empty":         "",
+			} {
+				By("vg uuid " + name)
+				vgObj := "i163-lvmsource-vguuid-" + strings.ReplaceAll(name, " ", "-")
+				src := newSource()
+				src.VolumeGroupUUID = uuid
+				DeferCleanup(func() { deleteVolumeIfExists(vgObj) })
+				err := k8sClient.Create(crdCtx, newLVMVolume(vgObj, src))
+				Expect(errors.IsInvalid(err)).To(BeTrue(), "vg uuid %q: want 422, got %v", uuid, err)
+
+				By("lv uuid " + name)
+				lvObj := "i163-lvmsource-lvuuid-" + strings.ReplaceAll(name, " ", "-")
+				src = newSource()
+				src.LogicalVolumeUUID = uuid
+				DeferCleanup(func() { deleteVolumeIfExists(lvObj) })
+				err = k8sClient.Create(crdCtx, newLVMVolume(lvObj, src))
+				Expect(errors.IsInvalid(err)).To(BeTrue(), "lv uuid %q: want 422, got %v", uuid, err)
+			}
+		})
+
+		It("keeps zvol-import and managed volumes without lvmSource creatable and updatable", func() {
+			const objName = "i163-lvmsource-zvol-unchanged"
+			vol := &pillarcsiv1alpha1.PillarVolumeState{
+				ObjectMeta: metav1.ObjectMeta{Name: objName},
+				Spec: pillarcsiv1alpha1.PillarVolumeStateSpec{
+					VolumeID:      "storage-1/nvmeof-tcp/zfs-zvol/tank/legacy",
+					AgentVolumeID: "tank/legacy",
+					AgentRef:      "storage-1",
+					BackendType:   "zfs-zvol",
+					ProtocolType:  "nvmeof-tcp",
+					CapacityBytes: 1 << 30,
+					ImportedFrom:  "tank/k8s/legacy",
+				},
+			}
+			Expect(k8sClient.Create(crdCtx, vol)).To(Succeed())
+			DeferCleanup(func() { deleteVolumeIfExists(objName) })
+			stored := getVolume(objName)
+			stored.Spec.CapacityBytes = 2 << 30
+			Expect(k8sClient.Update(crdCtx, stored)).To(Succeed())
+			updated := getVolume(objName)
+			Expect(updated.Spec.CapacityBytes).To(Equal(int64(2 << 30)))
+			Expect(updated.Spec.ImportedFrom).To(Equal("tank/k8s/legacy"))
+			Expect(updated.Spec.LVMSource).To(BeNil())
+		})
 	})
 })

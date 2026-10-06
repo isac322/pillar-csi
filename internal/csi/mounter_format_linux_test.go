@@ -31,6 +31,9 @@ import (
 	"strings"
 	"testing"
 
+	csi "github.com/container-storage-interface/spec/lib/go/csi"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	utilexec "k8s.io/utils/exec"
 	testingexec "k8s.io/utils/exec/testing"
 	"k8s.io/utils/mount"
@@ -375,5 +378,244 @@ func TestKubeMounter_FormatAndMount_RejectsUnsafeOptions(t *testing.T) {
 	}
 	if len(dev.calls) != 0 {
 		t.Errorf("commands run = %d, want 0", len(dev.calls))
+	}
+}
+
+// TestNodeStageVolume_PreserveOriginal_KubeMounterNeverRewritesDevice drives
+// NodeStageVolume for a preserve-original volume through the production
+// KubeMounter over the scripted device: the only command allowed on the
+// device is the blkid signature probe — no mkfs, fsck or other repair tool —
+// an existing filesystem of the requested type is mounted as is, and a blank
+// or mismatched device is refused with FailedPrecondition and nothing
+// mounted.  An unreadable device fails before blkid runs.
+type preserveStageCase struct {
+	name       string
+	onDisk     string
+	fsType     string
+	unreadable bool
+	wantCode   codes.Code
+}
+
+func runPreserveOriginalStageCase(t *testing.T, tc preserveStageCase) {
+	t.Helper()
+	dev := &fakeDeviceExec{fsType: tc.onDisk}
+	km, fake := newFormatTestMounter(t, dev)
+	if tc.unreadable {
+		km.checkReadable = func(string) error {
+			return errors.New("device is not readable: no such device or address")
+		}
+	}
+	conn := &mockConnector{devicePath: fakeDevice}
+	stateDir := t.TempDir()
+	srv := NewNodeServerWithStateDir("test-node", conn, km, stateDir)
+	stagingPath := t.TempDir()
+	_, err := srv.NodeStageVolume(t.Context(), &csi.NodeStageVolumeRequest{
+		VolumeId:          preserveVolumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap(tc.fsType),
+		VolumeContext:     adoptedPreserveVolumeContext(),
+	})
+	assertPreservedStageResult(t, tc, err, dev, fake, conn, km, stateDir, stagingPath)
+}
+
+func assertPreservedStageResult(
+	t *testing.T,
+	tc preserveStageCase,
+	err error,
+	dev *fakeDeviceExec,
+	fake *mount.FakeMounter,
+	conn *mockConnector,
+	km *KubeMounter,
+	stateDir, stagingPath string,
+) {
+	t.Helper()
+	if tc.unreadable {
+		if err == nil {
+			t.Error("NodeStageVolume of an unreadable preserved device succeeded, want an error")
+		}
+		if len(dev.calls) != 0 {
+			t.Errorf("commands run on an unreadable device = %v, want none", dev.calls)
+		}
+		return
+	}
+	if got := status.Code(err); got != tc.wantCode {
+		t.Errorf("gRPC code = %v, want %v (err: %v)", got, tc.wantCode, err)
+	}
+	if dev.fsType != tc.onDisk {
+		t.Errorf("device signature = %q, want %q unchanged", dev.fsType, tc.onDisk)
+	}
+	assertOnlyBlkid(t, dev.calls, "preserved device")
+	mounts := fakeMountActions(fake)
+	if tc.wantCode != codes.OK {
+		if len(mounts) != 0 {
+			t.Errorf("mounts = %+v, want none for a refused preserved device", mounts)
+		}
+		return
+	}
+	wantType := tc.fsType
+	if wantType == "" {
+		wantType = defaultFsType
+	}
+	if len(mounts) != 1 || mounts[0].Source != fakeDevice || mounts[0].Target != stagingPath ||
+		mounts[0].FSType != wantType {
+		t.Errorf("mounts = %+v, want exactly %s -> %s as %s", mounts, fakeDevice, stagingPath, wantType)
+	}
+	requirePreservedAcrossRestart(t, conn, km, stateDir, stagingPath, mountCap(tc.fsType))
+}
+
+func assertOnlyBlkid(t *testing.T, calls []execCall, subject string) {
+	t.Helper()
+	for _, call := range calls {
+		if call.cmd != "blkid" {
+			t.Errorf("command %s %v ran on a %s; only the blkid probe is allowed", call.cmd, call.args, subject)
+		}
+	}
+}
+
+func fakeMountActions(fake *mount.FakeMounter) []mount.FakeAction {
+	var mounts []mount.FakeAction
+	for _, action := range fake.GetLog() {
+		if action.Action == mount.FakeActionMount {
+			mounts = append(mounts, action)
+		}
+	}
+	return mounts
+}
+
+func TestNodeStageVolume_PreserveOriginal_KubeMounterNeverRewritesDevice(t *testing.T) {
+	t.Parallel()
+	tests := []preserveStageCase{
+		{name: "existing ext4 mounted as is", onDisk: "ext4", fsType: "ext4", wantCode: codes.OK},
+		{name: "existing xfs mounted as is", onDisk: "xfs", fsType: "xfs", wantCode: codes.OK},
+		{name: "existing ext4 for the default fs type", onDisk: "ext4", fsType: "", wantCode: codes.OK},
+		{name: "blank device refused", onDisk: "", fsType: "ext4", wantCode: codes.FailedPrecondition},
+		{name: "xfs device for an ext4 request", onDisk: "xfs", fsType: "ext4", wantCode: codes.FailedPrecondition},
+		{name: "ext4 device for an xfs request", onDisk: "ext4", fsType: "xfs", wantCode: codes.FailedPrecondition},
+		{name: "unreadable device", onDisk: "ext4", fsType: "ext4", unreadable: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			runPreserveOriginalStageCase(t, tc)
+		})
+	}
+}
+
+// TestKubeMounter_MountExisting pins the production preserve-original mount
+// entrypoint over the scripted device: the only command it may run is the
+// blkid signature probe; a matching filesystem is mounted with the given
+// options; a blank device answers ErrNoFilesystem and a different filesystem
+// ErrFilesystemMismatch with nothing mounted; an unreadable device fails
+// before blkid runs.  No mkfs, fsck, resize2fs or xfs_growfs ever runs.
+type mountExistingCase struct {
+	name       string
+	onDisk     string
+	fsType     string
+	options    []string
+	unreadable bool
+	wantErr    error
+}
+
+func runMountExistingCase(t *testing.T, tc mountExistingCase) {
+	t.Helper()
+	dev := &fakeDeviceExec{fsType: tc.onDisk}
+	km, fake := newFormatTestMounter(t, dev)
+	if tc.unreadable {
+		km.checkReadable = func(string) error {
+			return errors.New("device is not readable: no such device or address")
+		}
+	}
+	target := t.TempDir()
+	err := km.MountExisting(t.Context(), fakeDevice, target, tc.fsType, tc.options)
+	assertMountExistingResult(t, tc, err, dev, fake, target)
+}
+
+func assertMountExistingResult(
+	t *testing.T,
+	tc mountExistingCase,
+	err error,
+	dev *fakeDeviceExec,
+	fake *mount.FakeMounter,
+	target string,
+) {
+	t.Helper()
+	assertOnlyBlkid(t, dev.calls, "device")
+	if dev.fsType != tc.onDisk {
+		t.Errorf("device signature = %q, want %q unchanged", dev.fsType, tc.onDisk)
+	}
+	mounts := fakeMountActions(fake)
+	switch {
+	case tc.unreadable:
+		if err == nil || !strings.Contains(err.Error(), "no such device or address") {
+			t.Errorf("MountExisting of an unreadable device: err = %v, want the readability failure", err)
+		}
+		if len(dev.calls) != 0 {
+			t.Errorf("commands run on an unreadable device = %v, want none", dev.calls)
+		}
+	case tc.wantErr != nil:
+		if !errors.Is(err, tc.wantErr) {
+			t.Errorf("MountExisting err = %v, want %v", err, tc.wantErr)
+		}
+	default:
+		assertMountExistingSuccess(t, tc, err, fake, mounts, target)
+		return
+	}
+	if len(mounts) != 0 {
+		t.Errorf("mounts = %+v, want none for a refused device", mounts)
+	}
+}
+
+func assertMountExistingSuccess(
+	t *testing.T,
+	tc mountExistingCase,
+	err error,
+	fake *mount.FakeMounter,
+	mounts []mount.FakeAction,
+	target string,
+) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("MountExisting: %v", err)
+	}
+	wantType := tc.fsType
+	if wantType == "" {
+		wantType = defaultFsType
+	}
+	if len(mounts) != 1 || mounts[0].Source != fakeDevice || mounts[0].Target != target ||
+		mounts[0].FSType != wantType {
+		t.Fatalf("mounts = %+v, want exactly %s -> %s as %s", mounts, fakeDevice, target, wantType)
+	}
+	mps, listErr := fake.List()
+	if listErr != nil {
+		t.Fatalf("list mounts: %v", listErr)
+	}
+	var opts []string
+	for _, mp := range mps {
+		if mp.Path == target {
+			opts = mp.Opts
+		}
+	}
+	if !slices.Equal(opts, tc.options) {
+		t.Errorf("mount options = %q, want %q", opts, tc.options)
+	}
+}
+
+func TestKubeMounter_MountExisting(t *testing.T) {
+	t.Parallel()
+	tests := []mountExistingCase{
+		{name: "ext4 matches", onDisk: "ext4", fsType: "ext4", options: []string{"noatime"}},
+		{name: "xfs matches read-only", onDisk: "xfs", fsType: "xfs", options: []string{"ro"}},
+		{name: "default type is ext4", onDisk: "ext4", fsType: ""},
+		{name: "blank device", onDisk: "", fsType: "ext4", wantErr: ErrNoFilesystem},
+		{name: "blank device read-only", onDisk: "", fsType: "ext4", options: []string{"ro"}, wantErr: ErrNoFilesystem},
+		{name: "xfs for an ext4 request", onDisk: "xfs", fsType: "ext4", wantErr: ErrFilesystemMismatch},
+		{name: "xfs device for the default type", onDisk: "xfs", fsType: "", wantErr: ErrFilesystemMismatch},
+		{name: "unreadable device", onDisk: "ext4", fsType: "ext4", unreadable: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			runMountExistingCase(t, tc)
+		})
 	}
 }

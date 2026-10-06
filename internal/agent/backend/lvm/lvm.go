@@ -49,6 +49,7 @@ import (
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 
 	"github.com/isac322/pillar-csi/internal/agent/backend"
+	"github.com/isac322/pillar-csi/internal/agent/backend/devidle"
 	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
@@ -171,13 +172,19 @@ const (
 	ProvisionModeThin
 )
 
+// LVM segment-type names, which double as the provisioning-mode labels.
+const (
+	segtypeLinear = "linear"
+	segtypeThin   = "thin"
+)
+
 // String returns a human-readable label for the provisioning mode.
 func (m ProvisionMode) String() string {
 	switch m {
 	case ProvisionModeLinear:
-		return "linear"
+		return segtypeLinear
 	case ProvisionModeThin:
-		return "thin"
+		return segtypeThin
 	default:
 		return fmt.Sprintf("ProvisionMode(%d)", int(m))
 	}
@@ -242,9 +249,9 @@ func (p Params) HasModeOverride() bool { return p.hasModeOverride }
 // callers can detect and reject unknown values.
 func ParseProvisionMode(s string) (mode ProvisionMode, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "linear":
+	case segtypeLinear:
 		return ProvisionModeLinear, true
-	case "thin":
+	case segtypeThin:
 		return ProvisionModeThin, true
 	default:
 		return ProvisionModeLinear, false
@@ -299,7 +306,7 @@ func ValidateParams(p Params, backendVG, backendThinPool string) error {
 		return fmt.Errorf(
 			"lvm: provision_mode %q requested but backend has no thin pool configured; "+
 				"configure the agent with backends: [{lvm: {volumeGroup: %s, thinPool: <name>}}]",
-			"thin", backendVG,
+			segtypeThin, backendVG,
 		)
 	}
 	return nil
@@ -316,7 +323,7 @@ func validateProvisionModeString(s string) error {
 	if !ok {
 		return fmt.Errorf(
 			"lvm: unknown provision_mode %q; accepted values are %q and %q",
-			s, "linear", "thin",
+			s, segtypeLinear, segtypeThin,
 		)
 	}
 	return nil
@@ -519,7 +526,20 @@ type Backend struct {
 	// ("/dev") and can be overridden per-instance in tests via
 	// SetBackendDevBase, keeping parallel tests isolated.
 	devBase string
+
+	// claimDevice takes the exclusive O_RDONLY|O_EXCL claim ImportLV holds
+	// and InspectLV probes.  It defaults to devidle.ClaimDevice (an
+	// ErrUnsupported refusal off Linux) and is overridden only by tests.
+	claimDevice func(path string) (devidle.Claim, error)
+
+	// idle scans for non-exclusive consumers (mounts, holders, configured
+	// exports).  The zero value scans the production kernel trees; tests
+	// point its Roots at t.TempDir trees.
+	idle devidle.Checker
 }
+
+// idleChecker returns the consumer scanner used by ImportLV and InspectLV.
+func (b *Backend) idleChecker() devidle.Checker { return b.idle }
 
 // Verify at compile time that Backend satisfies the VolumeBackend interface.
 var _ backend.VolumeBackend = (*Backend)(nil)
@@ -531,11 +551,12 @@ var _ backend.VolumeBackend = (*Backend)(nil)
 // already been sanitized (no path separators, no empty vg).
 func New(vg, thinpool string) *Backend {
 	return &Backend{
-		vg:       vg,
-		thinpool: thinpool,
-		mode:     modeForThinPool(thinpool),
-		exec:     osExecutor{},
-		devBase:  defaultDevBase,
+		vg:          vg,
+		thinpool:    thinpool,
+		mode:        modeForThinPool(thinpool),
+		exec:        osExecutor{},
+		devBase:     defaultDevBase,
+		claimDevice: devidle.ClaimDevice,
 	}
 }
 
@@ -554,11 +575,12 @@ func NewWithExecFn(
 	fn func(ctx context.Context, name string, args ...string) ([]byte, error),
 ) *Backend {
 	return &Backend{
-		vg:       vg,
-		thinpool: thinpool,
-		mode:     modeForThinPool(thinpool),
-		exec:     execFunc(fn),
-		devBase:  defaultDevBase,
+		vg:          vg,
+		thinpool:    thinpool,
+		mode:        modeForThinPool(thinpool),
+		exec:        execFunc(fn),
+		devBase:     defaultDevBase,
+		claimDevice: devidle.ClaimDevice,
 	}
 }
 

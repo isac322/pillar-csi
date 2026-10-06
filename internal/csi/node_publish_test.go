@@ -634,6 +634,353 @@ func TestNodePublishVolume_DeadStagePinnedByBindFails(t *testing.T) {
 	}
 }
 
+// TestNodePublishVolume_PreserveOriginal_RWandRO verifies that preservation
+// does not make a workload read-only: a writable publish of a preserved
+// volume is a read-write bind probed through the bind itself, a read-only
+// publish is an "ro" bind probed through the read-write staged mount, and a
+// read-only stage is never write-probed — the same probe plan as any volume.
+func TestNodePublishVolume_PreserveOriginal_RWandRO(t *testing.T) {
+	t.Parallel()
+
+	stagePreserved := func(t *testing.T, volCap *csi.VolumeCapability) (*nodeTestEnv, string) {
+		t.Helper()
+		env := newNodeTestEnv(t)
+		env.mounter.diskFormat[env.connector.devicePath] = "ext4"
+		stagingPath := t.TempDir()
+		_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+			VolumeId:          preserveVolumeID,
+			StagingTargetPath: stagingPath,
+			VolumeCapability:  volCap,
+			VolumeContext:     adoptedPreserveVolumeContext(),
+		})
+		if err != nil {
+			t.Fatalf("NodeStageVolume: %v", err)
+		}
+		env.mounter.checkHealthCalls = nil
+		return env, stagingPath
+	}
+	publish := func(t *testing.T, env *nodeTestEnv, stagingPath, target string,
+		volCap *csi.VolumeCapability, readonly bool,
+	) {
+		t.Helper()
+		_, err := env.srv.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+			VolumeId:          preserveVolumeID,
+			StagingTargetPath: stagingPath,
+			TargetPath:        target,
+			VolumeCapability:  volCap,
+			VolumeContext:     adoptedPreserveVolumeContext(),
+			Readonly:          readonly,
+		})
+		if err != nil {
+			t.Fatalf("NodePublishVolume(readonly=%v): %v", readonly, err)
+		}
+	}
+
+	t.Run("writable publish", func(t *testing.T) {
+		t.Parallel()
+		env, stagingPath := stagePreserved(t, mountCap("ext4"))
+		target := t.TempDir()
+		publish(t, env, stagingPath, target, mountCap("ext4"), false)
+		if env.mounter.mountRO[target] {
+			t.Error("writable publish of a preserved volume is read-only")
+		}
+		if !slices.Contains(env.mounter.checkHealthCalls, target) {
+			t.Errorf("write probe targets = %v, want the bind %q", env.mounter.checkHealthCalls, target)
+		}
+	})
+
+	t.Run("read-only publish of a writable stage", func(t *testing.T) {
+		t.Parallel()
+		env, stagingPath := stagePreserved(t, mountCap("ext4"))
+		target := t.TempDir()
+		publish(t, env, stagingPath, target, mountCap("ext4"), true)
+		if !env.mounter.mountRO[target] {
+			t.Error("read-only publish of a preserved volume is writable")
+		}
+		if env.mounter.mountRO[stagingPath] {
+			t.Error("read-only publish turned the staged mount read-only")
+		}
+		if !slices.Contains(env.mounter.checkHealthCalls, stagingPath) {
+			t.Errorf("write probe targets = %v, want the staged mount %q", env.mounter.checkHealthCalls, stagingPath)
+		}
+	})
+
+	t.Run("read-only stage", func(t *testing.T) {
+		t.Parallel()
+		env, stagingPath := stagePreserved(t, mountCapRO("ext4"))
+		target := t.TempDir()
+		publish(t, env, stagingPath, target, mountCapRO("ext4"), false)
+		if !env.mounter.mountRO[target] {
+			t.Error("bind of a read-only staged mount is writable")
+		}
+		if len(env.mounter.checkHealthCalls) != 0 {
+			t.Errorf("read-only stage was write-probed: %v", env.mounter.checkHealthCalls)
+		}
+	})
+}
+
+// stagePreservedDeadForRepair stages a pinned preserve-original volume,
+// publishes it to an old target, kills the staged filesystem, and removes
+// the old bind, leaving a dead staged mount nothing else pins — the state
+// in which NodePublishVolume repairs the staged mount in place.
+func stagePreservedDeadForRepair(t *testing.T, env *nodeTestEnv, stagingPath string) {
+	t.Helper()
+	stagePreservedForRestage(t, env, stagingPath)
+	oldTarget := t.TempDir()
+	_, err := env.srv.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId: preserveVolumeID, StagingTargetPath: stagingPath, TargetPath: oldTarget,
+		VolumeCapability: mountCap("ext4"), VolumeContext: mountVolumeContext(preserveNQN, testStorageAddr),
+	})
+	if err != nil {
+		t.Fatalf("old pod NodePublishVolume: %v", err)
+	}
+	env.mounter.markUnhealthy(env.connector.devicePath)
+	_, err = env.srv.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+		VolumeId: preserveVolumeID, TargetPath: oldTarget,
+	})
+	if err != nil {
+		t.Fatalf("NodeUnpublishVolume: %v", err)
+	}
+	env.mounter.resetFormatJournal()
+}
+
+// TestNodePublishVolume_PreserveOriginal_RepairUsesMountExisting verifies
+// that repairing a dead staged mount of a pinned volume re-mounts the
+// existing filesystem without the format-and-mount path (no fsck or repair
+// step) — the pin comes from the stage record, not the request — and binds
+// the healed filesystem.
+func TestNodePublishVolume_PreserveOriginal_RepairUsesMountExisting(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	stagePreservedDeadForRepair(t, env, stagingPath)
+	newTarget := t.TempDir()
+
+	_, err := env.srv.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId: preserveVolumeID, StagingTargetPath: stagingPath, TargetPath: newTarget,
+		VolumeCapability: mountCap("ext4"), VolumeContext: mountVolumeContext(preserveNQN, testStorageAddr),
+	})
+	if err != nil {
+		t.Fatalf("replacement pod NodePublishVolume: %v", err)
+	}
+	requireDeviceUntouched(t, env.mounter, env.connector.devicePath, "ext4")
+	if healthErr := env.mounter.CheckMountHealth(stagingPath); healthErr != nil {
+		t.Errorf("staged filesystem not repaired: %v", healthErr)
+	}
+	if mounted, _ := env.mounter.MountEntryExists(newTarget); !mounted { //nolint:errcheck // mock never errors here
+		t.Error("replacement target not bound after the repair")
+	}
+}
+
+// TestNodePublishVolume_PreserveOriginal_RepairRefusesBlankDevice verifies
+// that the in-place repair of a pinned volume whose device lost its
+// filesystem signature fails instead of formatting the device, and binds
+// nothing.
+func TestNodePublishVolume_PreserveOriginal_RepairRefusesBlankDevice(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	stagePreservedDeadForRepair(t, env, stagingPath)
+	env.mounter.diskFormat[env.connector.devicePath] = ""
+	newTarget := t.TempDir()
+
+	_, err := env.srv.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId: preserveVolumeID, StagingTargetPath: stagingPath, TargetPath: newTarget,
+		VolumeCapability: mountCap("ext4"), VolumeContext: mountVolumeContext(preserveNQN, testStorageAddr),
+	})
+	if err == nil {
+		t.Error("NodePublishVolume repaired a pinned volume onto a blank device, want an error")
+	}
+	requireDeviceUntouched(t, env.mounter, env.connector.devicePath, "")
+	if mounted, _ := env.mounter.MountEntryExists(newTarget); mounted { //nolint:errcheck // mock never errors here
+		t.Error("replacement target bound although the repair was refused")
+	}
+}
+
+// TestRepairDeadStagedMount_PreservedRemountOutcomes drives the in-place
+// repair of a dead staged mount no other mount references and checks only
+// its outcome on the modeled device and mount table: a preserved volume
+// comes back mounted from the unchanged device with no mkfs, fsck or
+// format-and-mount — read-write and healthy for a read-write stage,
+// read-only for a read-only stage (whose write probe would answer EROFS,
+// so its success proves the non-writing probe was used) — while a preserved
+// volume whose device lost its signature stays unmounted and untouched.
+// An unpinned volume keeps the historical repair (fsck before the
+// read-write re-mount).  The read-only repair is not reachable through
+// NodePublishVolume's probe plan, hence the direct call.
+func TestRepairDeadStagedMount_PreservedRemountOutcomes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		preserve bool
+		volCap   *csi.VolumeCapability
+		onRepair string // device signature when the repair runs
+		wantErr  bool
+	}{
+		{name: "preserved read-write stage", preserve: true, volCap: mountCap("ext4"), onRepair: "ext4"},
+		{name: "preserved read-only stage", preserve: true, volCap: mountCapRO("ext4"), onRepair: "ext4"},
+		{name: "preserved blank device", preserve: true, volCap: mountCap("ext4"), onRepair: "", wantErr: true},
+		{name: "unpinned stage", preserve: false, volCap: mountCap("ext4"), onRepair: "ext4"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env := newNodeTestEnv(t)
+			device := env.connector.devicePath
+			stagingPath := t.TempDir()
+			env.mounter.diskFormat[device] = "ext4"
+			staged, fsErr := stageFilesystem(nil, tc.volCap)
+			if fsErr != nil {
+				t.Fatalf("stageFilesystem: %v", fsErr)
+			}
+			// A dead staged mount nothing else pins.
+			if err := env.mounter.Mount(device, stagingPath, "ext4", staged.mountFlags); err != nil {
+				t.Fatalf("seed staged mount: %v", err)
+			}
+			env.mounter.markUnhealthy(device)
+			env.mounter.diskFormat[device] = tc.onRepair
+			env.mounter.resetFormatJournal()
+			state := &nodeStageState{DevicePath: device}
+
+			err := env.srv.repairDeadStagedMount(context.Background(), preserveVolumeID, stagingPath, true,
+				state, staged, tc.preserve)
+
+			if tc.wantErr {
+				requireRefusedPreservedRepair(t, env.mounter, err, stagingPath, device)
+				return
+			}
+			if err != nil {
+				t.Fatalf("repairDeadStagedMount: %v", err)
+			}
+			requireRemountedStage(t, env.mounter, stagingPath, device, slices.Contains(staged.mountFlags, "ro"))
+			if !tc.preserve {
+				if !slices.Contains(env.mounter.fsckDevices, device) {
+					t.Errorf("unpinned repair skipped the historical fsck: fsck = %v", env.mounter.fsckDevices)
+				}
+				return
+			}
+			requireDeviceUntouched(t, env.mounter, device, "ext4")
+		})
+	}
+}
+
+// requireRefusedPreservedRepair asserts that the repair of a preserved
+// volume onto a blank device failed, left the staging path unmounted and
+// never formatted or checked the device.
+func requireRefusedPreservedRepair(t *testing.T, m *mockMounter, err error, stagingPath, device string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("repair of a preserved volume onto a blank device succeeded, want an error")
+	}
+	if mounted, _ := m.MountEntryExists(stagingPath); mounted { //nolint:errcheck // mock never errors here
+		t.Error("staging path mounted although the repair was refused")
+	}
+	requireDeviceUntouched(t, m, device, "")
+}
+
+// requireRemountedStage asserts that the staging path is mounted again from
+// device, readable, and read-only exactly when the stage was.
+func requireRemountedStage(t *testing.T, m *mockMounter, stagingPath, device string, readOnly bool) {
+	t.Helper()
+	mounted, _ := m.MountEntryExists(stagingPath) //nolint:errcheck // mock never errors here
+	if !mounted || m.mountSource[stagingPath] != device {
+		t.Fatalf("staging path not re-mounted from %s", device)
+	}
+	if readErr := m.CheckMountReadable(stagingPath); readErr != nil {
+		t.Errorf("re-mounted staged filesystem is dead: %v", readErr)
+	}
+	if m.mountRO[stagingPath] != readOnly {
+		t.Errorf("re-mount read-only = %v, want %v", m.mountRO[stagingPath], readOnly)
+	}
+}
+
+// TestNodePublishVolume_PreserveKeyRepairsUnpinnedDeadStage verifies that
+// the publish VolumeContext key is honored before the in-place repair of a
+// record staged without the pin: the dead staged filesystem is re-mounted
+// from the unchanged device with no mkfs, fsck or format-and-mount and the
+// new target is bound.  The pin is persisted: after a plugin restart,
+// requests without the key are still refused resize and a repair onto a
+// blank device.
+func TestNodePublishVolume_PreserveKeyRepairsUnpinnedDeadStage(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	device := env.connector.devicePath
+	env.mounter.diskFormat[device] = "ext4"
+	stagingPath := t.TempDir()
+	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId: preserveVolumeID, StagingTargetPath: stagingPath,
+		VolumeCapability: mountCap("ext4"), VolumeContext: mountVolumeContext(preserveNQN, testStorageAddr),
+	})
+	if err != nil {
+		t.Fatalf("unpinned NodeStageVolume: %v", err)
+	}
+	oldTarget := t.TempDir()
+	_, err = env.srv.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId: preserveVolumeID, StagingTargetPath: stagingPath, TargetPath: oldTarget,
+		VolumeCapability: mountCap("ext4"), VolumeContext: mountVolumeContext(preserveNQN, testStorageAddr),
+	})
+	if err != nil {
+		t.Fatalf("old pod NodePublishVolume: %v", err)
+	}
+	env.mounter.markUnhealthy(device)
+	_, err = env.srv.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+		VolumeId: preserveVolumeID, TargetPath: oldTarget,
+	})
+	if err != nil {
+		t.Fatalf("NodeUnpublishVolume: %v", err)
+	}
+	env.mounter.resetFormatJournal()
+	newTarget := t.TempDir()
+
+	_, err = env.srv.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId: preserveVolumeID, StagingTargetPath: stagingPath, TargetPath: newTarget,
+		VolumeCapability: mountCap("ext4"), VolumeContext: adoptedPreserveVolumeContext(),
+	})
+	if err != nil {
+		t.Fatalf("replacement pod NodePublishVolume with the key: %v", err)
+	}
+	requireDeviceUntouched(t, env.mounter, device, "ext4")
+	if healthErr := env.mounter.CheckMountHealth(stagingPath); healthErr != nil {
+		t.Errorf("staged filesystem not repaired: %v", healthErr)
+	}
+	if mounted, _ := env.mounter.MountEntryExists(newTarget); !mounted { //nolint:errcheck // mock never errors here
+		t.Error("replacement target not bound after the repair")
+	}
+
+	// The pin observed by the publish is durable: a restarted plugin that
+	// never sees the key again refuses to resize the volume ...
+	requirePreservedAcrossRestart(t, env.connector, env.mounter, env.stateDir, stagingPath, mountCap("ext4"))
+
+	// ... and refuses to repair a dead staged mount onto a device that lost
+	// its signature, instead of formatting it.
+	restarted := NewNodeServerWithStateDir("test-node", env.connector, env.mounter, env.stateDir)
+	env.mounter.markUnhealthy(device)
+	_, err = restarted.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+		VolumeId: preserveVolumeID, TargetPath: newTarget,
+	})
+	if err != nil {
+		t.Fatalf("NodeUnpublishVolume after restart: %v", err)
+	}
+	env.mounter.diskFormat[device] = ""
+	env.mounter.resetFormatJournal()
+	lastTarget := t.TempDir()
+	_, err = restarted.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId: preserveVolumeID, StagingTargetPath: stagingPath, TargetPath: lastTarget,
+		VolumeCapability: mountCap("ext4"), VolumeContext: mountVolumeContext(preserveNQN, testStorageAddr),
+	})
+	if err == nil {
+		t.Error("NodePublishVolume without the key repaired a pinned volume onto a blank device, want an error")
+	}
+	requireDeviceUntouched(t, env.mounter, device, "")
+	if mounted, _ := env.mounter.MountEntryExists(lastTarget); mounted { //nolint:errcheck // mock never errors here
+		t.Error("target bound although the repair was refused")
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // NodePublishVolume — validation error tests
 // ─────────────────────────────────────────────────────────────────────────────.

@@ -82,7 +82,7 @@ ENTRYPOINT ["/usr/bin/manager"]
 #   --cap-drop ALL --cap-add SYS_ADMIN  (ZFS + configfs need SYS_ADMIN)
 FROM alpine:3.24.2 AS agent
 RUN set -eux \
-    && apk add --no-cache 'zfs~=2.4' lvm2 nfs-utils \
+    && apk add --no-cache 'zfs~=2.4' lvm2 nfs-utils blkid \
     # Configure LVM for container environments where udevd is not running.
     && sed -i 's/obtain_device_list_from_udev = 1/obtain_device_list_from_udev = 0/' /etc/lvm/lvm.conf \
     && sed -i 's/udev_sync = 1/udev_sync = 0/' /etc/lvm/lvm.conf \
