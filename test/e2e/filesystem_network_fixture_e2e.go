@@ -44,6 +44,17 @@ type filesystemNetworkFixture struct {
 // this same network class: the controller publishes the storage NodeRef locally.
 func newFilesystemNetworkFixture(ctx context.Context, tc, kind string) *filesystemNetworkFixture {
 	f := NewFilesystemAdoptionFixture(tc)
+	var n *filesystemNetworkFixture
+	// Registered before the Cleanup DeferCleanup so it runs after it (LIFO): if
+	// the spec or generic PV cleanup failed, capture the actual teardown state
+	// (PVS, VolumeAttachments, node-plugin/controller logs) instead of letting a
+	// stuck drain surface as a bare PV finalizer timeout.
+	DeferCleanup(func() {
+		if n == nil || !CurrentSpecReport().Failed() {
+			return
+		}
+		fmt.Fprintln(GinkgoWriter, n.unpublishDiagnostics(append(append([]string{}, n.Clients...), n.StorageNode)...)())
+	})
 	DeferCleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
@@ -60,7 +71,7 @@ func newFilesystemNetworkFixture(ctx context.Context, tc, kind string) *filesyst
 		annotation = pillarv1.AnnotationImportDirectory
 	}
 	Expect(f.AdoptPVC(ctx, annotation, "ReadWriteMany", 64*1024*1024)).To(Succeed())
-	n := &filesystemNetworkFixture{FilesystemAdoptionFixture: f}
+	n = &filesystemNetworkFixture{FilesystemAdoptionFixture: f}
 	if kind != "directory" {
 		n.Dataset = f.CanonicalSource
 	}
@@ -305,7 +316,30 @@ func (n *filesystemNetworkFixture) restart(ctx context.Context, component, node 
 	n.Must(ctx, "-n", resolveHelmNamespace(), "rollout", "status", "daemonset/pillar-csi-"+component, "--timeout=3m")
 }
 
+// fileNodeStageDir is the file driver's durable stage-state directory on every
+// node host. It must match the chart's file-node --state-dir
+// (charts/pillar-csi/templates/node-daemonset.yaml) and the cmd/node default
+// for files.pillar-csi.bhyoo.com. A later --state-dir in node.extraArgs would
+// override it; unpublishAll's pre-delete witness then fails rather than passes.
+const fileNodeStageDir = "/var/lib/pillar-csi/node/files"
+
+// stageStateFile is the real stage record path for this volume:
+// stateFileKey() replaces "/" with "_" and writeStageState writes
+// stateDir/<safeID>.json under the file driver's state-dir.
+func (n *filesystemNetworkFixture) stageStateFile() string {
+	return fileNodeStageDir + "/" + strings.ReplaceAll(n.Handle, "/", "_") + ".json"
+}
+
 func (n *filesystemNetworkFixture) unpublishAll(ctx context.Context) {
+	// Every live publication must hold a real stage record on its node. Witnessing
+	// existence before deletion keeps the drain assertions below from passing
+	// vacuously on a wrong path; publications already drained are not re-checked.
+	pubs := n.state(ctx).Status.PublishedNodes
+	Expect(pubs).NotTo(BeEmpty(), "unpublishAll requires live publications to witness; delete pods through this helper before the controller drains them")
+	for _, pub := range pubs {
+		_, err := n.NodeExec(ctx, pub.NodeID, "test", "-e", n.stageStateFile())
+		Expect(err).NotTo(HaveOccurred(), "%s must persist %s while published", pub.NodeID, n.stageStateFile())
+	}
 	for _, pod := range n.Pods {
 		n.Must(ctx, "-n", n.Namespace, "delete", "pod", pod, "--ignore-not-found", "--wait=true", "--timeout=3m")
 	}
@@ -319,16 +353,91 @@ func (n *filesystemNetworkFixture) unpublishAll(ctx context.Context) {
 			return nil, err
 		}
 		return state.Status.PublishedNodes, nil
-	}, 90*time.Second, 2*time.Second).Should(BeEmpty())
+	}, 90*time.Second, 2*time.Second).Should(BeEmpty(), n.unpublishDiagnostics())
 	for _, node := range append(append([]string{}, n.Clients...), n.StorageNode) {
-		stage := "/var/lib/pillar-csi/node/" + strings.ReplaceAll(n.Handle, "/", "_") + ".json"
-		Eventually(func() error { _, err := n.NodeExec(ctx, node, "test", "!", "-e", stage); return err }, 90*time.Second, 2*time.Second).Should(Succeed())
+		stage := n.stageStateFile()
+		Eventually(func() error { _, err := n.NodeExec(ctx, node, "test", "!", "-e", stage); return err }, 90*time.Second, 2*time.Second).Should(Succeed(), n.unpublishDiagnostics(node))
 		mounts, err := n.NodeExec(ctx, node, "cat", "/proc/1/mountinfo")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(mounts).NotTo(ContainSubstring(n.Address + ":" + n.Target))
 		for _, uid := range n.PodUIDs {
 			Expect(mounts).NotTo(ContainSubstring("/var/lib/kubelet/pods/" + uid + "/"))
 		}
+	}
+}
+
+// unpublishDiagnostics is a lazy Eventually description evaluated only when a
+// drain barrier fails, and is also reused by the deferred failure capture in
+// newFilesystemNetworkFixture. It collects the teardown facts a bare PV
+// finalizer timeout hides: live publications and VolumeAttachments, the real
+// file-node stage directory and matching mounts, and file-node/agent/controller
+// + csi-attacher logs — distinguishing a genuinely stuck unpublish from slow
+// asynchronous drain.
+func (n *filesystemNetworkFixture) unpublishDiagnostics(nodes ...string) func() string {
+	return func() string {
+		diagnosticCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		var diagnostics strings.Builder
+		capture := func(args ...string) (string, error) {
+			output, diagnosticErr := n.Kubectl(diagnosticCtx, "", args...)
+			const maxDiagnosticBytes = 32 * 1024
+			if len(output) > maxDiagnosticBytes {
+				output = "[earlier output truncated]\n" + output[len(output)-maxDiagnosticBytes:]
+			}
+			fmt.Fprintf(&diagnostics, "\n\nkubectl %s:\n%s", strings.Join(args, " "), output)
+			if diagnosticErr != nil {
+				fmt.Fprintf(&diagnostics, "\nDiagnostic command failed: %v", diagnosticErr)
+			}
+			return output, diagnosticErr
+		}
+		published, _ := capture("get", "pillarvolumestate", n.PVName, "--ignore-not-found", "-o", `jsonpath={.status.publishedNodes[*].nodeID}`)
+		capture("get", "pillarvolumestate", n.PVName, "--ignore-not-found", "-o", "yaml")
+		capture("get", "volumeattachments", "-o", "yaml")
+		capture("-n", n.Namespace, "get", "pods", "-o", "wide")
+		capture("-n", n.Namespace, "get", "events", "-o", "wide")
+		captureNode := func(node string, args ...string) {
+			output, diagnosticErr := n.NodeExec(diagnosticCtx, node, args...)
+			const maxDiagnosticBytes = 32 * 1024
+			if len(output) > maxDiagnosticBytes {
+				output = "[earlier output truncated]\n" + output[len(output)-maxDiagnosticBytes:]
+			}
+			fmt.Fprintf(&diagnostics, "\n\nnode %s: %s:\n%s", node, strings.Join(args, " "), output)
+			if diagnosticErr != nil {
+				fmt.Fprintf(&diagnostics, "\nDiagnostic command failed: %v", diagnosticErr)
+			}
+		}
+		seen := map[string]bool{}
+		names := append(append([]string{}, strings.Fields(published)...), nodes...)
+		for _, node := range names {
+			if seen[node] {
+				continue
+			}
+			seen[node] = true
+			// The real file-node stage record directory and any mounts still
+			// carrying this PV's staging path, export target, or pod volumes.
+			captureNode(node, "sh", "-ceu", "ls -la "+fileNodeStageDir+"; grep -F -e "+n.PVName+" -e "+n.Target+" -e kubernetes.io~csi/"+n.PVCName+" /proc/1/mountinfo || true")
+			pod, err := capture("-n", resolveHelmNamespace(), "get", "pods", "-l", "app.kubernetes.io/component=node", "--field-selector", "spec.nodeName="+node, "-o", "jsonpath={.items[0].metadata.name}")
+			if err != nil || strings.TrimSpace(pod) == "" {
+				continue
+			}
+			capture("-n", resolveHelmNamespace(), "logs", strings.TrimSpace(pod), "-c", "file-node", "--tail=100")
+		}
+		pod, err := capture("-n", resolveHelmNamespace(), "get", "pods", "-l", "app.kubernetes.io/component=agent", "--field-selector", "spec.nodeName="+n.StorageNode, "-o", "jsonpath={.items[0].metadata.name}")
+		if err == nil && strings.TrimSpace(pod) != "" {
+			capture("-n", resolveHelmNamespace(), "logs", strings.TrimSpace(pod), "-c", "agent", "--tail=100")
+		}
+		pod, err = capture("-n", resolveHelmNamespace(), "get", "pods", "-l", "app.kubernetes.io/component=controller", "-o", "jsonpath={.items[0].metadata.name}")
+		if err == nil && strings.TrimSpace(pod) != "" {
+			capture("-n", resolveHelmNamespace(), "logs", strings.TrimSpace(pod), "-c", "controller", "--tail=100")
+			capture("-n", resolveHelmNamespace(), "logs", strings.TrimSpace(pod), "-c", "csi-attacher", "--tail=100")
+		}
+		diagnosticText := diagnostics.String()
+		const maxDiagnosticContextBytes = 96 * 1024
+		if len(diagnosticText) > maxDiagnosticContextBytes {
+			const truncationMarker = "[earlier diagnostics truncated]\n"
+			diagnosticText = truncationMarker + diagnosticText[len(diagnosticText)-(maxDiagnosticContextBytes-len(truncationMarker)):]
+		}
+		return "unpublish barrier failed; bounded diagnostics:" + diagnosticText
 	}
 }
 

@@ -136,6 +136,10 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 		Expect(nodes).To(ConsistOf(n.Clients[0], n.Clients[1], n.StorageNode))
 		n.exchange(ctx)
 		n.observeProxy(ctx)
+		// Prove the native unpublish drain of all three publishers — including
+		// the storage-node local bind — before generic PV cleanup can mask a
+		// stuck publication as a finalizer timeout.
+		n.unpublishAll(ctx)
 	})
 
 	It("[TC-E71.22] recovers staged remote source and data after the installed node plugin restarts", func() {
