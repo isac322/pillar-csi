@@ -1206,7 +1206,7 @@ func verifyFilesystemProxyMount(path string, adoption *filesystemContextAdoption
 	if err != nil {
 		return nil, err
 	}
-	mounts, err := readMountInfoFile()
+	mounts, err := readMountInfoFile(procMountInfoPath)
 	if err != nil {
 		return nil, fmt.Errorf("read filesystem mount table: %w", err)
 	}

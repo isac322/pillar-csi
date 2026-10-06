@@ -83,7 +83,7 @@ func rejectedFilesystemProxyPaths(t *testing.T, kind string) (root, proxy, targe
 func registerFilesystemStageCleanup(t *testing.T, target string) {
 	t.Helper()
 	t.Cleanup(func() {
-		mounts, err := readMountInfoFile()
+		mounts, err := readMountInfoFile(procMountInfoPath)
 		if err != nil {
 			t.Errorf("read test cleanup mount table: %v", err)
 			return
@@ -98,7 +98,7 @@ func registerFilesystemStageCleanup(t *testing.T, target string) {
 
 func assertFilesystemStageRejected(t *testing.T, node *NodeServer, req *csipb.NodeStageVolumeRequest) {
 	t.Helper()
-	mounts, err := readMountInfoFile()
+	mounts, err := readMountInfoFile(procMountInfoPath)
 	if err != nil {
 		t.Fatal(err)
 	}
