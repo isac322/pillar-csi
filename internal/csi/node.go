@@ -1032,7 +1032,7 @@ func validateLocalFilesystemStage(
 			"%s", "NodeStageVolume: adopted filesystems require mount access")
 	}
 	if fsType := req.GetVolumeCapability().GetMount().GetFsType(); fsType != "" &&
-		fsType != fileCtx.adoption.FilesystemType {
+		fsType != fileCtx.adoption.FilesystemType && !nfsTransportFsTypeHint(req) {
 		return status.Errorf(codes.InvalidArgument,
 			"NodeStageVolume: filesystem type %q does not match adopted type %q",
 			fsType, fileCtx.adoption.FilesystemType)
@@ -1047,6 +1047,20 @@ func validateLocalFilesystemStage(
 		}
 	}
 	return nil
+}
+
+// nfsTransportFsTypeHint reports whether the capability fsType is the "nfs"
+// transport type of a network-shareable adoption. One PV serves the storage
+// node through a local bind and remote consumers through NFS, so its csi.fsType
+// names the remote transport, not the native filesystem the bind exposes. The
+// hint is accepted only when the volume routes to NFS and satisfies the same
+// contract a remote NFS stage enforces; the native type and identity are still
+// verified against the adoption record before and after the bind.
+func nfsTransportFsTypeHint(req *csi.NodeStageVolumeRequest) bool {
+	mount := req.GetVolumeCapability().GetMount()
+	return mount.GetFsType() == ProtocolNFS &&
+		resolveProtocolType(req.GetVolumeId(), req.GetVolumeContext()) == ProtocolNFS &&
+		validateNFSStageFilesystem(req.GetVolumeContext(), mount) == nil
 }
 
 func (n *NodeServer) reuseLocalFilesystemStage(

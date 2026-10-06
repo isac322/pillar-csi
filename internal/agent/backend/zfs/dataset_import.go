@@ -393,7 +393,8 @@ func (d *DatasetBackend) validateImportState(
 		return 0, d.refuseImport(dataset, reasonTooSmall, err.Error())
 	}
 	if capacity != required {
-		return 0, &backend.ConflictError{VolumeID: dataset, ExistingBytes: capacity, RequestedBytes: required}
+		return 0, d.refuseImport(dataset, reasonTooSmall,
+			fmt.Sprintf("effective quota is %d bytes, exact required capacity is %d bytes", capacity, required))
 	}
 	err = d.rejectSubordinateMountEscapes(ctx, dataset)
 	if err != nil {

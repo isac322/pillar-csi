@@ -432,6 +432,8 @@ spec:
 
 Before creating the claim, `/srv/pillar/app-data` must already exist on `storage-1`. It must be a canonical path strictly below `/srv/pillar`, on ext4 or XFS, with a nonzero preconfigured project ID and a finite enforceable project quota of exactly `20Gi` (21474836480 bytes). The controller reads the native filesystem UUID, root inode and project identity. It does not assign a project ID, set a quota, or change directory permissions. A request that differs from the existing effective quota is refused.
 
+On the first claim, the agent walks the source without changing it. Every directory and regular file must carry the project ID, directories must inherit it, every hard link of a file or symlink must be inside the source, and the project's kernel inode count must equal the number of verified unique inodes. The agent cannot read a symlink's project ID, so it never counts symlinks as project members. A source whose symlinks are not charged to the project is accepted. If the project charges any symlink, or anything outside the source, the inode counts differ and the claim is refused.
+
 ### RWX directory mount
 
 Use `localAttach: false` and `ReadWriteMany` when more than one node must access the source. Set `fileDriver.nfs.enabled: true`. The chart's owned-host NFS server exports an owned proxy of the pinned source, and the file node mounts that export through real NFSv4.2. This is a remote NFS data path, not a topology label that makes a local mount reachable from another node.

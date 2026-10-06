@@ -95,11 +95,14 @@ func TestDatasetFilesystemImportRejectsIdentityAndQuotaDrift(t *testing.T) {
 		context.Background(), "tank/volume", 2048, recorded,
 		backend.Layout{ParentDataset: "k8s"},
 	)
-	var conflict *backend.ConflictError
-	if !errors.As(err, &conflict) ||
-		conflict.ExistingBytes != 4096 ||
-		conflict.RequestedBytes != 2048 {
-		t.Fatalf("quota drift error = %v, want exact-bound conflict", err)
+	if !errors.As(err, &refused) ||
+		refused.Reason != reasonTooSmall ||
+		!strings.Contains(refused.Detail, "effective quota is 4096 bytes") ||
+		!strings.Contains(refused.Detail, "exact required capacity is 2048 bytes") {
+		t.Fatalf("quota drift error = %v, want exact-bound import refusal", err)
+	}
+	if errors.As(err, new(*backend.ConflictError)) {
+		t.Fatalf("quota drift error = %v, must not be a Create idempotence conflict", err)
 	}
 }
 

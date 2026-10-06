@@ -206,7 +206,7 @@ func (b *Backend) inspectPinnedSource(
 		return nil, err
 	}
 	if expected == nil {
-		err = verifyProjectTree(ctx, fd, filesystem.project, filesystem.quota.inodes)
+		err = verifyProjectTree(ctx, fd, filesystem.project, filesystem.quota.inodes, readProject)
 		if err != nil {
 			return nil, err
 		}
@@ -866,11 +866,19 @@ func checkedQuotaBytes(blocks uint64, shift uint) (int64, error) {
 	return int64(bytes), nil
 }
 
+// projectWalk proves that a source tree owns its whole project-quota scope.
+// The verified field counts unique inodes whose project ID was read and
+// matched. The unverified field counts unique symlink inodes, whose project ID
+// cannot be read through an O_PATH descriptor. Only verified inodes may match
+// the kernel project inode count, so an unverifiable symlink never stands in
+// for a project member outside the source.
 type projectWalk struct {
-	ctx       context.Context
-	project   uint32
-	count     uint64
-	multilink map[[2]uint64]*linkCount
+	ctx         context.Context
+	project     uint32
+	readProject func(fd int) (projectID uint32, inherit bool, err error)
+	verified    uint64
+	unverified  uint64
+	multilink   map[[2]uint64]*linkCount
 }
 
 type linkCount struct {
@@ -882,8 +890,24 @@ func normalizeLinkCount[T ~uint32 | ~uint64](links T) uint64 {
 	return uint64(links)
 }
 
-func verifyProjectTree(ctx context.Context, rootFD int, project uint32, quotaInodes uint64) error {
-	w := &projectWalk{ctx: ctx, project: project, multilink: make(map[[2]uint64]*linkCount)}
+// verifyProjectTree refuses the source unless every directory and regular file
+// carries the project ID, every hard link of a non-directory inode lies inside
+// the source, and the kernel project inode count equals the verified source
+// inodes. The readAttrs function reads an inode's project ID and inheritance
+// flag.
+func verifyProjectTree(
+	ctx context.Context,
+	rootFD int,
+	project uint32,
+	quotaInodes uint64,
+	readAttrs func(fd int) (uint32, bool, error),
+) error {
+	w := &projectWalk{
+		ctx:         ctx,
+		project:     project,
+		readProject: readAttrs,
+		multilink:   make(map[[2]uint64]*linkCount),
+	}
 	var root unix.Stat_t
 	err := unix.Fstat(rootFD, &root)
 	if err != nil {
@@ -910,30 +934,33 @@ func verifyProjectTree(ctx context.Context, rootFD int, project uint32, quotaIno
 			}
 		}
 	}
-	if quotaInodes != 0 && w.count != quotaInodes {
-		if w.count < quotaInodes {
-			return &backend.ImportRefusedError{
-				Reason: reasonQuota,
-				Detail: fmt.Sprintf(
-					"project %d includes %d inodes outside source (source has %d of %d)",
-					project,
-					quotaInodes-w.count,
-					w.count,
-					quotaInodes,
-				),
-			}
-		}
+	if w.verified == quotaInodes {
+		return nil
+	}
+	if w.verified > quotaInodes {
 		return &backend.ImportRefusedError{
 			Reason: reasonQuota,
 			Detail: fmt.Sprintf(
-				"project %d quota inode count %d is below source unique inode count %d",
+				"project %d quota inode count %d is below verified source inode count %d",
 				project,
 				quotaInodes,
-				w.count,
+				w.verified,
 			),
 		}
 	}
-	return nil
+	return &backend.ImportRefusedError{
+		Reason: reasonQuota,
+		Detail: fmt.Sprintf(
+			"project %d quota inode count %d exceeds verified source inode count %d; "+
+				"the extra %d may be outside the source or among %d source symlink inodes "+
+				"whose project ID cannot be read",
+			project,
+			quotaInodes,
+			w.verified,
+			quotaInodes-w.verified,
+			w.unverified,
+		),
+	}
 }
 
 func (w *projectWalk) visit(fd int, st unix.Stat_t, isDir bool, label string) error {
@@ -941,7 +968,7 @@ func (w *projectWalk) visit(fd int, st unix.Stat_t, isDir bool, label string) er
 	if err != nil {
 		return fmt.Errorf("project tree %q: %w", label, err)
 	}
-	pid, inherit, err := readProject(fd)
+	pid, inherit, err := w.readProject(fd)
 	if err != nil {
 		return fmt.Errorf("project attributes %q: %w", label, err)
 	}
@@ -951,26 +978,37 @@ func (w *projectWalk) visit(fd int, st unix.Stat_t, isDir bool, label string) er
 	if isDir && !inherit {
 		return fmt.Errorf("directory %q lacks project inheritance", label)
 	}
-	w.record(st)
+	w.record(st, true)
 	if isDir {
 		return w.walkDir(fd, label)
 	}
 	return nil
 }
 
-func (w *projectWalk) record(st unix.Stat_t) {
-	key := [2]uint64{st.Dev, st.Ino}
+// record tracks one directory entry. Every hard link of a non-directory inode
+// is counted toward link completeness, but the inode is counted once, as
+// verified or unverified, when it is first seen.
+func (w *projectWalk) record(st unix.Stat_t, verified bool) {
 	if st.Mode&unix.S_IFMT != unix.S_IFDIR && st.Nlink > 1 {
+		key := [2]uint64{st.Dev, st.Ino}
 		links := w.multilink[key]
 		if links == nil {
 			links = &linkCount{total: normalizeLinkCount(st.Nlink)}
 			w.multilink[key] = links
-			w.count++
+			w.countInode(verified)
 		}
 		links.seen++
 		return
 	}
-	w.count++
+	w.countInode(verified)
+}
+
+func (w *projectWalk) countInode(verified bool) {
+	if verified {
+		w.verified++
+		return
+	}
+	w.unverified++
 }
 
 func (w *projectWalk) walkDir(fd int, label string) error {
@@ -1085,7 +1123,7 @@ func (w *projectWalk) visitEntry(parentFD int, name string) (retErr error) {
 		return fmt.Errorf("entry %q changed while being inspected", name)
 	}
 	if mode == unix.S_IFLNK {
-		w.record(actual)
+		w.record(actual, false)
 		return nil
 	}
 	return w.visit(fd, actual, isDir, name)
