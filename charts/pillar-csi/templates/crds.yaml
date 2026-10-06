@@ -1413,7 +1413,6 @@ spec:
                   an operator can verify it is gone before deleting the reservation.
                 properties:
                   name:
-                    description: name is the name of the PersistentVolumeClaim.
                     type: string
                   namespace:
                     description: namespace is the namespace of the PersistentVolumeClaim.
@@ -1474,6 +1473,9 @@ spec:
       type: string
     - jsonPath: .spec.protocolType
       name: Protocol
+      type: string
+    - jsonPath: .spec.lvmSource.logicalVolumeUUID
+      name: Source
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -1547,7 +1549,6 @@ spec:
                   the default "pvc-<claim UID>" volume name.
                 properties:
                   name:
-                    description: name is the name of the PersistentVolumeClaim.
                     type: string
                   namespace:
                     description: namespace is the namespace of the PersistentVolumeClaim.
@@ -1569,12 +1570,197 @@ spec:
                   normal volume: DeleteVolume destroys it, and the annotation has no
                   effect once the volume exists.
                 type: string
+              lvmSource:
+                description: |-
+                  lvmSource pins the pre-existing LVM logical volume this volume adopted
+                  via the "pillar-csi.bhyoo.com/import-lv" PVC annotation, by name and
+                  by stable VG/LV UUIDs, together with the adoption policy.  It is set
+                  once at the first CreateVolume attempt and is immutable: it can be
+                  neither changed nor added or removed after creation.  Absent for
+                  volumes created empty and for zvol imports (see importedFrom), which
+                  keep their existing semantics.
+                properties:
+                  logicalVolume:
+                    description: logicalVolume is the LVM logical volume name of the
+                      adopted LV.
+                    minLength: 1
+                    type: string
+                  logicalVolumeUUID:
+                    description: |-
+                      logicalVolumeUUID is the LVM UUID of the logical volume
+                      (`lvs -o lv_uuid`).
+                    pattern: ^[A-Za-z0-9]{6}(-[A-Za-z0-9]{4}){5}-[A-Za-z0-9]{6}$
+                    type: string
+                  preserveOriginal:
+                    description: |-
+                      preserveOriginal selects the adoption policy.  When true, DeleteVolume
+                      only releases the LV (never lvremove), expansion is refused, and the
+                      node never formats, fscks or resizes it.  When false (policy Managed)
+                      the adopted LV becomes a normal managed volume.
+                    type: boolean
+                  volumeGroup:
+                    description: volumeGroup is the LVM volume group name of the adopted
+                      LV.
+                    minLength: 1
+                    type: string
+                  volumeGroupUUID:
+                    description: volumeGroupUUID is the LVM UUID of the volume group
+                      (`vgs -o vg_uuid`).
+                    pattern: ^[A-Za-z0-9]{6}(-[A-Za-z0-9]{4}){5}-[A-Za-z0-9]{6}$
+                    type: string
+                required:
+                - logicalVolume
+                - logicalVolumeUUID
+                - preserveOriginal
+                - volumeGroup
+                - volumeGroupUUID
+                type: object
+                x-kubernetes-validations:
+                - message: lvmSource is immutable
+                  rule: self == oldSelf
               protocolType:
                 description: |-
                   protocolType is the network storage protocol routing token
                   (e.g. "nvmeof-tcp").  It is the protocol member selected by the
                   protocol's spec.protocol union at CreateVolume time.
                 type: string
+              recovery:
+                description: |-
+                  recovery declares that this volume record exists solely to receive an
+                  operator-authorized ownership transfer of a pre-existing adopted
+                  backend resource (see VolumeRecoveryIntent).  It is set at creation
+                  for a volume born in phase RecoveryPending and cannot be added or
+                  removed after creation.  Mutually exclusive with lvmSource and
+                  importedFrom — a recovery volume is not itself an import.
+
+                  The fields the operator cannot know at create time — newVolumeUID
+                  (this object's own metadata.uid), authorization and
+                  authorizationDigest — are write-once: they may be empty at create and
+                  populated exactly once afterwards; every other field is immutable
+                  from creation.
+                properties:
+                  authorization:
+                    description: |-
+                      authorization is the serialized RecoveryAuthorization protobuf (the
+                      operator-signed grant).  It may be empty at creation — the operator
+                      can only sign once metadata.uid exists.  It is not write-once at the
+                      schema level (CEL does not compare these raw bytes); it may be
+                      re-supplied on retry, but only bytes whose canonical digest equals
+                      authorizationDigest are ever used, and the agent verifies the
+                      signature.  When absent at transfer time the authorization must be
+                      supplied out-of-band, with authorizationDigest pinning its identity.
+                    format: byte
+                    type: string
+                  authorizationDigest:
+                    description: |-
+                      authorizationDigest is the lowercase hex SHA-256 of the
+                      RecoveryAuthorization's deterministic protobuf encoding with its
+                      signature field cleared.  It pins the exact grant this record may
+                      consume; the fence mark stores the same digest after transfer.  It
+                      may be empty at creation and is write-once once populated.  The
+                      transfer requires it to be set.
+                    maxLength: 64
+                    minLength: 64
+                    pattern: ^[0-9a-f]{64}$
+                    type: string
+                  newGeneration:
+                    description: |-
+                      newGeneration is the generation the agent writes into the
+                      transferred fence mark for the new lifecycle.  Immutable from
+                      creation.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                    x-kubernetes-validations:
+                    - message: newGeneration is immutable
+                      rule: self == oldSelf
+                  newVolumeUID:
+                    description: |-
+                      newVolumeUID is the destination lifecycle UID; when set it MUST
+                      equal this PillarVolumeState's metadata.uid.  It is unknowable at
+                      create (the API server assigns metadata.uid), so it may be empty at
+                      creation and is write-once once populated.  The transfer requires
+                      it to be set.
+                    minLength: 1
+                    type: string
+                  oldGeneration:
+                    description: |-
+                      oldGeneration is the exact publication generation recorded in the
+                      old lifecycle's fence mark.  Exact equality required.  Immutable
+                      from creation.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                    x-kubernetes-validations:
+                    - message: oldGeneration is immutable
+                      rule: self == oldSelf
+                  oldVolumeUID:
+                    description: |-
+                      oldVolumeUID is the UID of the retired PillarVolumeState lifecycle
+                      whose backend resource is recovered (the fence mark's current
+                      volume_uid).  Immutable from creation.
+                    minLength: 1
+                    type: string
+                    x-kubernetes-validations:
+                    - message: oldVolumeUID is immutable
+                      rule: self == oldSelf
+                  source:
+                    description: |-
+                      source pins the adopted LVM logical volume being recovered by name
+                      and stable VG/LV UUIDs; its preserveOriginal is the recovery
+                      preserve policy.  Immutable from creation.
+                    properties:
+                      logicalVolume:
+                        description: logicalVolume is the LVM logical volume name
+                          of the adopted LV.
+                        minLength: 1
+                        type: string
+                      logicalVolumeUUID:
+                        description: |-
+                          logicalVolumeUUID is the LVM UUID of the logical volume
+                          (`lvs -o lv_uuid`).
+                        pattern: ^[A-Za-z0-9]{6}(-[A-Za-z0-9]{4}){5}-[A-Za-z0-9]{6}$
+                        type: string
+                      preserveOriginal:
+                        description: |-
+                          preserveOriginal selects the adoption policy.  When true, DeleteVolume
+                          only releases the LV (never lvremove), expansion is refused, and the
+                          node never formats, fscks or resizes it.  When false (policy Managed)
+                          the adopted LV becomes a normal managed volume.
+                        type: boolean
+                      volumeGroup:
+                        description: volumeGroup is the LVM volume group name of the
+                          adopted LV.
+                        minLength: 1
+                        type: string
+                      volumeGroupUUID:
+                        description: volumeGroupUUID is the LVM UUID of the volume
+                          group (`vgs -o vg_uuid`).
+                        pattern: ^[A-Za-z0-9]{6}(-[A-Za-z0-9]{4}){5}-[A-Za-z0-9]{6}$
+                        type: string
+                    required:
+                    - logicalVolume
+                    - logicalVolumeUUID
+                    - preserveOriginal
+                    - volumeGroup
+                    - volumeGroupUUID
+                    type: object
+                    x-kubernetes-validations:
+                    - message: source is immutable
+                      rule: self == oldSelf
+                required:
+                - newGeneration
+                - oldGeneration
+                - oldVolumeUID
+                - source
+                type: object
+                x-kubernetes-validations:
+                - message: newVolumeUID and authorizationDigest are write-once once
+                    populated
+                  rule: (!has(oldSelf.newVolumeUID) || (has(self.newVolumeUID) &&
+                    self.newVolumeUID == oldSelf.newVolumeUID)) && (!has(oldSelf.authorizationDigest)
+                    || (has(self.authorizationDigest) && self.authorizationDigest
+                    == oldSelf.authorizationDigest))
               resolved:
                 description: |-
                   resolved is the effective per-volume configuration resolved at the
@@ -1969,6 +2155,15 @@ spec:
             - protocolType
             - volumeID
             type: object
+            x-kubernetes-validations:
+            - message: importedFrom and lvmSource are mutually exclusive
+              rule: '!(has(self.importedFrom) && has(self.lvmSource))'
+            - message: lvmSource cannot be added or removed after creation
+              rule: has(self.lvmSource) == has(oldSelf.lvmSource)
+            - message: recovery is mutually exclusive with lvmSource and importedFrom
+              rule: '!(has(self.recovery) && (has(self.lvmSource) || has(self.importedFrom)))'
+            - message: recovery cannot be added or removed after creation
+              rule: has(self.recovery) == has(oldSelf.recovery)
           status:
             description: status reflects the mutable lifecycle state of the volume.
             properties:
@@ -2252,6 +2447,7 @@ spec:
                 - NodeStagePartial
                 - NodeStaged
                 - NodePublished
+                - RecoveryPending
                 type: string
               publicationGeneration:
                 description: |-

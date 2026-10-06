@@ -147,12 +147,12 @@ func parsePeriodicTrim(volCtx map[string]string) (*bool, error) {
 	}
 	var v bool
 	switch raw {
-	case "true":
+	case paramValueTrue:
 		v = true
 	case "false":
 	default:
 		return nil, fmt.Errorf("volume_context %s %q is unsupported: must be %q or %q",
-			paramPeriodicTrim, raw, "true", "false")
+			paramPeriodicTrim, raw, paramValueTrue, "false")
 	}
 	return &v, nil
 }

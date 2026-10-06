@@ -44,9 +44,10 @@ package csi
 //     DeleteVolume (UnexportVolume and DeleteVolume, both idempotent) before
 //     its record is removed — except an import lifecycle that never durably
 //     recorded adoption (status.importAcquired unset, no backend device path
-//     or export info): its backend resource is pre-existing data this driver
-//     never owned, so it is ended with ReleaseVolume, which retires the
-//     lifecycle at the agent without touching the zvol.
+//     or export info), or an LV adopted under PreserveOriginal: its backend
+//     resource is pre-existing data this driver must never destroy, so it is
+//     ended with ReleaseVolume, which retires the lifecycle at the agent
+//     without touching the zvol or LV.
 import (
 	"context"
 	"fmt"
@@ -195,8 +196,14 @@ const annotationValueTrue = "true"
 // reapablePhase reports whether pvs never reported success, i.e. never had a
 // PersistentVolume.  Provisioning precedes the backend record under every
 // controller version; CreatePartial is conclusive only for lifecycles created
-// under the success-recording contract.
+// under the success-recording contract.  A recovery record (spec.recovery)
+// is never reapable in any phase, including before its first status write:
+// it owns nothing until its authorized transfer commits, and ending it
+// could release the claim on the LV it exists to receive.
 func reapablePhase(pvs *v1alpha1.PillarVolumeState) bool {
+	if pvs.Spec.Recovery != nil {
+		return false
+	}
 	switch pvs.Status.Phase {
 	case "", v1alpha1.PillarVolumeStatePhaseProvisioning:
 		return true
@@ -290,15 +297,16 @@ func (s *ControllerServer) reapAbandoned(
 	teardownCtx, cancel := context.WithTimeout(ctx, reapTeardownTimeout)
 	defer cancel()
 	err = s.teardownMarkedVolume(teardownCtx, volumeTeardown{
-		volumeID:     volumeID,
-		pvName:       pvsName,
-		uid:          marked.UID,
-		targetName:   marked.Spec.AgentRef,
-		protocolType: mapProtocolType(marked.Spec.ProtocolType),
-		backendType:  mapBackendType(marked.Spec.BackendType),
-		agentVolID:   marked.Spec.AgentVolumeID,
-		fence:        fence,
-		releaseOnly:  importNeverAdopted(marked),
+		volumeID:       volumeID,
+		pvName:         pvsName,
+		uid:            marked.UID,
+		targetName:     marked.Spec.AgentRef,
+		protocolType:   mapProtocolType(marked.Spec.ProtocolType),
+		backendType:    mapBackendType(marked.Spec.BackendType),
+		agentVolID:     marked.Spec.AgentVolumeID,
+		fence:          fence,
+		releaseOnly:    releaseOnlyTeardown(marked),
+		reservationKey: reservationOf(marked),
 	})
 	if err != nil {
 		return reapResultError, fmt.Errorf("tear down abandoned volume %q: %w", volumeID, err)

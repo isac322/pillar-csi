@@ -187,6 +187,13 @@ func (n *NodeServer) growStagedDevice(ctx context.Context, volumeID string) (*no
 			"NodeExpandVolume: read stage state for %q: %v", volumeID, stateErr)
 	}
 	setSpanAttachMode(ctx, stageState)
+	if stageState != nil && stageState.PreserveOriginal {
+		// The preserve-original pin refuses expansion from the stage
+		// record alone — NodeExpandVolume carries no VolumeContext — in
+		// the same process and after a plugin restart, before any device
+		// reload, rescan or resize runs.
+		return nil, preserveOriginalRefusal(volumeID)
+	}
 	switch {
 	case stageState.isLocalAttach():
 		// ── Local attach: grow the device-mapper target ─────────────────────
@@ -213,6 +220,15 @@ func (n *NodeServer) growStagedDevice(ctx context.Context, volumeID string) (*no
 		}
 	}
 	return stageState, nil
+}
+
+// preserveOriginalRefusal reports a FailedPrecondition for any expansion of
+// a preserve-original volume: the adopted LV's extent and data must never
+// change, so the refusal fires before the local-attach reload, the protocol
+// rescan, the block-mode short-circuit and the filesystem resize.
+func preserveOriginalRefusal(volumeID string) error {
+	return status.Errorf(codes.FailedPrecondition,
+		"NodeExpandVolume: volume %q is preserve-original and is never expanded", volumeID)
 }
 
 // rescanProtocol asks the ProtocolHandler of the staged volume to rescan its

@@ -383,6 +383,80 @@ func TestExecResizer_UnsupportedFsType(t *testing.T) {
 	}
 }
 
+// TestNodeExpandVolume_PreserveOriginal_Refused verifies that a volume whose
+// stage record pins preserve-original is never resized: NodeExpandVolume —
+// which receives no VolumeContext — answers FailedPrecondition from the
+// record alone, in the plugin that staged the volume and after a plugin
+// restart, and the resize tool never runs.
+func TestNodeExpandVolume_PreserveOriginal_Refused(t *testing.T) {
+	t.Parallel()
+
+	for _, restart := range []bool{false, true} {
+		name := "same plugin process"
+		if restart {
+			name = "after plugin restart"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			env := newNodeTestEnv(t)
+			stagingPath := t.TempDir()
+			stagePreservedForRestage(t, env, stagingPath)
+			srv := env.srv
+			if restart {
+				srv = NewNodeServerWithStateDir("test-node", env.connector, env.mounter, env.stateDir)
+			}
+			resizer := &mockResizer{}
+			srv.WithResizer(resizer)
+
+			_, err := srv.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
+				VolumeId:          preserveVolumeID,
+				VolumePath:        stagingPath,
+				StagingTargetPath: stagingPath,
+				VolumeCapability:  mountCap("ext4"),
+				CapacityRange:     &csi.CapacityRange{RequiredBytes: 2 << 30},
+			})
+			requireFailedPrecondition(t, err)
+			if resizer.called != 0 {
+				t.Errorf("resize tool ran %d times on a preserved volume, want 0", resizer.called)
+			}
+		})
+	}
+}
+
+// TestNodeExpandVolume_PreserveOriginal_BlockRefused verifies that the
+// preserve-original refusal precedes the Block-mode short-circuit: a raw
+// block preserved volume, whose expand would otherwise be acknowledged
+// without touching a filesystem, is refused with FailedPrecondition too.
+func TestNodeExpandVolume_PreserveOriginal_BlockRefused(t *testing.T) {
+	t.Parallel()
+
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          preserveVolumeID,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  blockCap(),
+		VolumeContext:     adoptedPreserveVolumeContext(),
+	})
+	if err != nil {
+		t.Fatalf("NodeStageVolume (block): %v", err)
+	}
+	resizer := &mockResizer{}
+	env.srv.WithResizer(resizer)
+
+	_, err = env.srv.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
+		VolumeId:          preserveVolumeID,
+		VolumePath:        stagingPath,
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  blockCap(),
+		CapacityRange:     &csi.CapacityRange{RequiredBytes: 2 << 30},
+	})
+	requireFailedPrecondition(t, err)
+	if resizer.called != 0 {
+		t.Errorf("resize tool ran %d times on a preserved block volume, want 0", resizer.called)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // nvmeControllerName unit tests
 // ─────────────────────────────────────────────────────────────────────────────.

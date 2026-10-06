@@ -347,3 +347,91 @@ func TestExpandVolume_SkipsRevalidateWhileDisabled(t *testing.T) {
 		t.Errorf("CapacityBytes = %d, want %d", resp.GetCapacityBytes(), 2<<30)
 	}
 }
+
+// TestSetLocalAttach_RecheckedBeforeEnable: a locally attached volume pinned
+// to a pre-existing LV is re-verified before the namespace is re-enabled for
+// remote initiators: an LV replaced while the volume was locally attached is
+// refused before any enable or device claim, the durable mark is left
+// byte-identical, and the refusal survives an agent restart.  The namespace
+// is enabled again only once the pinned LV is back.
+func TestSetLocalAttach_RecheckedBeforeEnable(t *testing.T) {
+	t.Parallel()
+	b := newMockLVBackend()
+	srv, stateDir, cfgRoot := newLVTestServer(t, b)
+
+	held := &atomic.Bool{}
+	claimed := &[]string{}
+	claimer := func(path string) (func() error, error) {
+		*claimed = append(*claimed, path)
+		if held.Load() {
+			return nil, nvmeof.ErrDeviceHeld
+		}
+		return func() error { return nil }, nil
+	}
+	agent.SetDeviceClaimer(t, srv, claimer)
+	seedMark(t, stateDir, pinnedMark("lifecycle-a", 5, testLVSource(), true))
+	ctx := context.Background()
+
+	// Export the healthy pinned LV and hand it to a local attach.
+	_, err := srv.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
+		VolumeId:     testVolumeID,
+		ProtocolType: agentv1.ProtocolType_PROTOCOL_TYPE_NVMEOF_TCP,
+		ExportParams: nvmeofExportParams("10.0.0.1", 4420),
+		DevicePath:   testLVDevicePath,
+		Fence:        token2("lifecycle-a", 6),
+	})
+	if err != nil {
+		t.Fatalf("ExportVolume: %v", err)
+	}
+	resp, err := setLocalAttach(srv, true, token2("lifecycle-a", 7))
+	if err != nil {
+		t.Fatalf("SetLocalAttach(true): %v", err)
+	}
+	if resp.GetDevicePath() != testLVDevicePath {
+		t.Fatalf("DevicePath = %q, want %q", resp.GetDevicePath(), testLVDevicePath)
+	}
+	if got := namespaceEnable(t, cfgRoot); got != "0" {
+		t.Fatalf("namespace enable after local attach = %q, want 0", got)
+	}
+	pinned := markBytes(t, stateDir)
+	*claimed = nil
+
+	// The LV is recreated under the same name: neither direction may proceed.
+	b.replaceLV()
+	for _, local := range []bool{false, true} {
+		_, err = setLocalAttach(srv, local, token2("lifecycle-a", 8))
+		requireCode(t, "SetLocalAttach on a replaced LV", err, codes.FailedPrecondition)
+		requireMarkUnchanged(t, stateDir, pinned, "SetLocalAttach on a replaced LV")
+	}
+	if got := namespaceEnable(t, cfgRoot); got != "0" {
+		t.Fatalf("namespace enabled under a replaced LV: enable=%q", got)
+	}
+	if len(*claimed) != 0 {
+		t.Fatalf("device claimed for a replaced LV: %v", *claimed)
+	}
+
+	// An agent restart must not reopen the replaced LV either.
+	srv = restartLVServer(t, b, stateDir, cfgRoot)
+	agent.SetDeviceClaimer(t, srv, claimer)
+	_, err = setLocalAttach(srv, false, token2("lifecycle-a", 8))
+	requireCode(t, "post-restart SetLocalAttach on a replaced LV", err, codes.FailedPrecondition)
+	if got := namespaceEnable(t, cfgRoot); got != "0" {
+		t.Fatalf("post-restart namespace enabled under a replaced LV: enable=%q", got)
+	}
+	requireMarkUnchanged(t, stateDir, pinned, "post-restart SetLocalAttach")
+	if len(*claimed) != 0 {
+		t.Fatalf("device claimed for a replaced LV after restart: %v", *claimed)
+	}
+
+	// Once the pinned LV is back the enable proceeds and claims the device.
+	b.lvs[testVolumeID] = lvIdentity(testLVSource())
+	if _, err = setLocalAttach(srv, false, token2("lifecycle-a", 8)); err != nil {
+		t.Fatalf("SetLocalAttach(false) with the pinned LV back: %v", err)
+	}
+	if got := namespaceEnable(t, cfgRoot); got != "1" {
+		t.Fatalf("namespace enable after the LV returned = %q, want 1", got)
+	}
+	if len(*claimed) != 1 || (*claimed)[0] != testLVDevicePath {
+		t.Fatalf("claimed devices = %v, want [%s]", *claimed, testLVDevicePath)
+	}
+}

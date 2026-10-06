@@ -457,3 +457,157 @@ func TestCreateVolume_NamedClaimGoneOrReplaced(t *testing.T) {
 		})
 	}
 }
+
+// lvReapClaim prepares an import-lv claim "data" adopting data-vg/legacy
+// under policy whose UID is the one the "pvc-<claim UID>" volume name
+// encodes, so the abandoned-attempt detection can attribute the lifecycle.
+func lvReapClaim(
+	t *testing.T,
+	policy string,
+) (*controllerTestEnv, *csi.CreateVolumeRequest, *corev1.PersistentVolumeClaim) {
+	t.Helper()
+	annotations := importLVAnnotations(policy)
+	env, req := newImportLVTestEnv(t, annotations)
+	seeded := &corev1.PersistentVolumeClaim{}
+	if err := env.srv.k8sClient.Get(context.Background(),
+		types.NamespacedName{Namespace: "default", Name: lvClaimName}, seeded); err != nil {
+		t.Fatalf("get seeded PVC: %v", err)
+	}
+	deleteClaim(t, env, seeded)
+	pvc := &corev1.PersistentVolumeClaim{
+		Name: lvClaimName, Namespace: "default", UID: types.UID(reapClaimUID), Annotations: annotations,
+	}
+	if err := env.srv.k8sClient.Create(context.Background(), pvc); err != nil {
+		t.Fatalf("recreate PVC with UID: %v", err)
+	}
+	req.Name = "pvc-" + reapClaimUID
+	return env, req, pvc
+}
+
+// assertLVReapTeardown checks the agent teardown a reap of the abandoned LV
+// adoption pvs ran: ReleaseVolume only, under the lifecycle's UID, when
+// wantRelease; otherwise the Managed destructive DeleteVolume and no release.
+func assertLVReapTeardown(t *testing.T, env *controllerTestEnv, pvs *v1alpha1.PillarVolumeState, wantRelease bool) {
+	t.Helper()
+	if !wantRelease {
+		if env.agent.deleteVolumeCalls != 1 || env.agent.releaseVolumeCalls != 0 {
+			t.Fatalf("Managed reap: delete=%d release=%d, want 1/0",
+				env.agent.deleteVolumeCalls, env.agent.releaseVolumeCalls)
+		}
+		return
+	}
+	if env.agent.releaseVolumeCalls != 1 || agentTeardownCalls(env) != 0 {
+		t.Fatalf("reap: release=%d unexport=%d delete=%d, want release only",
+			env.agent.releaseVolumeCalls, env.agent.unexportVolumeCalls, env.agent.deleteVolumeCalls)
+	}
+	rel := env.agent.lastReleaseVolumeReq
+	if rel.GetVolumeId() != "data-vg/legacy" || rel.GetFence().GetVolumeUid() != string(pvs.UID) {
+		t.Fatalf("ReleaseVolume = %+v, want data-vg/legacy under uid %s", rel, pvs.UID)
+	}
+}
+
+// TestReapAbandonedVolume_ImportLV_ReleasesNeverDeletes: an abandoned LV
+// adoption whose agent refused the import (importAcquired unset, under
+// either policy), or a PreserveOriginal adoption that did land but never
+// exported, is ended with ReleaseVolume only — UnexportVolume+DeleteVolume
+// would lvremove pre-existing data — and its LV-UUID reservation is
+// released with the record.  A Managed adoption that landed is a normal
+// volume and keeps the destructive teardown.
+func TestReapAbandonedVolume_ImportLV_ReleasesNeverDeletes(t *testing.T) {
+	t.Parallel()
+	refusedImport := func(env *controllerTestEnv) {
+		env.agent.importVolumeErr = status.Error(codes.FailedPrecondition, "in use: mounted at /mnt/legacy")
+	}
+	exportFailed := func(env *controllerTestEnv) {
+		env.agent.exportVolumeErr = status.Error(codes.Unavailable, "nvmet: port busy")
+	}
+	for name, tc := range map[string]struct {
+		policy      string
+		fail        func(*controllerTestEnv)
+		wantAcq     bool
+		wantRelease bool
+	}{
+		"preserve, import refused":     {"", refusedImport, false, true},
+		"managed, import refused":      {v1alpha1.ImportLVPolicyManaged, refusedImport, false, true},
+		"preserve, adopted unexported": {"", exportFailed, true, true},
+		"managed, adopted unexported":  {v1alpha1.ImportLVPolicyManaged, exportFailed, true, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			env, req, pvc := lvReapClaim(t, tc.policy)
+			tc.fail(env)
+			if _, err := env.srv.CreateVolume(context.Background(), req); err == nil {
+				t.Fatal("CreateVolume succeeded; want the injected failure")
+			}
+			pvs := volumeState(t, env, req.GetName())
+			if pvs == nil || pvs.Spec.LVMSource == nil || pvs.Status.ImportAcquired != tc.wantAcq {
+				t.Fatalf("failed attempt left %+v, want lvmSource pinned and importAcquired=%v", pvs, tc.wantAcq)
+			}
+			env.agent.importVolumeErr, env.agent.exportVolumeErr = nil, nil
+			importCalls := env.agent.importVolumeCalls
+
+			deleteClaim(t, env, pvc)
+			if !reap(t, env, req.GetName()) {
+				t.Fatal("abandoned LV adoption was not reaped")
+			}
+			assertLVReapTeardown(t, env, pvs, tc.wantRelease)
+			if env.agent.importVolumeCalls != importCalls {
+				t.Fatalf("reap re-ran import: calls %d -> %d", importCalls, env.agent.importVolumeCalls)
+			}
+			if volumeState(t, env, req.GetName()) != nil {
+				t.Fatal("PillarVolumeState still exists after the reap")
+			}
+			if res := reservationNamed(t, env, lvReservationName()); res != nil {
+				t.Fatalf("LV reservation outlived its lifecycle: %+v", res.Spec)
+			}
+		})
+	}
+}
+
+// TestReapAbandonedVolume_ReadyWithDeletedClaimKept: a Ready LV adoption
+// whose claim is gone while its Retain PersistentVolume is Released (the
+// state the same-PV rebind runbook starts from) is never reaped: no agent
+// call, and the record, its claimRef and the reservation stay as they were.
+func TestReapAbandonedVolume_ReadyWithDeletedClaimKept(t *testing.T) {
+	t.Parallel()
+	env, req, pvc := lvReapClaim(t, "")
+	if _, err := env.srv.CreateVolume(context.Background(), req); err != nil {
+		t.Fatalf("CreateVolume: %v", err)
+	}
+	before := volumeState(t, env, req.GetName())
+	if before.Status.Phase != v1alpha1.PillarVolumeStatePhaseReady || before.Spec.ClaimRef == nil {
+		t.Fatalf("adoption = %+v, want Ready with a claimRef", before)
+	}
+	deleteClaim(t, env, pvc)
+	pv := &corev1.PersistentVolume{
+		Name: req.GetName(),
+		Spec: corev1.PersistentVolumeSpec{
+			PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimRetain,
+			ClaimRef: &corev1.ObjectReference{
+				Namespace: "default", Name: "data", UID: types.UID(reapClaimUID),
+			},
+			PersistentVolumeSource: corev1.PersistentVolumeSource{CSI: &corev1.CSIPersistentVolumeSource{
+				Driver: "pillar-csi.bhyoo.com", VolumeHandle: before.Spec.VolumeID,
+			}},
+		},
+		Status: corev1.PersistentVolumeStatus{Phase: corev1.VolumeReleased},
+	}
+	if err := env.srv.k8sClient.Create(context.Background(), pv); err != nil {
+		t.Fatalf("create Released PV: %v", err)
+	}
+	calls := env.agent.releaseVolumeCalls + agentTeardownCalls(env) + env.agent.importVolumeCalls
+
+	if reap(t, env, req.GetName()) {
+		t.Fatal("Ready adoption with a deleted claim was reaped")
+	}
+	if got := env.agent.releaseVolumeCalls + agentTeardownCalls(env) + env.agent.importVolumeCalls; got != calls {
+		t.Fatalf("reap reached the agent: calls %d -> %d", calls, got)
+	}
+	after := volumeState(t, env, req.GetName())
+	if after == nil || after.ResourceVersion != before.ResourceVersion {
+		t.Fatalf("reap changed the record:\nbefore %+v\nafter  %+v", before, after)
+	}
+	if res := reservationNamed(t, env, lvReservationName()); res == nil || res.Spec.OwnerVolume != req.GetName() {
+		t.Fatalf("LV reservation = %+v, want still owned by %q", res, req.GetName())
+	}
+}

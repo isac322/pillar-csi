@@ -53,6 +53,17 @@ const xfsCompatProfile = "/usr/share/xfsprogs/mkfs/lts_5.15.conf"
 // error.
 var ErrMountUnhealthy = errors.New("mounted filesystem is dead")
 
+// ErrNoFilesystem reports that MountExisting found no filesystem signature
+// on the source device.  A preserve-original volume never runs mkfs, so a
+// blank device is a refused stage, not a format candidate.
+var ErrNoFilesystem = errors.New("device carries no filesystem")
+
+// ErrFilesystemMismatch reports that MountExisting found a filesystem whose
+// type differs from the requested one.  Mounting it under the requested
+// type would fail in mount(2) anyway, and reformatting is forbidden on a
+// preserve-original volume, so the mismatch is refused up front.
+var ErrFilesystemMismatch = errors.New("device filesystem differs from the requested type")
+
 // KubeMounter is the production Mounter implementation backed by
 // k8s.io/utils/mount.SafeFormatAndMount.  It shells out to the host
 // mount(8)/umount(8) binaries and uses blkid to detect existing

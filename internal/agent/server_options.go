@@ -17,6 +17,8 @@ limitations under the License.
 package agent
 
 import (
+	"crypto"
+	"crypto/x509"
 	"time"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
@@ -95,4 +97,41 @@ func WithNFSManager(manager *nfs.Manager) ServerOption {
 // multiple backend kinds share one physical pool.
 func WithBackendVariants(variants map[string]map[agentv1.BackendType]backend.VolumeBackend) ServerOption {
 	return func(s *Server) { s.backendVariants = variants }
+}
+
+// WithRecoveryAuthority configures the volume-recovery authority (see
+// server_recovery.go): the signer and leaf certificate are the agent's own
+// server TLS identity (from --tls-cert/--tls-key), anchors are the operator
+// public keys loaded from --recovery-trust-anchor that may sign a
+// RecoveryAuthorization.
+//
+// The agent binary passes all three together and only when recovery is
+// configured.  Calling it with a nil signer or certificate, or no anchors,
+// leaves that capability fail-closed: snapshots are not issued and every
+// TransferVolumeOwnership is refused.  The cert MUST be the certificate
+// actually serving TLS; an identity or public key that differs from signer's
+// makes issued snapshots unverifiable, which also fails closed.
+func WithRecoveryAuthority(signer crypto.Signer, cert *x509.Certificate, anchors []crypto.PublicKey) ServerOption {
+	return func(s *Server) {
+		s.recoverySigner = signer
+		s.recoveryCert = cert
+		s.recoveryAnchors = anchors
+	}
+}
+
+// RecoveryAgentIdentity returns the identity this agent embeds in a signed
+// RecoverySnapshot: the certificate's Subject CommonName, or its first DNS
+// SAN when the CommonName is empty.  "" means cert cannot attest an
+// identity, so the agent must not issue snapshots and must refuse transfers.
+func RecoveryAgentIdentity(cert *x509.Certificate) string {
+	if cert == nil {
+		return ""
+	}
+	if cert.Subject.CommonName != "" {
+		return cert.Subject.CommonName
+	}
+	if len(cert.DNSNames) > 0 {
+		return cert.DNSNames[0]
+	}
+	return ""
 }

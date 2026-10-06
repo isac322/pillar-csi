@@ -123,6 +123,11 @@ const (
 	// "false"), present only when a layer sets it; "false" opts the
 	// staged filesystem out of the node's periodic trim.
 	paramPeriodicTrim = "pillar-csi.bhyoo.com/periodic-trim"
+
+	// ParamValueTrue is the only spelling of true a boolean StorageClass
+	// parameter or VolumeContext value (paramLocalAttach,
+	// paramPeriodicTrim) accepts.
+	paramValueTrue = "true"
 )
 
 // generatedClassParams are the pillar-csi keys a generated StorageClass may
@@ -191,6 +196,11 @@ type resolution struct {
 	// validates it against the resolved backend and switches the backend step
 	// from create to adopt.
 	importDataset string
+
+	// importLV and importLVPolicy are the raw values of the claim's
+	// v1alpha1.AnnotationImportLV and v1alpha1.AnnotationImportLVPolicy
+	// annotations ("" when absent); see resolveLVImportRequest.
+	importLV, importLVPolicy string
 }
 
 // resolveVolumeConfig resolves the effective configuration of a new volume
@@ -262,10 +272,12 @@ func (s *ControllerServer) resolveVolumeConfig(
 			Filesystem:  fs,
 			LocalAttach: class.localAttach,
 		},
-		agentRef:      class.store.Spec.AgentRef,
-		pvcFS:         pvc.Filesystem,
-		storeName:     class.storeName,
-		importDataset: pvc.ImportZvol,
+		agentRef:       class.store.Spec.AgentRef,
+		pvcFS:          pvc.Filesystem,
+		storeName:      class.storeName,
+		importDataset:  pvc.ImportZvol,
+		importLV:       pvc.ImportLV,
+		importLVPolicy: pvc.ImportLVPolicy,
 	}, nil
 }
 
@@ -343,7 +355,7 @@ func replayResolution(
 		iscsi.Auth = recorded.Protocol.ISCSI.Auth.DeepCopy()
 	}
 	return &resolution{resolved: exportOnly, pvcFS: pvc.Filesystem, storeName: class.storeName,
-		importDataset: pvc.ImportZvol}, nil
+		importDataset: pvc.ImportZvol, importLV: pvc.ImportLV, importLVPolicy: pvc.ImportLVPolicy}, nil
 }
 
 // resolveClassLayer reads the StorageClass identity parameters and loads the
@@ -431,7 +443,7 @@ func parseLocalAttachParam(scParams map[string]string) (bool, error) {
 		return false, nil
 	}
 	switch raw {
-	case "true":
+	case paramValueTrue:
 		return true, nil
 	case "false":
 		return false, nil

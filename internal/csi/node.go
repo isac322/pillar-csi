@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -72,6 +73,14 @@ const (
 	// dispatch the volume to the correct ProtocolHandler.
 	// Known values: "nvmeof-tcp", "iscsi".
 	VolumeContextKeyProtocolType = "pillar-csi.bhyoo.com/protocol-type"
+
+	// VolumeContextKeyPreserveOriginal pins a volume adopted from a
+	// pre-existing LV whose data must never be rewritten: NodeStageVolume
+	// mounts the existing filesystem as is (never formats, fscks, repairs
+	// or resizes it) and records the pin in the stage state so it survives
+	// restarts and restages that carry no VolumeContext key.
+	// The only value with meaning is "true".
+	VolumeContextKeyPreserveOriginal = "pillar-csi.bhyoo.com/preserve-original"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -319,6 +328,18 @@ type Mounter interface {
 	// options are passed verbatim as -o flags to mount(8); formatOptions are
 	// separate mkfs argv elements (no shell).
 	FormatAndMount(ctx context.Context, source, target, fsType string, options, formatOptions []string) error
+
+	// MountExisting mounts the filesystem already present on source at
+	// target without writing to the device at all: no mkfs, fsck, repair
+	// or resize step is permitted.  It is the mount path of
+	// preserve-original volumes.  The implementation must verify the
+	// recorded filesystem signature: a device with no filesystem answers an
+	// error wrapping ErrNoFilesystem, and one whose filesystem differs from
+	// fsType ("" defaults to ext4 as FormatAndMount does) answers an error
+	// wrapping ErrFilesystemMismatch; nothing may be mounted or written in
+	// either case.  The only data-path effect allowed is what the kernel
+	// itself does in an ordinary mount(2), such as journal replay.
+	MountExisting(ctx context.Context, source, target, fsType string, options []string) error
 
 	// Mount performs a plain mount of source at target with the given type and
 	// options.  Callers use this for bind mounts (source already formatted).
@@ -936,6 +957,15 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 		return nil, status.Errorf(codes.Internal,
 			"NodeStageVolume: read stage state for %q: %v", volumeID, stateErr)
 	}
+
+	// preserve pins the volume as adopted-from-an-existing-LV: its data is
+	// never rewritten, so it mounts through MountExisting instead of the
+	// format-and-mount path.  The flag comes from the VolumeContext key and
+	// from the stage record — the two combine with OR so a record, once
+	// pinned, stays pinned across restages that no longer carry the key
+	// (and across a plugin restart, when the key cannot arrive).
+	preserve := volCtx[VolumeContextKeyPreserveOriginal] == "true" ||
+		(existingState != nil && existingState.PreserveOriginal)
 	if existingState != nil {
 		if protocolType == ProtocolNFS {
 			expected, expectedErr := nfsStateFromParams(attachParams)
@@ -1006,6 +1036,10 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 						"NodeStageVolume: volume %q: %v", volumeID, limitErr)
 				}
 			}
+			// The preserve pin never downgrades: the record keeps its
+			// pinned truth and only ever upgrades false → true when the key
+			// newly arrives on a restage.
+			existingState.PreserveOriginal = preserve
 			// Re-persist the committed record so this success is acknowledged
 			// only after the file and directory syncs complete.
 			rewriteErr := n.writeStageState(volumeID, existingState)
@@ -1154,14 +1188,33 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 			}
 		}
 		if !alreadyMounted {
-			if protocolType == ProtocolNFS {
+			switch {
+			case protocolType == ProtocolNFS:
 				mountErr := n.mounter.Mount(attachResult.MountSource, stagingPath, fsType, mountFlags)
 				if mountErr != nil {
 					return nil, failStaged(status.Errorf(codes.Internal,
 						"NodeStageVolume: mount NFS %q → %q: %v",
 						attachResult.MountSource, stagingPath, mountErr))
 				}
-			} else {
+			case preserve:
+				// A preserve-original volume is mounted as is: its data is
+				// never rewritten, so the mount path is MountExisting —
+				// never the format-and-mount path, which could mkfs a blank
+				// device or fsck an existing filesystem.  A blank or
+				// mismatched signature refuses the stage before anything is
+				// written or mounted.
+				mountErr := n.mounter.MountExisting(ctx, devicePath, stagingPath, fsType, mountFlags)
+				switch {
+				case errors.Is(mountErr, ErrNoFilesystem), errors.Is(mountErr, ErrFilesystemMismatch):
+					return nil, failStaged(status.Errorf(codes.FailedPrecondition,
+						"NodeStageVolume: preserved volume %q cannot mount %q → %q (fs=%s): %v",
+						volumeID, devicePath, stagingPath, fsType, mountErr))
+				case mountErr != nil:
+					return nil, failStaged(status.Errorf(codes.Internal,
+						"NodeStageVolume: mount existing filesystem %q → %q (fs=%s): %v",
+						devicePath, stagingPath, fsType, mountErr))
+				}
+			default:
 				formatErr := n.formatAndMount(ctx, devicePath, stagingPath, fsType, mountFlags, mkfsOpts)
 				if formatErr != nil {
 					return nil, failStaged(status.Errorf(codes.Internal,
@@ -1243,6 +1296,12 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 	stageState.VolumeID = volumeID
 	stageState.StagingPath = stagingPath
 	stageState.PeriodicTrim = periodicTrim
+	// Pin the preserve-original policy with the same write that records the
+	// device path so a restart or a restage without the VolumeContext key
+	// keeps mounting the existing filesystem.  The flag only upgrades
+	// (preserve already folds in the previous record's pin); it is never
+	// cleared.
+	stageState.PreserveOriginal = preserve
 	if stageState.NVMeoF != nil && !local {
 		stageState.NVMeoF.MaxDataTransferSize = &nvmeofMaxTransfer
 	}
@@ -1578,7 +1637,14 @@ func (n *NodeServer) ensureHealthyStagedMount(
 		// historical behavior — bind whatever is there.
 		return nil
 	}
-	return n.repairDeadStagedMount(ctx, volumeID, stagingPath, mounted, state, staged)
+	// The preserve-original pin is resolved in memory before any repair:
+	// the publish VolumeContext key upgrades a record staged before the
+	// pin existed, and a pinned record keeps the pin whatever the request
+	// says, so a dead staged mount of a preserved volume is never repaired
+	// through the format-and-mount path.
+	preserve := volCtx[VolumeContextKeyPreserveOriginal] == "true" ||
+		(state != nil && state.PreserveOriginal)
+	return n.repairDeadStagedMount(ctx, volumeID, stagingPath, mounted, state, staged, preserve)
 }
 
 // repairDeadStagedMount re-mounts the staged filesystem at stagingPath:
@@ -1593,45 +1659,26 @@ func (n *NodeServer) ensureHealthyStagedMount(
 // dead filesystem, so an Internal error asks the CO to retry after
 // teardown.  The re-mount runs formatAndMount, which detects the existing
 // filesystem signature and mounts without mkfs, letting the journal replay
-// — the same repair NodeStageVolume performs.  A filesystem that still
-// fails its health probe after the re-mount is reported rather than
-// silently bound.
+// — the same repair NodeStageVolume performs; a preserve-original volume
+// (preserve, resolved by the caller from the stage record's pin and the
+// request's VolumeContext key) is instead re-mounted through MountExisting
+// so the device can never be formatted or repaired out from under its data.
+// A filesystem that still fails its health probe (or the non-writing probe
+// of a read-only stage) after the re-mount is reported rather than silently
+// bound.
 func (n *NodeServer) repairDeadStagedMount(
 	ctx context.Context, volumeID, stagingPath string, mounted bool,
-	state *nodeStageState, staged stagedFilesystem,
+	state *nodeStageState, staged stagedFilesystem, preserve bool,
 ) error {
 	device := ""
 	if state != nil {
 		device = state.DevicePath
 	}
 	if mounted {
-		others, mountsErr := n.mounter.HasOtherMounts(stagingPath)
-		if mountsErr != nil {
-			return status.Errorf(codes.Internal,
-				"NodePublishVolume: volume %q: check mounts sharing the dead filesystem at %q: %v",
-				volumeID, stagingPath, mountsErr)
-		}
-		if others {
-			return status.Errorf(codes.Internal,
-				"NodePublishVolume: volume %q: staged filesystem at %q is dead but still "+
-					"referenced by other mounts; it cannot be repaired until pod teardown removes them",
-				volumeID, stagingPath)
-		}
-		if device == "" {
-			source, sourceErr := n.mounter.MountSource(stagingPath)
-			if sourceErr != nil {
-				return status.Errorf(codes.Internal,
-					"NodePublishVolume: volume %q: no device path in the stage record and the "+
-						"mountinfo source of %q is unreadable: %v",
-					volumeID, stagingPath, sourceErr)
-			}
-			device = source
-		}
-		unmountErr := n.mounter.Unmount(stagingPath)
-		if unmountErr != nil {
-			return status.Errorf(codes.Internal,
-				"NodePublishVolume: unmount dead staged filesystem %q for volume %q: %v",
-				stagingPath, volumeID, unmountErr)
+		var dropErr error
+		device, dropErr = n.dropDeadStagedMountForRepair(volumeID, stagingPath, device)
+		if dropErr != nil {
+			return dropErr
 		}
 	}
 	if device == "" {
@@ -1640,11 +1687,35 @@ func (n *NodeServer) repairDeadStagedMount(
 				"record has no device path to re-mount",
 			volumeID, stagingPath, map[bool]string{true: "dead", false: "not mounted"}[mounted])
 	}
-	formatErr := n.formatAndMount(ctx, device, stagingPath, staged.fsType, staged.mountFlags, staged.mkfsOptions)
-	if formatErr != nil {
-		return status.Errorf(codes.Internal,
-			"NodePublishVolume: re-mount staged filesystem %q -> %q for volume %q: %v",
-			device, stagingPath, volumeID, formatErr)
+	if preserve {
+		// A preserve-original volume re-mounts its existing
+		// filesystem as is: never formatAndMount, which could mkfs a device
+		// whose signature was wiped or run fsck on the one it finds.
+		mountErr := n.mounter.MountExisting(ctx, device, stagingPath, staged.fsType, staged.mountFlags)
+		if mountErr != nil {
+			return status.Errorf(codes.Internal,
+				"NodePublishVolume: re-mount preserved staged filesystem %q -> %q for volume %q: %v",
+				device, stagingPath, volumeID, mountErr)
+		}
+	} else {
+		formatErr := n.formatAndMount(ctx, device, stagingPath, staged.fsType, staged.mountFlags, staged.mkfsOptions)
+		if formatErr != nil {
+			return status.Errorf(codes.Internal,
+				"NodePublishVolume: re-mount staged filesystem %q -> %q for volume %q: %v",
+				device, stagingPath, volumeID, formatErr)
+		}
+	}
+	// A re-mounted read-only stage is verified with the non-writing probe:
+	// the write probe answers EROFS there — the expected outcome of a
+	// read-only mount, not the remount-ro death signature.
+	if slices.Contains(staged.mountFlags, "ro") {
+		readErr := n.mounter.CheckMountReadable(stagingPath)
+		if readErr != nil {
+			return status.Errorf(codes.Internal,
+				"NodePublishVolume: re-mounted staged filesystem %q for volume %q is not usable: %v",
+				stagingPath, volumeID, readErr)
+		}
+		return nil
 	}
 	healthErr := n.mounter.CheckMountHealth(stagingPath)
 	if healthErr != nil {
@@ -1653,6 +1724,43 @@ func (n *NodeServer) repairDeadStagedMount(
 				"health probe: %v", stagingPath, volumeID, healthErr)
 	}
 	return nil
+}
+
+// dropDeadStagedMountForRepair unmounts the dead staged filesystem at
+// stagingPath ahead of repairDeadStagedMount's re-mount and returns the
+// device to re-mount: device when the stage record carries one, otherwise
+// the dead mount's mountinfo source.  A dead mount still referenced by
+// other mounts is never unmounted.
+func (n *NodeServer) dropDeadStagedMountForRepair(volumeID, stagingPath, device string) (string, error) {
+	others, mountsErr := n.mounter.HasOtherMounts(stagingPath)
+	if mountsErr != nil {
+		return "", status.Errorf(codes.Internal,
+			"NodePublishVolume: volume %q: check mounts sharing the dead filesystem at %q: %v",
+			volumeID, stagingPath, mountsErr)
+	}
+	if others {
+		return "", status.Errorf(codes.Internal,
+			"NodePublishVolume: volume %q: staged filesystem at %q is dead but still "+
+				"referenced by other mounts; it cannot be repaired until pod teardown removes them",
+			volumeID, stagingPath)
+	}
+	if device == "" {
+		source, sourceErr := n.mounter.MountSource(stagingPath)
+		if sourceErr != nil {
+			return "", status.Errorf(codes.Internal,
+				"NodePublishVolume: volume %q: no device path in the stage record and the "+
+					"mountinfo source of %q is unreadable: %v",
+				volumeID, stagingPath, sourceErr)
+		}
+		device = source
+	}
+	unmountErr := n.mounter.Unmount(stagingPath)
+	if unmountErr != nil {
+		return "", status.Errorf(codes.Internal,
+			"NodePublishVolume: unmount dead staged filesystem %q for volume %q: %v",
+			stagingPath, volumeID, unmountErr)
+	}
+	return device, nil
 }
 
 // checkUnstagedWithoutState verifies that nothing is still mounted for a
@@ -1858,29 +1966,22 @@ func (n *NodeServer) NodePublishVolume(
 		return nil, err
 	}
 
+	err = n.pinPreserveFromPublish(volumeID, volCtx)
+	if err != nil {
+		return nil, err
+	}
+
 	probeHealth, probePath, probeErr := nodePublishProbePlan(volumeID, stagingPath, targetPath, req)
 	if probeErr != nil {
 		return nil, probeErr
 	}
 
-	alreadyMounted, mountCheckErr := n.mounter.MountEntryExists(targetPath)
-	if mountCheckErr != nil {
-		return nil, status.Errorf(codes.Internal,
-			"NodePublishVolume: check if %q is mounted: %v", targetPath, mountCheckErr)
+	published, existingErr := n.publishedByExistingBind(volumeID, targetPath, probePath, probeHealth)
+	if existingErr != nil {
+		return nil, existingErr
 	}
-	if alreadyMounted {
-		usable, usableErr := n.ensureUsablePublishBind(volumeID, targetPath, probePath, probeHealth)
-		if usableErr != nil {
-			return nil, usableErr
-		}
-		if usable {
-			return &csi.NodePublishVolumeResponse{}, nil
-		}
-		// The dead bind was dropped; re-bind below so a staged filesystem
-		// that was repaired since is re-published.  A still-dead staged
-		// filesystem fails the post-bind probe.  The SM stays NodePublished
-		// (it is a per-volume aggregate and other targets may still be
-		// bound); NodeStageVolume accepts that state for repair (issue #168).
+	if published {
+		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
 	fsType, mountOptions, mountErr := resolveNodePublishMount(req)
@@ -1899,18 +2000,9 @@ func (n *NodeServer) NodePublishVolume(
 	}
 
 	if probeHealth {
-		// Verify the fresh bind: bind-mounting a dead staged filesystem
-		// succeeds on kernels that accept it, so mounting is not proof of
-		// health (issue #168).  Report the dead filesystem instead of
-		// publishing it; kubelet retries while NodeStageVolume re-stages.
-		// Read-only binds are probed through the staged mount (probePath).
-		healthErr := n.mounter.CheckMountHealth(probePath)
-		if healthErr != nil {
-			cleanupErr := n.mounter.Unmount(targetPath)
-			//nolint:wrapcheck // both operands are annotated; Join preserves the gRPC code
-			return nil, errors.Join(status.Errorf(codes.Internal,
-				"NodePublishVolume: bind-mounted filesystem at %q for volume %q failed its health probe: %v",
-				targetPath, volumeID, healthErr), cleanupErr)
+		err = n.verifyFreshPublishBind(volumeID, targetPath, probePath)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -1918,6 +2010,75 @@ func (n *NodeServer) NodePublishVolume(
 		n.sm.ForceState(volumeID, StateNodePublished)
 	}
 	return &csi.NodePublishVolumeResponse{}, nil
+}
+
+// publishedByExistingBind reports whether targetPath already holds a usable
+// publish bind, in which case NodePublishVolume returns success as is.  A
+// bind of a dead filesystem is dropped by ensureUsablePublishBind and
+// reported as not published so the caller re-binds: a staged filesystem
+// that was repaired since is re-published, and a still-dead one fails the
+// post-bind probe.  The SM stays NodePublished (it is a per-volume
+// aggregate and other targets may still be bound); NodeStageVolume accepts
+// that state for repair (issue #168).
+func (n *NodeServer) publishedByExistingBind(
+	volumeID, targetPath, probePath string, probeHealth bool,
+) (bool, error) {
+	alreadyMounted, mountCheckErr := n.mounter.MountEntryExists(targetPath)
+	if mountCheckErr != nil {
+		return false, status.Errorf(codes.Internal,
+			"NodePublishVolume: check if %q is mounted: %v", targetPath, mountCheckErr)
+	}
+	if !alreadyMounted {
+		return false, nil
+	}
+	return n.ensureUsablePublishBind(volumeID, targetPath, probePath, probeHealth)
+}
+
+// verifyFreshPublishBind health-probes a just-made publish bind: bind-mounting
+// a dead staged filesystem succeeds on kernels that accept it, so mounting is
+// not proof of health (issue #168).  The dead filesystem is reported, and the
+// bind at targetPath removed, instead of publishing it; kubelet retries while
+// NodeStageVolume re-stages.  Read-only binds are probed through the staged
+// mount (probePath).
+func (n *NodeServer) verifyFreshPublishBind(volumeID, targetPath, probePath string) error {
+	healthErr := n.mounter.CheckMountHealth(probePath)
+	if healthErr == nil {
+		return nil
+	}
+	cleanupErr := n.mounter.Unmount(targetPath)
+	//nolint:wrapcheck // both operands are annotated; Join preserves the gRPC code
+	return errors.Join(status.Errorf(codes.Internal,
+		"NodePublishVolume: bind-mounted filesystem at %q for volume %q failed its health probe: %v",
+		targetPath, volumeID, healthErr), cleanupErr)
+}
+
+// pinPreserveFromPublish durably upgrades the stage record of volumeID to
+// preserve-original when the publish VolumeContext carries the key and the
+// record is not pinned yet (a volume staged before the pin existed).  It
+// runs under the volume lock and before any dead-mount repair, so a later
+// plugin restart or a request without the key still finds the pin: expand
+// is refused and repairs never take the format-and-mount path.  Every other
+// record field is preserved by the rewrite.  Requests without the key, a
+// missing record and an already pinned record are left untouched.
+func (n *NodeServer) pinPreserveFromPublish(volumeID string, volCtx map[string]string) error {
+	if volCtx[VolumeContextKeyPreserveOriginal] != "true" {
+		return nil
+	}
+	state, stateErr := n.readStageState(volumeID)
+	if stateErr != nil {
+		return status.Errorf(codes.Internal,
+			"NodePublishVolume: read stage state for %q: %v", volumeID, stateErr)
+	}
+	if state == nil || state.PreserveOriginal {
+		return nil
+	}
+	state.PreserveOriginal = true
+	writeErr := n.writeStageState(volumeID, state)
+	if writeErr != nil {
+		return status.Errorf(codes.Internal,
+			"NodePublishVolume: persist preserve-original pin for %q: %v", volumeID, writeErr)
+	}
+	return nil
 }
 
 // nodePublishProbePlan decides whether NodePublishVolume verifies mount

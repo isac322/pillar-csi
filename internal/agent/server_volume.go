@@ -51,7 +51,8 @@ func (s *Server) CreateVolume(
 		devicePath string
 		allocated  int64
 	)
-	err = s.fenced(ctx, req.GetVolumeId(), req.GetFence(), fenceGrant, func() error {
+	volumeID := req.GetVolumeId()
+	err = s.fencedChecked(ctx, volumeID, req.GetFence(), fenceGrant, refusePinnedCreate(volumeID), func() error {
 		var createErr error
 		devicePath, allocated, createErr = b.Create(
 			ctx,
@@ -68,6 +69,34 @@ func (s *Server) CreateVolume(
 		DevicePath:    devicePath,
 		CapacityBytes: allocated,
 	}, nil
+}
+
+// refusePinnedCreate refuses CreateVolume for a volume ID that pins an
+// adopted LV, whatever its lifecycle state or policy: lvcreate's
+// "already exists" idempotence would otherwise re-adopt the pre-existing LV
+// as a newly provisioned managed volume.
+func refusePinnedCreate(volumeID string) func(fencingMark) error {
+	return func(stored fencingMark) error {
+		if stored.LVMSource == nil {
+			return nil
+		}
+		return status.Errorf(codes.FailedPrecondition,
+			"CreateVolume %q: the volume ID is pinned to adopted LV %s/%s (lv_uuid %s); it is never provisioned",
+			volumeID, stored.LVMSource.VolumeGroup, stored.LVMSource.LogicalVolume, stored.LVMSource.LogicalVolumeUUID)
+	}
+}
+
+// refusePreserved refuses op on a volume ID pinned PreserveOriginal: the
+// adopted LV's data is never destroyed or resized by the agent.
+func refusePreserved(op, volumeID string) func(fencingMark) error {
+	return func(stored fencingMark) error {
+		if !stored.PreserveOriginal {
+			return nil
+		}
+		return status.Errorf(codes.FailedPrecondition,
+			"%s %q: the adopted LV is pinned PreserveOriginal; the agent never deletes or resizes it "+
+				"(release the lifecycle with ReleaseVolume instead)", op, volumeID)
+	}
 }
 
 // checkBackendType rejects a volume RPC whose backend_type is missing, names a
@@ -165,13 +194,14 @@ func (s *Server) DeleteVolume(
 			return nil, protocolRPCError(unexportErr)
 		}
 	}
-	err = s.fenced(ctx, req.GetVolumeId(), req.GetFence(), fenceDestroy, func() error {
-		deleteErr := b.Delete(ctx, req.GetVolumeId())
-		if deleteErr != nil {
-			return status.Errorf(codes.Internal, "DeleteVolume: %v", deleteErr)
-		}
-		return nil
-	})
+	err = s.fencedChecked(ctx, req.GetVolumeId(), req.GetFence(), fenceDestroy,
+		refusePreserved("DeleteVolume", req.GetVolumeId()), func() error {
+			deleteErr := b.Delete(ctx, req.GetVolumeId())
+			if deleteErr != nil {
+				return status.Errorf(codes.Internal, "DeleteVolume: %v", deleteErr)
+			}
+			return nil
+		})
 	if err != nil {
 		return nil, err
 	}
@@ -195,21 +225,22 @@ func (s *Server) ExpandVolume(
 		return nil, checkErr
 	}
 	var allocated int64
-	err = s.fenced(ctx, req.GetVolumeId(), req.GetFence(), fenceGrant, func() error {
-		var expandErr error
-		allocated, expandErr = b.Expand(ctx, req.GetVolumeId(), req.GetRequestedBytes())
-		if expandErr != nil {
-			capErr := insufficientCapacityStatus("ExpandVolume", expandErr)
-			if capErr != nil {
-				return capErr
+	err = s.fencedChecked(ctx, req.GetVolumeId(), req.GetFence(), fenceGrant,
+		refusePreserved("ExpandVolume", req.GetVolumeId()), func() error {
+			var expandErr error
+			allocated, expandErr = b.Expand(ctx, req.GetVolumeId(), req.GetRequestedBytes())
+			if expandErr != nil {
+				capErr := insufficientCapacityStatus("ExpandVolume", expandErr)
+				if capErr != nil {
+					return capErr
+				}
+				return status.Errorf(codes.Internal, "ExpandVolume: %v", expandErr)
 			}
-			return status.Errorf(codes.Internal, "ExpandVolume: %v", expandErr)
-		}
-		if b.Type() == agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET {
-			return nil
-		}
-		return s.revalidateNamespace(ctx, req.GetVolumeId())
-	})
+			if b.Type() == agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET {
+				return nil
+			}
+			return s.revalidateNamespace(ctx, req.GetVolumeId())
+		})
 	if err != nil {
 		return nil, err
 	}

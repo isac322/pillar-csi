@@ -329,6 +329,30 @@ _Appears in:_
 | `thin` | LVMProvisioningModeThin creates thin-provisioned logical volumes inside a<br />pre-existing thin pool LV (lvcreate -V &lt;size>b `--thinpool` &lt;pool>).<br /> |
 
 
+#### LVMSourceRef
+
+
+
+LVMSourceRef pins the pre-existing LVM logical volume an import-lv volume
+adopted.  It is set once at the first CreateVolume attempt and is
+immutable.  The UUIDs are the stable identity: a VG or LV renamed or
+recreated under the same name never matches.
+
+
+
+_Appears in:_
+- [PillarVolumeStateSpec](#pillarvolumestatespec)
+- [VolumeRecoveryIntent](#volumerecoveryintent)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `volumeGroup` _string_ | volumeGroup is the LVM volume group name of the adopted LV. |  | MinLength: 1 <br />Required <br /> |
+| `logicalVolume` _string_ | logicalVolume is the LVM logical volume name of the adopted LV. |  | MinLength: 1 <br />Required <br /> |
+| `volumeGroupUUID` _string_ | volumeGroupUUID is the LVM UUID of the volume group (`vgs -o vg_uuid`). |  | Pattern: `^[A-Za-z0-9]\{6\}(-[A-Za-z0-9]\{4\})\{5\}-[A-Za-z0-9]\{6\}$` <br />Required <br /> |
+| `logicalVolumeUUID` _string_ | logicalVolumeUUID is the LVM UUID of the logical volume<br />(`lvs -o lv_uuid`). |  | Pattern: `^[A-Za-z0-9]\{6\}(-[A-Za-z0-9]\{4\})\{5\}-[A-Za-z0-9]\{6\}$` <br />Required <br /> |
+| `preserveOriginal` _boolean_ | preserveOriginal selects the adoption policy.  When true, DeleteVolume<br />only releases the LV (never lvremove), expansion is refused, and the<br />node never formats, fscks or resizes it.  When false (policy Managed)<br />the adopted LV becomes a normal managed volume. |  | Required <br /> |
+
+
 #### NFSConfig
 
 
@@ -821,9 +845,10 @@ The phases map to VolumeState constants in the internal/csi package:
 	PillarVolumeStatePhaseNodeStagePartial → StateNodeStagePartial
 	PillarVolumeStatePhaseNodeStaged       → StateNodeStaged
 	PillarVolumeStatePhaseNodePublished    → StateNodePublished
+	PillarVolumeStatePhaseRecoveryPending  → no VolumeState mapping (non-serving recovery intent)
 
 _Validation:_
-- Enum: [Provisioning CreatePartial Ready ControllerPublished NodeStagePartial NodeStaged NodePublished]
+- Enum: [Provisioning CreatePartial Ready ControllerPublished NodeStagePartial NodeStaged NodePublished RecoveryPending]
 
 _Appears in:_
 - [PillarVolumeStateStatus](#pillarvolumestatestatus)
@@ -837,6 +862,7 @@ _Appears in:_
 | `NodeStagePartial` | PillarVolumeStatePhaseNodeStagePartial means NodeStageVolume partially<br />succeeded: the NVMe-oF connect step completed but the mount step<br />failed.  Corresponds to StateNodeStagePartial in VolumeStateMachine.<br /> |
 | `NodeStaged` | PillarVolumeStatePhaseNodeStaged means NodeStageVolume has succeeded.<br />The volume is formatted and mounted at the CSI staging target path.<br /> |
 | `NodePublished` | PillarVolumeStatePhaseNodePublished means NodePublishVolume has succeeded.<br />The staging path has been bind-mounted into a pod's target path.<br /> |
+| `RecoveryPending` | PillarVolumeStatePhaseRecoveryPending means the volume record exists<br />only to receive an operator-authorized ownership transfer (spec.recovery<br />is set).  From its initial creation the object is non-serving — CSI<br />publish, stage, expand and resync operations refuse it — and non-reapable:<br />the abandoned-volume reaper must not release or delete it.  The phase<br />advances only after the agent's TransferVolumeOwnership commits and the<br />transferred mark's recorded uid/generation and authorization digest agree<br />with spec.recovery.<br /> |
 
 
 #### PillarVolumeStateSpec
@@ -862,7 +888,9 @@ _Appears in:_
 | `capacityBytes` _integer_ | capacityBytes is the requested volume size in bytes. |  | Minimum: 0 <br />Optional <br /> |
 | `claimRef` _[VolumeClaimRef](#volumeclaimref)_ | claimRef identifies the PersistentVolumeClaim this volume was<br />provisioned for, when the provisioner named it (external-provisioner<br />`--extra-create-metadata`); its UID is read from the claim at the first<br />CreateVolume.  The controller uses it to recognize a provisioning<br />attempt that was abandoned because its claim was removed before any<br />PersistentVolume was created.  Without it the claim UID is derived from<br />the default "pvc-&lt;claim UID>" volume name. |  | Optional <br /> |
 | `importedFrom` _string_ | importedFrom records the full source dataset name when the volume was<br />adopted from an existing ZFS zvol via the<br />"pillar-csi.bhyoo.com/import-zvol" PVC annotation (e.g.<br />"hot-data/k8s/pvc-abc123"), instead of being created empty.  The field<br />is informational — the imported zvol keeps its data but becomes a<br />normal volume: DeleteVolume destroys it, and the annotation has no<br />effect once the volume exists. |  | Optional <br /> |
+| `lvmSource` _[LVMSourceRef](#lvmsourceref)_ | lvmSource pins the pre-existing LVM logical volume this volume adopted<br />via the "pillar-csi.bhyoo.com/import-lv" PVC annotation, by name and<br />by stable VG/LV UUIDs, together with the adoption policy.  It is set<br />once at the first CreateVolume attempt and is immutable: it can be<br />neither changed nor added or removed after creation.  Absent for<br />volumes created empty and for zvol imports (see importedFrom), which<br />keep their existing semantics. |  | Optional <br /> |
 | `resolved` _[ResolvedVolumeConfig](#resolvedvolumeconfig)_ | resolved is the effective per-volume configuration resolved at the<br />first CreateVolume attempt from the PillarStore, PillarProtocol,<br />PillarStorageClass overrides, StorageClass parameter documents and PVC<br />annotations (in that precedence order).  It is replayed on every retry<br />so the volume keeps the settings it was provisioned with even when the<br />claim or the CRDs behind the overrides no longer exist. |  | Optional <br /> |
+| `recovery` _[VolumeRecoveryIntent](#volumerecoveryintent)_ | recovery declares that this volume record exists solely to receive an<br />operator-authorized ownership transfer of a pre-existing adopted<br />backend resource (see VolumeRecoveryIntent).  It is set at creation<br />for a volume born in phase RecoveryPending and cannot be added or<br />removed after creation.  Mutually exclusive with lvmSource and<br />importedFrom — a recovery volume is not itself an import.<br />The fields the operator cannot know at create time — newVolumeUID<br />(this object's own metadata.uid), authorization and<br />authorizationDigest — are write-once: they may be empty at create and<br />populated exactly once afterwards; every other field is immutable<br />from creation. |  | Optional <br /> |
 
 
 #### PillarVolumeStateStatus
@@ -878,7 +906,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `phase` _[PillarVolumeStatePhase](#pillarvolumestatephase)_ | phase is the current lifecycle phase of the volume.<br />See PillarVolumeStatePhase for the full state diagram. |  | Enum: [Provisioning CreatePartial Ready ControllerPublished NodeStagePartial NodeStaged NodePublished] <br />Optional <br /> |
+| `phase` _[PillarVolumeStatePhase](#pillarvolumestatephase)_ | phase is the current lifecycle phase of the volume.<br />See PillarVolumeStatePhase for the full state diagram. |  | Enum: [Provisioning CreatePartial Ready ControllerPublished NodeStagePartial NodeStaged NodePublished RecoveryPending] <br />Optional <br /> |
 | `partialFailure` _[PartialFailureInfo](#partialfailureinfo)_ | partialFailure is populated whenever the volume is in a partial-failure<br />phase (CreatePartial, NodeStagePartial).  It records what succeeded and<br />what failed so that the recovery controller can take the minimum<br />necessary corrective action.  Cleared when the partial failure is<br />resolved. |  | Optional <br /> |
 | `backendDevicePath` _string_ | backendDevicePath is the device path returned by agent.CreateVolume<br />(e.g. "/dev/zvol/pool/pvc-abc123").  Persisted when the volume enters<br />the CreatePartial phase so that a retry of CreateVolume can skip the<br />backend-creation step and call agent.ExportVolume directly, using this<br />stored path rather than re-querying the agent.<br />Cleared when the volume reaches the Ready phase. |  | Optional <br /> |
 | `importAcquired` _boolean_ | importAcquired records that agent.ImportVolume succeeded for a<br />spec.importedFrom volume: the agent durably adopted the pre-existing<br />zvol into this lifecycle.  While it is unset the lifecycle cannot prove<br />the agent ever took ownership, so ReapAbandonedVolume and DeleteVolume<br />end the lifecycle with agent.ReleaseVolume — which retires it at the<br />agent without touching the zvol — instead of UnexportVolume and<br />DeleteVolume, and ControllerExpandVolume and ControllerPublishVolume<br />refuse it: a refused or lost-response import that was torn down,<br />resized or exposed anyway would harm a zvol this driver never owned. |  | Optional <br /> |
@@ -1074,7 +1102,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `uid` _string_ | uid is the UID of the PersistentVolumeClaim. |  | MinLength: 1 <br />Required <br /> |
 | `namespace` _string_ | namespace is the namespace of the PersistentVolumeClaim. |  | Optional <br /> |
-| `name` _string_ | name is the name of the PersistentVolumeClaim. |  | Optional <br /> |
+| `name` _string_ |  |  |  |
 
 
 #### VolumeExportInfo
@@ -1148,6 +1176,49 @@ _Appears in:_
 | `readonly` _boolean_ | readonly mirrors ControllerPublishVolumeRequest.readonly. |  | Optional <br /> |
 | `revoking` _boolean_ | revoking is set by ControllerUnpublishVolume in the same update that<br />allocates the fencing generation for the revoke, and the record is<br />removed once the agent revoked the initiator.  A revoking record still<br />occupies the volume for exclusivity (fail-closed) but is not part of the<br />initiator set the target should grant: state recovery must exclude it,<br />and a publish to the same node is rejected until the unpublish finishes. |  | Optional <br /> |
 | `local` _boolean_ | local is true when the publication attaches the backend device<br />directly on the storage node instead of through the network export<br />(localAttach enabled and nodeID is the node of the volume's<br />PillarAgent).  A local publication grants no initiator: it is excluded<br />from the export's ACL set and its unpublish revokes nothing on the<br />target. |  | Optional <br /> |
+
+
+#### VolumeRecoveryIntent
+
+
+
+VolumeRecoveryIntent pins the operator-declared recovery intent for a
+volume born in phase RecoveryPending: which retired lifecycle's adopted
+backend resource transfers into this record, under which policy, and
+bound to which signed RecoveryAuthorization.
+
+The operator cannot know this record's metadata.uid or produce the
+authorization before the record exists, so intent is declared in two
+steps: oldVolumeUID, oldGeneration, source and newGeneration are set at
+creation and immutable; newVolumeUID (which MUST equal metadata.uid) and
+authorizationDigest may be empty at creation and are write-once
+afterwards — each can be set exactly once and then never changed or
+cleared.
+
+Authorization (the raw serialized grant) is deliberately not
+compared by CEL: Kubernetes CEL cannot reliably compare byte-format
+fields across updates, and the grant's identity is already pinned by the
+write-once authorizationDigest.  The controller requires the digest of
+whatever authorization bytes it uses to equal authorizationDigest, and
+the agent verifies the grant's signature against its trust anchor, so a
+re-supplied or different payload can never authorize anything the
+digest does not name.  The controller performs the transfer only once
+all fields are populated and consistent.
+
+
+
+_Appears in:_
+- [PillarVolumeStateSpec](#pillarvolumestatespec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `oldVolumeUID` _string_ | oldVolumeUID is the UID of the retired PillarVolumeState lifecycle<br />whose backend resource is recovered (the fence mark's current<br />volume_uid).  Immutable from creation. |  | MinLength: 1 <br />Required <br /> |
+| `oldGeneration` _integer_ | oldGeneration is the exact publication generation recorded in the<br />old lifecycle's fence mark.  Exact equality required.  Immutable<br />from creation. |  | Minimum: 0 <br />Required <br /> |
+| `source` _[LVMSourceRef](#lvmsourceref)_ | source pins the adopted LVM logical volume being recovered by name<br />and stable VG/LV UUIDs; its preserveOriginal is the recovery<br />preserve policy.  Immutable from creation. |  | Required <br /> |
+| `newVolumeUID` _string_ | newVolumeUID is the destination lifecycle UID; when set it MUST<br />equal this PillarVolumeState's metadata.uid.  It is unknowable at<br />create (the API server assigns metadata.uid), so it may be empty at<br />creation and is write-once once populated.  The transfer requires<br />it to be set. |  | MinLength: 1 <br />Optional <br /> |
+| `newGeneration` _integer_ | newGeneration is the generation the agent writes into the<br />transferred fence mark for the new lifecycle.  Immutable from<br />creation. |  | Minimum: 0 <br />Required <br /> |
+| `authorization` _integer array_ | authorization is the serialized RecoveryAuthorization protobuf (the<br />operator-signed grant).  It may be empty at creation — the operator<br />can only sign once metadata.uid exists.  It is not write-once at the<br />schema level (CEL does not compare these raw bytes); it may be<br />re-supplied on retry, but only bytes whose canonical digest equals<br />authorizationDigest are ever used, and the agent verifies the<br />signature.  When absent at transfer time the authorization must be<br />supplied out-of-band, with authorizationDigest pinning its identity. |  | Optional <br /> |
+| `authorizationDigest` _string_ | authorizationDigest is the lowercase hex SHA-256 of the<br />RecoveryAuthorization's deterministic protobuf encoding with its<br />signature field cleared.  It pins the exact grant this record may<br />consume; the fence mark stores the same digest after transfer.  It<br />may be empty at creation and is write-once once populated.  The<br />transfer requires it to be set. |  | MaxLength: 64 <br />MinLength: 64 <br />Pattern: `^[0-9a-f]\{64\}$` <br />Optional <br /> |
 
 
 #### ZFSBackendConfig

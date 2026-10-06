@@ -58,6 +58,20 @@ func (m *fakeMounter) FormatAndMount(_ context.Context, source, target, _ string
 	return nil
 }
 
+// MountExisting records the mount like FormatAndMount without any format
+// step: sanity volumes are fresh managed volumes, so the fake never models
+// a preserve-original signature.
+func (m *fakeMounter) MountExisting(_ context.Context, source, target, _ string, _ []string) error {
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mounted[target] = true
+	m.source[target] = source
+	return nil
+}
+
 func (m *fakeMounter) Mount(source, target, _ string, _ []string) error {
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return err

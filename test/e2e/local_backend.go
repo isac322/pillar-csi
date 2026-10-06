@@ -1286,6 +1286,7 @@ type localMockMounter struct {
 
 	formatAndMountCalls []localFormatAndMountCall
 	mountCalls          []localMountCall
+	mountExistingCalls  []localMountCall
 	unmountCalls        []string
 }
 
@@ -1314,6 +1315,22 @@ var _ csidrv.Mounter = (*localMockMounter)(nil)
 
 func (m *localMockMounter) FormatAndMount(_ context.Context, source, target, fsType string, options, _ []string) error {
 	m.formatAndMountCalls = append(m.formatAndMountCalls, localFormatAndMountCall{source: source, target: target, fsType: fsType, options: slices.Clone(options)})
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		return err
+	}
+	if m.formatAndMountErr != nil {
+		return m.formatAndMountErr
+	}
+	m.mounted[target] = true
+	m.mountSource[target] = source
+	return nil
+}
+
+// MountExisting records a preserve-original mount: it never formats, so it
+// is recorded separately from formatAndMountCalls and shares the mount
+// failure injection of FormatAndMount.
+func (m *localMockMounter) MountExisting(_ context.Context, source, target, fsType string, options []string) error {
+	m.mountExistingCalls = append(m.mountExistingCalls, localMountCall{source: source, target: target, fsType: fsType, options: slices.Clone(options)})
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return err
 	}
