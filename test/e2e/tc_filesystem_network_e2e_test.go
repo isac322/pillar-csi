@@ -73,6 +73,27 @@ else:
 		n.denyUnpublishedClient(ctx)
 		n.mustPython(ctx, "writer-1", `import os; assert not os.path.exists('/data/unauthorized'); assert not os.path.exists('/data/root-must-not-write')`)
 		n.observeProxy(ctx)
+		// "root" shares Clients[0]'s publish record with writer-0. Deleting it
+		// first exercises the same-node peer path: writer-0's target entry and
+		// mount must survive, and AfterDelete proves the surviving peer still
+		// performs real fsynced I/O after each removal.
+		for j, pod := range n.Pods {
+			if pod == "root" && j > 0 {
+				n.Pods[0], n.Pods[j] = n.Pods[j], n.Pods[0]
+				n.PodUIDs[0], n.PodUIDs[j] = n.PodUIDs[j], n.PodUIDs[0]
+				n.PodNodes[0], n.PodNodes[j] = n.PodNodes[j], n.PodNodes[0]
+			}
+		}
+		Expect(n.Pods[0]).To(Equal("root"))
+		n.AfterDelete = func(hookCtx context.Context, remaining []string) {
+			for _, peer := range remaining {
+				if peer == "root" {
+					continue // root-squashed peer is mount-witnessed, not writable
+				}
+				Expect(n.mustPython(hookCtx, peer, fmt.Sprintf(`import os; f=open('/data/peer-alive-%s.bin','wb'); f.write(b'alive'); f.flush(); os.fsync(f.fileno()); f.close(); print(open('/data/peer-alive-%s.bin').read())`, peer, peer))).To(Equal("alive"))
+			}
+		}
+		n.unpublishAll(ctx)
 	})
 
 	It("[TC-E71.20] enforces real two-node POSIX byte-range locking and releases locks for the next consumer", func() {
@@ -142,7 +163,7 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 		n.unpublishAll(ctx)
 	})
 
-	It("[TC-E71.22] recovers staged remote source and data after the installed node plugin restarts", func() {
+	It("[TC-E71.22] recovers published remote mounts and data after the installed node plugin restarts", func() {
 		n := newFilesystemNetworkFixture(ctx, "E71.22", "zfs")
 		n.ownerConsumers(ctx)
 		n.exchange(ctx)
@@ -216,7 +237,7 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 		Expect(after).To(Equal(before))
 	})
 
-	It("[TC-E71.25] protects publications from deletion and cleans every client stage and owned export without deleting the source", func() {
+	It("[TC-E71.25] protects publications from deletion and cleans every client publication and owned export without deleting the source", func() {
 		n := newFilesystemNetworkFixture(ctx, "E71.25", "directory")
 		n.ownerConsumers(ctx)
 		n.exchange(ctx)
@@ -270,7 +291,7 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 		Expect(err).NotTo(HaveOccurred())
 		n.apply(ctx, string(data))
 		n.Must(ctx, "-n", n.Namespace, "wait", "--for=jsonpath={.status.phase}=Bound", "pvc/"+n.PVCName, "--timeout=3m")
-		n.Pods = nil
+		n.Pods, n.PodUIDs, n.PodNodes = nil, nil, nil
 		n.ownerConsumers(ctx)
 		n.verifyExchange(ctx)
 		Expect(n.state(ctx).UID).To(Equal(state.UID))

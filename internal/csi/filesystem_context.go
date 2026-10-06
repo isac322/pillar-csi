@@ -75,7 +75,7 @@ func marshalFilesystemAdoption(a *agentv1.FilesystemAdoption) (string, error) {
 }
 
 // addFilesystemPublishContext writes the immutable filesystem adoption record
-// used by NodeStageVolume. A non-filesystem lifecycle is a no-op. ProxyPath
+// used by the file driver's NodePublishVolume. A non-filesystem lifecycle is a no-op. ProxyPath
 // is populated only by same-node SetLocalAttach; an empty path never causes the
 // node to infer a source from volume_id or another user field.
 func addFilesystemPublishContext(

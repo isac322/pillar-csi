@@ -298,6 +298,22 @@ func (m *mockMounter) MountSource(target string) (string, error) {
 	return m.mountSource[target], nil
 }
 
+// ObserveMount mirrors mountinfo plus statfs: the recorded source, the
+// filesystem type of the latest mount at target and its read-only flag.
+func (m *mockMounter) ObserveMount(target string) (MountObservation, error) {
+	if !m.mountedPaths[target] {
+		return MountObservation{}, fmt.Errorf("%q is not a mount point", target)
+	}
+	fsType := ""
+	for _, call := range slices.Backward(m.mountCalls) {
+		if call.target == target {
+			fsType = call.fsType
+			break
+		}
+	}
+	return MountObservation{Source: m.mountSource[target], FsType: fsType, ReadOnly: m.mountRO[target]}, nil
+}
+
 // Compile-time interface check.
 var _ Mounter = (*mockMounter)(nil)
 

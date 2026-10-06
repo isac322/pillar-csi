@@ -266,6 +266,13 @@ func (s *ControllerServer) LoadStateFromPillarVolumeStates(ctx context.Context) 
 		if state == StateCreated && len(pv.Status.PublishedNodes) > 0 {
 			state = StateControllerPublished
 		}
+		// The file driver never stages: a stage phase recorded for one of
+		// its volumes can only mean it was controller-published, which is
+		// the state its direct NodePublishVolume follows.
+		if s.effectiveDriverName() == v1alpha1.FileCSIDriver &&
+			(state == StateNodeStagePartial || state == StateNodeStaged) {
+			state = StateControllerPublished
+		}
 		if state != StateNonExistent {
 			s.sm.ForceState(pv.Spec.VolumeID, state)
 		}

@@ -852,6 +852,21 @@ correctly rather than leaving the node in an indeterminate mount state.
 
 ---
 
+### 5.14 File Profile Direct Publish (cross-cutting within CSI Node)
+
+The `files.pillar-csi.bhyoo.com` node profile does not stage. It advertises
+only `GET_VOLUME_STATS`, so the kubelet calls `NodePublishVolume` without a
+staging path and the node mounts each pod target directly. The legacy
+`pillar-csi.bhyoo.com` profile keeps `STAGE_UNSTAGE_VOLUME`, and the control
+case proves that its publish still requires a stage.
+
+| # | Test Function | Description | Setup | Expected Outcome |
+|---|--------------|-------------|-------|-----------------|
+| 53 | `TestCSINode_FileProfileDirectPublishLifecycle` | File profile end to end as kubelet drives a NoStage driver: capabilities, Unimplemented stage, two direct publishes (rw + ro), stats after a restart, per-target unpublish, last-target record cleanup | `NodeServer` with `WithDriverName("files.pillar-csi.bhyoo.com")`, a temp `stateDir` and a stats reader returning the recorded capacity; `csiMockMounter` records mount sources and options; publish requests carry only remote NFS publish context and no `StagingTargetPath`; a second `NodeServer` on the same `stateDir` models a restart | `NodeGetCapabilities` returns only `GET_VOLUME_STATS`; `NodeStageVolume` returns gRPC Unimplemented; each publish makes one direct mount of the NFS export, with `ro` only on the readonly target; after the restart `NodeGetVolumeStats` reports the exact 1048576-byte bound; unpublishing the ro target keeps the rw mount and the durable record; unpublishing the last target unmounts it and leaves no `.json` record |
+| 54 | `TestCSINode_LegacyProfilePublishStillRequiresStage` | Legacy block profile still requires a stage before publish | `newCSINodeTestEnv` (legacy profile); `NodePublishVolume` with an empty `StagingTargetPath` | Returns gRPC InvalidArgument; the target is not mounted |
+
+---
+
 ## Test Infrastructure Notes
 
 ### Mock Interfaces Required
@@ -944,7 +959,7 @@ test/component/
 ├── csi_controller_test.go          # Component 4, sections 4.1–4.5
 ├── csi_controller_extended_test.go # Component 4, sections 4.6–4.9
 ├── csi_errors_test.go              # Component 4 §4.6, Component 5 §5.6, §5.11
-├── csi_node_test.go                # Component 5, sections 5.1–5.7, §5.9–5.10
+├── csi_node_test.go                # Component 5, sections 5.1–5.7, §5.9–5.10, §5.14
 ├── csi_node_extended_test.go       # Component 5, sections 5.8, §5.12
 └── helpers_test.go                 # Shared test helpers and mock implementations
 ```
@@ -1030,7 +1045,7 @@ test/component/
 ├── csi_controller_test.go          # Component 4, sections 4.1–4.5
 ├── csi_controller_extended_test.go # Component 4, sections 4.6–4.9
 ├── csi_errors_test.go              # Component 4 §4.6, Component 5 §5.6, §5.11
-├── csi_node_test.go                # Component 5, sections 5.1–5.7, §5.9–5.10
+├── csi_node_test.go                # Component 5, sections 5.1–5.7, §5.9–5.10, §5.14
 ├── csi_node_extended_test.go       # Component 5, sections 5.8, §5.12
 ├── csi_identity_test.go            # Component 6, sections 6.1–6.4
 └── helpers_test.go                 # Shared test helpers and mock implementations
@@ -1046,9 +1061,9 @@ test/component/
 | 2. ZFS Backend | 2.1–2.11 | 37 |
 | 3. NVMe-oF configfs Target | 3.1–3.15 | 65 |
 | 4. CSI Controller Service | 4.1–4.9 | 50 |
-| 5. CSI Node Service | 5.1–5.13 | 52 |
+| 5. CSI Node Service | 5.1–5.14 | 54 |
 | 6. CSI Identity Service | 6.1–6.4 | 12 |
-| **Total** | | **281** |
+| **Total** | | **283** |
 
 *(Counts include all rows in all tables.  Cross-cutting exception paths for each
 component are embedded in the relevant component section, not in a separate

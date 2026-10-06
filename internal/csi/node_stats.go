@@ -205,15 +205,31 @@ func (n *NodeServer) NodeGetVolumeStats(
 func (n *NodeServer) nodeGetFilesystemVolumeStats(
 	ctx context.Context, volumeID, volumePath string,
 ) (*csi.NodeGetVolumeStatsResponse, error) {
+	// The durable publish record — not a staging mount — is the identity
+	// source: stats are answered only for a target this node actually
+	// published, from the immutable adoption identity recorded with it.
+	// The volume lock spans the record read, the mount verification and
+	// the gateway call, so a concurrent unpublish cannot remove the target
+	// between verification and the reported bound.
+	unlock := n.volumeLocks.lock(volumeID)
+	defer unlock()
 	state, err := n.readStageState(volumeID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal,
-			"NodeGetVolumeStats: read stage state for %q: %v", volumeID, err)
+			"NodeGetVolumeStats: read publish state for %q: %v", volumeID, err)
 	}
 	if state == nil || state.File == nil {
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"NodeGetVolumeStats: volume %q has no persisted filesystem identity/quota metadata",
 			volumeID)
+	}
+	rejectErr := rejectStagedFileRecord("NodeGetVolumeStats", volumeID, state)
+	if rejectErr != nil {
+		return nil, rejectErr
+	}
+	err = n.verifyFileStatsTarget(volumeID, volumePath, state)
+	if err != nil {
+		return nil, err
 	}
 	if n.fileStatsFn == nil {
 		return nil, status.Errorf(codes.FailedPrecondition,
@@ -229,8 +245,48 @@ func (n *NodeServer) nodeGetFilesystemVolumeStats(
 		return nil, status.Errorf(errorCode,
 			"NodeGetVolumeStats: inspect adopted filesystem %q: %v", volumeID, err)
 	}
+	err = validateFileStatsBound(stats, state.File.CapacityBytes)
+	if err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
+// verifyFileStatsTarget requires volumePath to be a recorded target that
+// still carries this volume's publish mount: a stale directory or a foreign
+// mount never reports the admitted quota.
+func (n *NodeServer) verifyFileStatsTarget(volumeID, volumePath string, state *nodeStageState) error {
+	idx := findFilePublishTarget(state.File.Targets, volumePath)
+	if idx < 0 {
+		return status.Errorf(codes.FailedPrecondition,
+			"NodeGetVolumeStats: volume %q is not published at %q", volumeID, volumePath)
+	}
+	if n.mounter == nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"NodeGetVolumeStats: volume %q: no mounter to verify the publish mount", volumeID)
+	}
+	mounted, err := n.mounter.MountEntryExists(volumePath)
+	if err != nil {
+		return status.Errorf(codes.Internal,
+			"NodeGetVolumeStats: check if %q is mounted: %v", volumePath, err)
+	}
+	if !mounted {
+		return status.Errorf(codes.FailedPrecondition,
+			"NodeGetVolumeStats: volume %q has no publish mount at %q", volumeID, volumePath)
+	}
+	err = n.verifyFileRecordedMount(state, volumePath, state.File.Targets[idx].ReadOnly)
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"NodeGetVolumeStats: mount at %q is not volume %q's publish: %v", volumePath, volumeID, err)
+	}
+	return nil
+}
+
+// validateFileStatsBound requires the gateway answer to report exactly the
+// admitted byte bound.
+func validateFileStatsBound(stats *csi.NodeGetVolumeStatsResponse, capacityBytes int64) error {
 	if stats == nil {
-		return nil, status.Errorf(codes.Internal,
+		return status.Errorf(codes.Internal,
 			"%s", "NodeGetVolumeStats: adopted filesystem stats gateway returned nil response")
 	}
 	hasBytes := false
@@ -239,15 +295,15 @@ func (n *NodeServer) nodeGetFilesystemVolumeStats(
 			continue
 		}
 		hasBytes = true
-		if usage.GetTotal() != state.File.CapacityBytes {
-			return nil, status.Errorf(codes.FailedPrecondition,
+		if usage.GetTotal() != capacityBytes {
+			return status.Errorf(codes.FailedPrecondition,
 				"NodeGetVolumeStats: adopted filesystem bound changed from %d to %d bytes",
-				state.File.CapacityBytes, usage.GetTotal())
+				capacityBytes, usage.GetTotal())
 		}
 	}
 	if !hasBytes {
-		return nil, status.Errorf(codes.FailedPrecondition,
+		return status.Errorf(codes.FailedPrecondition,
 			"%s", "NodeGetVolumeStats: adopted filesystem stats omitted exact byte bound")
 	}
-	return stats, nil
+	return nil
 }

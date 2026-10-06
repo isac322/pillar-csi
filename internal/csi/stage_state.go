@@ -121,8 +121,9 @@ type nodeStageState struct {
 	// Local holds the device-mapper claim of a local attach.  Non-nil when
 	// AttachMode == AttachModeLocal.
 	Local *LocalStageState `json:"local,omitempty"`
-	// File records a direct bind mount of a controller-owned filesystem proxy.
-	// It is intentionally separate from Local, which is the legacy block
+	// File records the durable identity and per-target mounts of an adopted
+	// filesystem published directly by the file driver (no staging).  It is
+	// intentionally separate from Local, which is the legacy block
 	// device-mapper claim and must never be used for adopted filesystems.
 	File *FileStageState `json:"file,omitempty"`
 
@@ -174,9 +175,11 @@ type LocalStageState struct {
 	BackingDevice string `json:"backing_device"`
 }
 
-// FileStageState is the durable identity of an adopted filesystem bind stage.
-// ProxyPath is the agent-owned mount proxy, while CanonicalSource and
-// ResourceID preserve the original native identity for restart checks.
+// FileStageState is the durable identity of an adopted filesystem's node
+// publication.  ProxyPath is the agent-owned mount proxy a local publish
+// binds, while CanonicalSource and ResourceID preserve the original native
+// identity for restart checks.  The node owns only the TargetPath mounts;
+// the proxy mount and the NFS export remain controller/agent owned.
 type FileStageState struct {
 	ProxyPath             string `json:"proxy_path"`
 	CanonicalSource       string `json:"canonical_source"`
@@ -197,6 +200,22 @@ type FileStageState struct {
 	AgentName             string `json:"agent_name,omitempty"`
 	AgentVolumeID         string `json:"agent_volume_id,omitempty"`
 	Local                 bool   `json:"local,omitempty"`
+
+	// Targets is the live bookkeeping of the direct publish: one entry per
+	// pod target_path this node mounts.  NodePublishVolume appends or
+	// verifies an entry; NodeUnpublishVolume removes only its own and the
+	// record file is deleted when the last one goes away.
+	Targets []FilePublishTarget `json:"targets,omitempty"`
+}
+
+// FilePublishTarget records one pod target mount published directly (without
+// staging) by the file driver.  TargetPath is the CO-provided target_path the
+// mount answers at; ReadOnly preserves the request's readonly flag so a
+// republish verifies the identical access mode rather than silently widening
+// or weakening an established mount.
+type FilePublishTarget struct {
+	TargetPath string `json:"target_path"`
+	ReadOnly   bool   `json:"read_only"`
 }
 
 // localStageState builds the stage state of a local attach.  ProtocolType

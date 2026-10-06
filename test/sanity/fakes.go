@@ -117,6 +117,17 @@ func (m *fakeMounter) MountSource(target string) (string, error) {
 	return m.source[target], nil
 }
 
+// ObserveMount reports the recorded source of a mount; the fake serves only
+// the block driver, which never inspects the type or read-only flag.
+func (m *fakeMounter) ObserveMount(target string) (csidrv.MountObservation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.mounted[target] {
+		return csidrv.MountObservation{}, fmt.Errorf("%q is not a mount point", target)
+	}
+	return csidrv.MountObservation{Source: m.source[target]}, nil
+}
+
 // MountEntryExists mirrors the mountinfo table: the fake records one entry
 // per mount, so it equals the mounted map without any filesystem stat.
 func (m *fakeMounter) MountEntryExists(target string) (bool, error) {

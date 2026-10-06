@@ -41,6 +41,11 @@ func (*KubeMounter) MountSource(target string) (string, error) {
 	return "", fmt.Errorf("MountSource %s: unsupported on %s", target, runtime.GOOS)
 }
 
+// ObserveMount is only implemented on Linux: it parses /proc/self/mountinfo.
+func (*KubeMounter) ObserveMount(target string) (MountObservation, error) {
+	return MountObservation{}, fmt.Errorf("ObserveMount %s: unsupported on %s", target, runtime.GOOS)
+}
+
 // MountEntryExists is only implemented on Linux: it parses /proc/self/mountinfo.
 func (*KubeMounter) MountEntryExists(target string) (bool, error) {
 	return false, fmt.Errorf("MountEntryExists %s: unsupported on %s", target, runtime.GOOS)

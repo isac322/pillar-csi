@@ -5,6 +5,8 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 const filesystemAdoptionBytes int64 = 64 << 20
@@ -496,25 +499,124 @@ func (f *FilesystemAdoptionFixture) Cleanup(ctx context.Context) error {
 }
 func formatBytes(n int64) string { return strconv.FormatInt(n, 10) }
 
-// fileNodeStageDir is the file driver's durable stage-state directory on every
-// node host. It must match the chart's file-node --state-dir
+// fileNodePublishDir is the file driver's durable publish-record directory on
+// every node host. It must match the chart's file-node --state-dir
 // (charts/pillar-csi/templates/node-daemonset.yaml) and the cmd/node default
 // for files.pillar-csi.bhyoo.com. A later --state-dir in node.extraArgs would
-// override it; unpublishAll's pre-delete witness then fails rather than passes.
-const fileNodeStageDir = "/var/lib/pillar-csi/node/files"
+// override it; the pre-delete publish witness then fails rather than passes.
+const fileNodePublishDir = "/var/lib/pillar-csi/node/files"
 
-// fileNodeStageStateFile is the real stage record path for a volume handle:
-// stateFileKey() replaces "/" with "_" and writeStageState writes
-// stateDir/<safeID>.json under the file driver's state-dir.
-func fileNodeStageStateFile(handle string) string {
-	return fileNodeStageDir + "/" + strings.ReplaceAll(handle, "/", "_") + ".json"
+// fileNodePublishStateFile is the real publish record path for a volume
+// handle: "/" in the handle becomes "_" and the file driver writes
+// stateDir/<safeID>.json on the first NodePublishVolume of the node, keeps
+// one target entry per published pod target, and removes the file only when
+// its last target is unpublished. The file driver never stages.
+func fileNodePublishStateFile(handle string) string {
+	return fileNodePublishDir + "/" + strings.ReplaceAll(handle, "/", "_") + ".json"
+}
+
+// fileVolumeAttachments lists the VolumeAttachments of the PV, optionally
+// limited to one node. client-go jsonpath supports a single ?() comparison
+// per item, so the PV filter stays in the query and the node is matched in
+// Go; the range form is the same one teardownDiagnostics already uses.
+func (f *FilesystemAdoptionFixture) fileVolumeAttachments(ctx context.Context, node string) string {
+	out := f.Must(ctx, "get", "volumeattachments", "-o", `jsonpath={range .items[?(@.spec.source.persistentVolumeName=="`+f.PVName+`")]}{.spec.nodeName}{" "}{.metadata.name}{"\n"}{end}`)
+	var names []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && (node == "" || fields[0] == node) {
+			names = append(names, fields[1])
+		}
+	}
+	return strings.Join(names, " ")
+}
+
+// fileVolumeInUse reports kubelet's Node.status.volumesInUse, which names a
+// CSI volume either by "<driver>^<handle>" or by its PV.
+func (f *FilesystemAdoptionFixture) fileVolumeInUse(ctx context.Context, node string) string {
+	return f.Must(ctx, "get", "node", node, "-o", "jsonpath={.status.volumesInUse}")
+}
+
+// mountinfoEntryUnder returns the /proc/1/mountinfo line whose mount point
+// lies under prefix, or "" when none does.
+func mountinfoEntryUnder(mounts, prefix string) string {
+	for _, line := range strings.Split(mounts, "\n") {
+		if fields := strings.Fields(line); len(fields) > 4 && strings.HasPrefix(fields[4], prefix) {
+			return line
+		}
+	}
+	return ""
+}
+
+// expectNoFileGlobalMount asserts that kubelet holds no staging (globalmount)
+// mount of this volume on the node: neither the per-PV layout nor the
+// per-driver <sha256(handle)> layout. A file volume is only ever mounted at
+// pod targets, so kubelet's device-mount reference check has nothing to find.
+func (f *FilesystemAdoptionFixture) expectNoFileGlobalMount(mounts, node, handle string) {
+	sum := sha256.Sum256([]byte(handle))
+	digest := hex.EncodeToString(sum[:])
+	for _, line := range strings.Split(mounts, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || !strings.HasSuffix(fields[4], "/globalmount") || !strings.HasPrefix(fields[4], "/var/lib/kubelet/plugins/kubernetes.io/csi/") {
+			continue
+		}
+		Expect(fields[4]).NotTo(Or(ContainSubstring("/pv/"+f.PVName+"/"), ContainSubstring("/"+digest+"/")), "%s must not stage file volume %s: %s", node, handle, line)
+	}
+}
+
+// witnessFilePublication proves, before a consumer is deleted, that its pod
+// target is actually published on node through consumer-visible facts: the
+// node's publish record serializes this pod's kubelet target and the adopted
+// source, the node mounts that target directly (a native bind on the storage
+// node, a direct NFS mount of remoteSource elsewhere), no staging mount
+// exists, and Kubernetes reports the node's VolumeAttachment and kubelet
+// volumesInUse. remoteSource is "<address>:<export>" or "" for a local bind.
+func (f *FilesystemAdoptionFixture) witnessFilePublication(ctx context.Context, node, handle, podUID, remoteSource string) {
+	podDir := "/var/lib/kubelet/pods/" + podUID + "/"
+	record := fileNodePublishStateFile(handle)
+	body, err := f.NodeExec(ctx, node, "cat", record)
+	Expect(err).NotTo(HaveOccurred(), "%s must persist %s while pod %s is published", node, record, podUID)
+	Expect(body).To(ContainSubstring(`"target_path":"`+podDir), "%s publish record must serialize pod %s's target", node, podUID)
+	mounts, err := f.NodeExec(ctx, node, "cat", "/proc/1/mountinfo")
+	Expect(err).NotTo(HaveOccurred())
+	entry := mountinfoEntryUnder(mounts, podDir+"volumes/kubernetes.io~csi/")
+	Expect(entry).NotTo(BeEmpty(), "%s must mount pod %s's CSI target", node, podUID)
+	if remoteSource != "" {
+		Expect(body).To(ContainSubstring(`"mount_source":"` + remoteSource + `"`))
+		Expect(entry).To(And(ContainSubstring(" - nfs"), ContainSubstring(" "+remoteSource+" ")), "remote target must be a direct NFS mount of the export")
+	} else {
+		Expect(body).To(ContainSubstring(`"canonical_source":"` + f.CanonicalSource + `"`))
+		Expect(entry).NotTo(ContainSubstring(" - nfs"), "storage-node target must be a native bind, not NFS")
+	}
+	f.expectNoFileGlobalMount(mounts, node, handle)
+	Expect(f.fileVolumeAttachments(ctx, node)).NotTo(BeEmpty(), "%s must hold a VolumeAttachment while published", node)
+	Expect(f.fileVolumeInUse(ctx, node)).To(Or(ContainSubstring(handle), ContainSubstring(f.PVName)), "kubelet on %s must report the volume in use", node)
+}
+
+// expectFilePublicationDrained waits, within the caller's existing drain
+// budget, until no node keeps a publish record, a VolumeAttachment, or
+// kubelet volumesInUse for this volume, then checks that no deleted pod
+// target and no staging mount remains.
+func (f *FilesystemAdoptionFixture) expectFilePublicationDrained(ctx context.Context, handle string, podUIDs, nodes []string, timeout time.Duration, diagnostics func() string) {
+	Eventually(func() string { return f.fileVolumeAttachments(ctx, "") }, timeout, 2*time.Second).Should(BeEmpty(), diagnostics)
+	record := fileNodePublishStateFile(handle)
+	for _, node := range nodes {
+		Eventually(func() error { _, err := f.NodeExec(ctx, node, "test", "!", "-e", record); return err }, timeout, 2*time.Second).Should(Succeed(), diagnostics)
+		Eventually(func() string { return f.fileVolumeInUse(ctx, node) }, timeout, 2*time.Second).ShouldNot(Or(ContainSubstring(handle), ContainSubstring(f.PVName)), diagnostics)
+		mounts, err := f.NodeExec(ctx, node, "cat", "/proc/1/mountinfo")
+		Expect(err).NotTo(HaveOccurred())
+		for _, uid := range podUIDs {
+			Expect(mounts).NotTo(ContainSubstring("/var/lib/kubelet/pods/"+uid+"/"), "%s keeps a deleted pod target", node)
+		}
+		f.expectNoFileGlobalMount(mounts, node, handle)
+	}
 }
 
 // teardownDiagnostics returns a lazy, bounded collector of the teardown facts
 // a bare PV finalizer timeout hides. A critical-state budget records, first,
 // short jsonpath facts of the known PVS, VolumeAttachment, PV, PVC and pods,
 // then per node (active publications, the storage node, then the rest) the
-// real file-node stage directory and record, matching mounts, kubelet
+// real file-node publish directory and record, matching mounts, kubelet
 // volumesInUse/volumesAttached, and kubelet journal lines naming the volume.
 // A separate log budget holds events and file-node, controller/sidecar and
 // agent log lines naming the volume, so no log volume can displace the state
@@ -634,13 +736,13 @@ func (f *FilesystemAdoptionFixture) teardownDiagnostics(handle, target string, n
 			}
 		}
 		for _, node := range ordered {
-			// The real file-node stage record directory, this PV's stage record
-			// when its handle is known, mounts still carrying this volume, what
-			// kubelet reports for the node, and kubelet's recent lines about
-			// this volume (including unpublish/unstage errors).
-			script := "ls -la " + fileNodeStageDir
+			// The real file-node publish record directory, this PV's publish
+			// record when its handle is known, mounts still carrying this
+			// volume, what kubelet reports for the node, and kubelet's recent
+			// lines about this volume (including unpublish errors).
+			script := "ls -la " + fileNodePublishDir
 			if handle != "" {
-				script += "; cat " + shellQuote(fileNodeStageStateFile(handle)) + " || true"
+				script += "; cat " + shellQuote(fileNodePublishStateFile(handle)) + " || true"
 			}
 			if filters != "" {
 				script += "; grep -F" + filters + " /proc/1/mountinfo || true"

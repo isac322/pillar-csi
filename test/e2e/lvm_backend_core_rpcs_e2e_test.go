@@ -30,7 +30,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
 )
@@ -126,19 +125,6 @@ func e33PortForwardAgentGRPC(ctx context.Context, podName string, localPort int)
 		cancel()
 		_ = cmd.Wait()
 	}, nil
-}
-
-// e33AgentGRPCClient creates an insecure gRPC client to the given address.
-func e33AgentGRPCClient(ctx context.Context, addr string) (agentv1.AgentServiceClient, *grpc.ClientConn, error) {
-	conn, err := grpc.DialContext(ctx, addr, //nolint:staticcheck
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),                 //nolint:staticcheck
-		grpc.WithTimeout(10*time.Second), //nolint:staticcheck
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("dial agent at %s: %w", addr, err)
-	}
-	return agentv1.NewAgentServiceClient(conn), conn, nil
 }
 
 // e33FailIfNoInfra fails the current spec if E33 infrastructure is not available.

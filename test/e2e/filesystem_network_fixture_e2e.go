@@ -30,12 +30,19 @@ type filesystemNetworkFixture struct {
 	Clients      []string
 	Pods         []string
 	PodUIDs      []string
+	PodNodes     []string
 	Address      string
 	Target       string
 	Proxy        string
 	Handle       string
 	Dataset      string
 	StorageClass string
+	// AfterDelete, when set, runs after each pod deletion while at least one
+	// publication remains and receives the surviving pod names; it is for
+	// live-I/O peer assertions, never for drain checks (unpublishAll owns
+	// those). Root-squashed pods cannot write, so callers choose which
+	// remaining pods they exercise.
+	AfterDelete func(ctx context.Context, remainingPods []string)
 }
 
 // newFilesystemNetworkFixture adopts the source through the owned-host NFS
@@ -200,6 +207,7 @@ func (n *filesystemNetworkFixture) consumer(ctx context.Context, name, node stri
 	Expect(n.Must(ctx, "-n", n.Namespace, "get", "pod", name, "-o", "jsonpath={.spec.nodeName}")).To(Equal(node))
 	n.Pods = append(n.Pods, name)
 	n.PodUIDs = append(n.PodUIDs, n.Must(ctx, "-n", n.Namespace, "get", "pod", name, "-o", "jsonpath={.metadata.uid}"))
+	n.PodNodes = append(n.PodNodes, node)
 }
 
 func (n *filesystemNetworkFixture) ownerConsumers(ctx context.Context) {
@@ -316,23 +324,69 @@ func (n *filesystemNetworkFixture) restart(ctx context.Context, component, node 
 	n.Must(ctx, "-n", resolveHelmNamespace(), "rollout", "status", "daemonset/pillar-csi-"+component, "--timeout=3m")
 }
 
-// stageStateFile is the real stage record path for this volume.
-func (n *filesystemNetworkFixture) stageStateFile() string {
-	return fileNodeStageStateFile(n.Handle)
-}
-
+// unpublishAll deletes every consumer one at a time and proves the file
+// driver's per-target lifecycle. Before any deletion each live publication
+// must be witnessed through its node's publish record, the pod's direct
+// target mount (native bind on the storage node, NFS elsewhere), the
+// VolumeAttachment and kubelet volumesInUse, so the drain below cannot pass
+// vacuously on a wrong path. Each deletion must remove only its own target:
+// every remaining consumer keeps its record entry and mount, and the owned
+// proxy stays mounted while any publication remains. After the last
+// consumer, publications, VolumeAttachments, volumesInUse, records and pod
+// mounts drain on every node without a staging mount ever appearing.
 func (n *filesystemNetworkFixture) unpublishAll(ctx context.Context) {
-	// Every live publication must hold a real stage record on its node. Witnessing
-	// existence before deletion keeps the drain assertions below from passing
-	// vacuously on a wrong path; publications already drained are not re-checked.
 	pubs := n.state(ctx).Status.PublishedNodes
 	Expect(pubs).NotTo(BeEmpty(), "unpublishAll requires live publications to witness; delete pods through this helper before the controller drains them")
+	published := map[string]bool{}
 	for _, pub := range pubs {
-		_, err := n.NodeExec(ctx, pub.NodeID, "test", "-e", n.stageStateFile())
-		Expect(err).NotTo(HaveOccurred(), "%s must persist %s while published", pub.NodeID, n.stageStateFile())
+		published[pub.NodeID] = true
 	}
-	for _, pod := range n.Pods {
+	remote := func(node string) string {
+		if node == n.StorageNode {
+			return ""
+		}
+		return n.Address + ":" + n.Target
+	}
+	for i, pod := range n.Pods {
+		Expect(published).To(HaveKey(n.PodNodes[i]), "pod %s on %s must be a recorded publication", pod, n.PodNodes[i])
+		n.witnessFilePublication(ctx, n.PodNodes[i], n.Handle, n.PodUIDs[i], remote(n.PodNodes[i]))
+	}
+	record := fileNodePublishStateFile(n.Handle)
+	deleted := map[int]bool{}
+	for i, pod := range n.Pods {
 		n.Must(ctx, "-n", n.Namespace, "delete", "pod", pod, "--ignore-not-found", "--wait=true", "--timeout=3m")
+		deleted[i] = true
+		node, own := n.PodNodes[i], "/var/lib/kubelet/pods/"+n.PodUIDs[i]+"/"
+		Eventually(func() (string, error) { return n.NodeExec(ctx, node, "cat", "/proc/1/mountinfo") }, 90*time.Second, 2*time.Second).ShouldNot(ContainSubstring(own), n.unpublishDiagnostics(node))
+		lastOnNode := true
+		for j := range n.Pods {
+			if !deleted[j] && n.PodNodes[j] == node {
+				lastOnNode = false
+			}
+		}
+		if lastOnNode {
+			Eventually(func() error { _, err := n.NodeExec(ctx, node, "test", "!", "-e", record); return err }, 90*time.Second, 2*time.Second).Should(Succeed(), n.unpublishDiagnostics(node))
+		}
+		remaining := []string{}
+		for j := range n.Pods {
+			if deleted[j] {
+				continue
+			}
+			remaining = append(remaining, n.Pods[j])
+			n.witnessFilePublication(ctx, n.PodNodes[j], n.Handle, n.PodUIDs[j], remote(n.PodNodes[j]))
+			body, err := n.NodeExec(ctx, n.PodNodes[j], "cat", record)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(body).NotTo(ContainSubstring(own), "%s publish record must not keep deleted pod %s's target", n.PodNodes[j], pod)
+		}
+		if len(remaining) > 0 {
+			if n.Proxy != "" {
+				_, err := n.HostExec(ctx, "findmnt", "-n", "-M", n.Proxy)
+				Expect(err).NotTo(HaveOccurred(), "unpublishing %s must leave the owned proxy for remaining publications", pod)
+			}
+			if n.AfterDelete != nil {
+				n.AfterDelete(ctx, remaining)
+			}
+		}
 	}
 	Eventually(func() ([]pillarv1.VolumePublication, error) {
 		out, err := n.Kubectl(ctx, "", "get", "pillarvolumestate", n.PVName, "--ignore-not-found", "-o", "json")
@@ -345,15 +399,12 @@ func (n *filesystemNetworkFixture) unpublishAll(ctx context.Context) {
 		}
 		return state.Status.PublishedNodes, nil
 	}, 90*time.Second, 2*time.Second).Should(BeEmpty(), n.unpublishDiagnostics())
-	for _, node := range append(append([]string{}, n.Clients...), n.StorageNode) {
-		stage := n.stageStateFile()
-		Eventually(func() error { _, err := n.NodeExec(ctx, node, "test", "!", "-e", stage); return err }, 90*time.Second, 2*time.Second).Should(Succeed(), n.unpublishDiagnostics(node))
+	nodes := append(append([]string{}, n.Clients...), n.StorageNode)
+	n.expectFilePublicationDrained(ctx, n.Handle, n.PodUIDs, nodes, 90*time.Second, n.unpublishDiagnostics(nodes...))
+	for _, node := range nodes {
 		mounts, err := n.NodeExec(ctx, node, "cat", "/proc/1/mountinfo")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(mounts).NotTo(ContainSubstring(n.Address + ":" + n.Target))
-		for _, uid := range n.PodUIDs {
-			Expect(mounts).NotTo(ContainSubstring("/var/lib/kubelet/pods/" + uid + "/"))
-		}
 	}
 }
 

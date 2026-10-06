@@ -1405,6 +1405,16 @@ func (m *localMockMounter) MountSource(target string) (string, error) {
 	return m.mountSource[target], nil
 }
 
+// ObserveMount reports the recorded source of a mount; local-attach e2e
+// tests exercise only the block driver, which never inspects the type or
+// read-only flag.
+func (m *localMockMounter) ObserveMount(target string) (csidrv.MountObservation, error) {
+	if !m.mounted[target] {
+		return csidrv.MountObservation{}, fmt.Errorf("%q is not a mount point", target)
+	}
+	return csidrv.MountObservation{Source: m.mountSource[target]}, nil
+}
+
 // MountEntryExists mirrors the mount table: the fake records one entry per
 // mount, so it equals the mounted map without any filesystem stat — the
 // distinction that matters for kernel-shutdown mounts (issue #175).

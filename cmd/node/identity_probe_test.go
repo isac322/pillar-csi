@@ -97,17 +97,32 @@ func TestFileNodeStartupDoesNotUseBlockInitiatorIdentity(t *testing.T) {
 	t.Cleanup(func() { closeISCSIInitiator(initiator) })
 	node := csisvc.NewNodeServer(cfg.nodeID, handlers, csisvc.NewKubeMounter()).
 		WithDriverName(cfg.driverName).WithStateDir(filepath.Join(root, "file-state"))
+	blockCapability := &csispec.VolumeCapability{
+		AccessType: &csispec.VolumeCapability_Block{Block: &csispec.VolumeCapability_BlockVolume{}},
+		AccessMode: &csispec.VolumeCapability_AccessMode{
+			Mode: csispec.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+		},
+	}
+	// The file profile never stages (NoStage): kubelet must not reach a
+	// staging surface, and a block volume is never published.
 	_, err := node.NodeStageVolume(ctx, &csispec.NodeStageVolumeRequest{
 		VolumeId:          "agent/nvmeof-tcp/zfs/tank/block-volume",
 		StagingTargetPath: filepath.Join(root, "stage"),
-		VolumeCapability: &csispec.VolumeCapability{
-			AccessType: &csispec.VolumeCapability_Block{Block: &csispec.VolumeCapability_BlockVolume{}},
-			AccessMode: &csispec.VolumeCapability_AccessMode{
-				Mode: csispec.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
-			},
-		},
+		VolumeCapability:  blockCapability,
 	})
-	if status.Code(err) != codes.FailedPrecondition {
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("file node NodeStageVolume = %v, want Unimplemented", err)
+	}
+	// A block volume is never published even when the request carries the
+	// staging path a misrouted kubelet would send: the profile guard, not
+	// staging-path validation, is the refusal.
+	_, err = node.NodePublishVolume(ctx, &csispec.NodePublishVolumeRequest{
+		VolumeId:          "agent/nvmeof-tcp/zfs/tank/block-volume",
+		StagingTargetPath: filepath.Join(root, "staged"),
+		TargetPath:        filepath.Join(root, "target"),
+		VolumeCapability:  blockCapability,
+	})
+	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("file node accepted a block volume: %v", err)
 	}
 	identity, err := fs.ReadFile(os.DirFS(root), "initiatorname.iscsi")

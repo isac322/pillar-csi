@@ -829,7 +829,7 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
    b. 유효 설정 resolve (store/protocol → 바인딩 → 수동 SC 문서 → PVC 문서, §2.3)
       - PVC 문서는 튜닝 부분집합만 허용, 구조적 필드·알 수 없는 키 거부
       - 결과를 PillarVolumeState.spec.resolved에 저장 (재시도는 저장된 값 재사용)
-   c. Backend-Protocol 호환성 검증 (NFS는 zfs dataset만)
+   c. Backend-Protocol 호환성 검증 (NFS는 zfs dataset만. file CSI adoption은 directory도 허용)
    d. PillarStore → PillarAgent → Node IP resolve
    e. gRPC로 agent에 CreateVolume + ExportVolume 요청
       (NFS는 owned root/child export state와 fixed port/version 포함)
@@ -873,6 +873,8 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
    f. 커널 모듈 미로드 시 명확한 에러 반환
 ```
 
+이 절차는 기본 CSI identity `pillar-csi.bhyoo.com`의 pillar-node다. file CSI identity `files.pillar-csi.bhyoo.com`의 file node는 `NodeGetCapabilities`에서 `GET_VOLUME_STATS`만 advertise하고 `STAGE_UNSTAGE_VOLUME`·`EXPAND_VOLUME`은 advertise하지 않는다. NodeStageVolume·NodeUnstageVolume·NodeExpandVolume은 `Unimplemented`를 반환하므로 kubelet은 staging path 없이 NodePublishVolume만 호출한다.
+
 ### 5.4 NodePublishVolume
 
 ```
@@ -881,6 +883,12 @@ NVMe NQN: nqn.2024-01.com.bhyoo.pillar-csi:rock5bp:pvc-abc123
    a. volumeMode=Filesystem: staging → pod mount point bind mount
    b. volumeMode=Block: 블록 디바이스를 pod에 device file로 제공
 ```
+
+file CSI identity의 file node는 stage 단계가 없으므로 NodePublishVolume이 pod target마다 마운트를 직접 만든다. local publish는 agent·controller 소유 proxy를 bind하고, multi-node publish는 owned-host NFS export를 bundled NFSv4.2 helper로 마운트한다. 어느 경로를 쓸지는 controller가 만든 publish context만이 결정하고, 무엇을 마운트할지는 NFS transport hint가 아니라 기록된 native identity가 결정한다. `readonly` publish는 자기 target에만 적용된다. NodeUnpublishVolume은 mount table이 해당 마운트가 이 볼륨의 기록된 publish임을 증명한 뒤에만 요청받은 target을 제거한다. 같은 볼륨의 다른 pod 마운트와, agent·controller 소유인 source·proxy·NFS export는 그대로 유지된다. file node는 publish된 볼륨마다 node state dir(`.../node/files/`) 아래에 immutable 기록을 남기고 마지막 target이 unpublish되면 지운다. 기록의 target 항목은 mount보다 먼저 쓰이므로 mount와 완료 사이에서 죽어도 retry가 수렴할 durable intent가 남는다.
+
+file node는 시작 시 마운트를 스캔하지 않는다. NodePublishVolume·NodeUnpublishVolume·NodeGetVolumeStats가 호출될 때마다 durable 기록을 커널 mount table과 대조한다. 이미 있는 target 마운트는 이 볼륨의 publish임이 증명될 때만 받아들이고, 남의 마운트는 거부한다. 마운트는 publish에서만 새로 만든다. 기록된 target이 마운트돼 있지 않으면 stats는 fail closed로 거부하고, unpublish는 증명된 기존 마운트와 기록된 intent를 제거할 뿐 마운트를 다시 만들지 않는다. remote target은 mount-table identity(기록된 export source, `nfs`/`nfs4` type, readonly flag)만으로 검증하고 마운트 자체의 성공이 usable의 근거다. local bind는 추가로 owned proxy의 채택된 root를 bind했음을 증명하고 read probe에 답해야 한다. NodeGetVolumeStats는 agent `InspectImport` RPC로 기록된 identity·backend layout·정확한 quota를 재검증한 뒤 그 quota를 total capacity로 보고하고, 공유 filesystem의 `statfs`를 per-volume 사용량으로 읽지 않는다.
+
+`staging_path` 필드가 남아 있는 file record는 이 lifecycle 밖이다. publish·unpublish·stats는 그 기록에 대해 fail closed로 거부하고, 기록과 그 마운트를 그대로 둔다.
 
 ### 5.5 주기적 filesystem trim (pillar-node)
 
@@ -920,7 +928,7 @@ Longhorn filesystem-trim, Portworx auto-fstrim과 같은 역할).
 - pillar-controller: CSI Controller (CreateVolume, DeleteVolume, ExpandVolume, ControllerPublishVolume/UnpublishVolume, ValidateVolumeCapabilities, GetCapacity)
 - pillar-controller: CSI 작업 재시도/롤백 (exponential backoff)
 - pillar-controller: PillarAgent 노드 label 자동 관리
-- CSI Node (Stage/Unstage/Publish/Unpublish, NodeGetVolumeStats, NodeExpandVolume)
+- CSI Node (기본 identity: Stage/Unstage/Publish/Unpublish, NodeGetVolumeStats, NodeExpandVolume. file CSI node는 Stage 없이 Publish/Unpublish와 NodeGetVolumeStats만)
 - NVMe-oF ACL on/off (PillarProtocol acl 필드)
 - NVMe-oF 타임아웃 파라미터 (PillarProtocol 필드)
 - StorageClass 자동 생성 (PillarStorageClass reconcile, ownerReference 관리)

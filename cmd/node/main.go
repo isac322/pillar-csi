@@ -1007,6 +1007,11 @@ func (m *mkdirMounter) MountSource(target string) (string, error) {
 	return m.wrapped.MountSource(target)
 }
 
+// ObserveMount delegates to the wrapped Mounter unchanged.
+func (m *mkdirMounter) ObserveMount(target string) (csisvc.MountObservation, error) {
+	return m.wrapped.ObserveMount(target)
+}
+
 // MountEntryExists delegates to the wrapped Mounter unchanged.
 func (m *mkdirMounter) MountEntryExists(target string) (bool, error) {
 	return m.wrapped.MountEntryExists(target)

@@ -169,6 +169,26 @@ func (*KubeMounter) MountSource(target string) (string, error) {
 	return me.Source, nil
 }
 
+// ObserveMount reports the topmost mountinfo entry at target: source,
+// filesystem type, device number, root and the kernel's read-only flag.
+// Like MountEntryExists it reads only the mount table and never touches
+// the mounted filesystem, so a dead filesystem or a hard NFS mount whose
+// server is gone is still observed without blocking.
+func (*KubeMounter) ObserveMount(target string) (MountObservation, error) {
+	mounts, err := readMountInfoFile(procMountInfoPath)
+	if err != nil {
+		return MountObservation{}, err
+	}
+	me, ok := findMount(mounts, mountTablePath(target))
+	if !ok {
+		return MountObservation{}, fmt.Errorf("%q is not a mount point", filepath.Clean(target))
+	}
+	return MountObservation{
+		Source: me.Source, FsType: me.FsType, Major: me.Major, Minor: me.Minor, Root: me.Root,
+		ReadOnly: me.ReadOnly,
+	}, nil
+}
+
 // MountEntryExists reports whether target has a mount table entry in this
 // mount namespace, consulting /proc/self/mountinfo only.  It never touches
 // the mounted filesystem — unlike a stat-based check such as

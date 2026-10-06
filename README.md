@@ -527,6 +527,16 @@ spec:
 
 The dataset must already exist as a ZFS filesystem directly below the configured pool and parent dataset. It must have a finite effective `refquota` or `quota` of exactly the requested size. Adoption preserves ZFS properties, mount state and data. It does not set a quota, change a mountpoint, or expand the dataset.
 
+### Node mount lifecycle
+
+The file node does not stage volumes. Its `NodeGetCapabilities` advertises only `GET_VOLUME_STATS`, and `NodeStageVolume`, `NodeUnstageVolume` and `NodeExpandVolume` return `Unimplemented`. The kubelet calls `NodePublishVolume` once per pod target, and the file node mounts that target directly: a local publish bind-mounts the owned proxy of the source, and a multi-node publish mounts the owned-host NFS export with the bundled NFSv4.2 helper. Only the controller-produced context decides which path runs; the recorded native identity, not the NFS hint, decides what is mounted. A `readonly` mount applies to its own target and does not make other targets read-only.
+
+`NodeUnpublishVolume` removes only the mount it is asked for, and only after the mount table proves it is this volume's recorded publish. Other pods keep their mounts of the same volume, and the source, the owned proxy and the NFS export stay in place because the agent and controller own them. The file node keeps a durable record of each directly published volume under `/var/lib/pillar-csi/node/files/` and deletes the record when the last target is unpublished. The record's target entry is written before the mount, so a crash between the two leaves durable intent that a retry converges.
+
+The file node does not scan mounts at startup. `NodePublishVolume`, `NodeUnpublishVolume` and `NodeGetVolumeStats` reconcile the durable record with the kernel mount table on each call: an existing target mount is accepted only when it proves to be this volume's publish, and a foreign mount is refused. Only publish creates mounts; stats fails closed when the recorded target is not mounted, and unpublish removes the proven mount and its recorded intent without recreating anything. A remote target is verified only by mount-table identity (the recorded export source, an `nfs`/`nfs4` type and the read-only flag); a successful mount is what marks the path usable. A local bind must additionally prove it binds the owned proxy's adopted root and answer a read probe. `NodeGetVolumeStats` revalidates the recorded identity, backend layout and exact quota through the agent `InspectImport` RPC and reports the quota as the total capacity; it does not read shared-filesystem `statfs` numbers as if they were per-volume usage.
+
+A file record that still names a staging path is outside this lifecycle: publish, unpublish and stats fail closed on it and leave the record and its mount untouched.
+
 ### Adoption restrictions and reuse
 
 - `pillar-csi.bhyoo.com/import-directory` and `pillar-csi.bhyoo.com/import-zfs-dataset` are PVC annotations, not StorageClass parameters. They are mutually exclusive with each other and with `pillar-csi.bhyoo.com/import-zvol`. The file driver does not dynamically create filesystems or import zvols.

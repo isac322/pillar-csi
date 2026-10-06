@@ -2,6 +2,7 @@ package csi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -179,12 +180,10 @@ func testStatsGatewayTransport(t *testing.T, transport, kind string) {
 	state.AgentEndpoint = startStatsTransport(t, b, config)
 	gateway := statsTestGateway(t, config)
 	mountPath := t.TempDir()
-	node := NewNodeServer("consumer", nil, nil).WithStateDir(t.TempDir()).
+	mounter := newMockMounter()
+	node := NewNodeServer("consumer", nil, mounter).WithStateDir(t.TempDir()).
 		WithDriverName("files.pillar-csi.bhyoo.com").WithFilesystemStatsReader(gateway.Read)
-	err := node.writeStageState(state.VolumeID, &nodeStageState{VolumeID: state.VolumeID, File: state})
-	if err != nil {
-		t.Fatal(err)
-	}
+	mountFilesystemStatsTargets(t, mounter, node, state, mountPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	request := &csi.NodeGetVolumeStatsRequest{VolumeId: state.VolumeID, VolumePath: mountPath}
@@ -220,11 +219,10 @@ func TestFilesystemStatsGatewayPublishedPathErrors(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			_, state := statsNativeFixture(kind)
 			state.AgentEndpoint = "127.0.0.1:9500"
-			node := NewNodeServer("consumer", nil, nil).WithStateDir(t.TempDir()).
+			mounter := newMockMounter()
+			node := NewNodeServer("consumer", nil, mounter).WithStateDir(t.TempDir()).
 				WithDriverName("files.pillar-csi.bhyoo.com").WithFilesystemStatsReader(gateway.Read)
-			if err := node.writeStageState(state.VolumeID, &nodeStageState{VolumeID: state.VolumeID, File: state}); err != nil {
-				t.Fatal(err)
-			}
+			mountFilesystemStatsTargets(t, mounter, node, state, filepath.Join(root, "missing"), loopPath)
 			for _, tc := range []struct {
 				name string
 				path string
@@ -243,6 +241,100 @@ func TestFilesystemStatsGatewayPublishedPathErrors(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// statsNFSExport is the wire mount source every stats fixture records; the
+// exact export is irrelevant to the gateway, only mount-table identity is.
+const statsNFSExport = "192.0.2.77:/export/entry"
+
+// mountFilesystemStatsTargets persists the durable file publish record the
+// way NodePublishVolume leaves it — the adopted descriptor plus the pod
+// targets it serves — and mounts each target through the mounter so the
+// pre-gateway mount verification observes a live NFS mount.  Stats answer
+// only for recorded targets, so fixtures name theirs.  The targets are added
+// through the record's JSON wire form ("file.targets") so the fixture
+// depends on the on-disk contract rather than a Go field.
+func mountFilesystemStatsTargets(
+	t *testing.T, mounter *mockMounter, node *NodeServer, state *FileStageState, targets ...string,
+) {
+	t.Helper()
+	writeFilePublishRecord(t, node, state, statsNFSExport, targets...)
+	for _, target := range targets {
+		if err := mounter.Mount(statsNFSExport, target, "nfs4", []string{"vers=4.2"}); err != nil {
+			t.Fatalf("mount stats target %q: %v", target, err)
+		}
+	}
+}
+
+// writeFilePublishRecord persists the durable file publish record: the
+// adopted descriptor, the pod targets it serves and the remote export
+// identity the mount verification compares against.
+func writeFilePublishRecord(
+	t *testing.T, node *NodeServer, state *FileStageState, mountSource string, targets ...string,
+) {
+	t.Helper()
+	if err := node.writeStageState(state.VolumeID, &nodeStageState{VolumeID: state.VolumeID, File: state}); err != nil {
+		t.Fatal(err)
+	}
+	path := node.stateFilePath(state.VolumeID)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: test state dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record map[string]any
+	if err = json.Unmarshal(data, &record); err != nil {
+		t.Fatal(err)
+	}
+	file, ok := record["file"].(map[string]any)
+	if !ok {
+		t.Fatalf("persisted record has no file descriptor: %s", data)
+	}
+	recorded := make([]map[string]any, 0, len(targets))
+	for _, target := range targets {
+		recorded = append(recorded, map[string]any{"target_path": target, "read_only": false})
+	}
+	file["targets"] = recorded
+	// Stats fixtures are remote consumers: the record carries the export
+	// identity the mount verification compares the observed mount against.
+	record["nfs"] = map[string]any{"mount_source": mountSource}
+	data, err = json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestFilesystemStatsRequiresRecordedPublishTarget pins that the exact
+// admitted bound is reported only for a pod target the record owns; any
+// other path fails closed before the identity gateway is consulted.
+func TestFilesystemStatsRequiresRecordedPublishTarget(t *testing.T) {
+	_, state := statsNativeFixture("directory")
+	called := false
+	mounter := newMockMounter()
+	node := NewNodeServer("consumer", nil, mounter).WithStateDir(t.TempDir()).
+		WithDriverName("files.pillar-csi.bhyoo.com").
+		WithFilesystemStatsReader(func(context.Context, string, *FileStageState) (*csi.NodeGetVolumeStatsResponse, error) {
+			called = true
+			return &csi.NodeGetVolumeStatsResponse{Usage: []*csi.VolumeUsage{
+				{Unit: csi.VolumeUsage_BYTES, Total: state.CapacityBytes},
+			}}, nil
+		})
+	recorded := t.TempDir()
+	mountFilesystemStatsTargets(t, mounter, node, state, recorded)
+	if _, err := node.NodeGetVolumeStats(context.Background(), &csi.NodeGetVolumeStatsRequest{
+		VolumeId: state.VolumeID, VolumePath: recorded,
+	}); err != nil || !called {
+		t.Fatalf("stats for recorded target: err=%v gatewayCalled=%v", err, called)
+	}
+	called = false
+	_, err := node.NodeGetVolumeStats(context.Background(), &csi.NodeGetVolumeStatsRequest{
+		VolumeId: state.VolumeID, VolumePath: t.TempDir(),
+	})
+	if status.Code(err) != codes.FailedPrecondition || called {
+		t.Fatalf("stats for unrecorded path = %v (gatewayCalled=%v), want FailedPrecondition", err, called)
 	}
 }
 
@@ -320,79 +412,6 @@ func TestFilesystemStatsGatewayRejectsUntrustedEndpointAndOldMetadata(t *testing
 	oldState := &FileStageState{CanonicalSource: "/existing/data", ResourceID: "uuid:42", CapacityBytes: 1 << 20}
 	if _, err := gateway.Read(context.Background(), t.TempDir(), oldState); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("old metadata fell back to statfs: %v", err)
-	}
-}
-
-func TestFileStageContextTrustsPublishRoutingOnly(t *testing.T) {
-	node := NewNodeServer("consumer", nil, nil).WithDriverName("files.pillar-csi.bhyoo.com")
-	request := &csi.NodeStageVolumeRequest{
-		VolumeId: "agent/nfs/directory/pool/native/lifecycle",
-		VolumeContext: map[string]string{
-			fileContextAgentAddress:  "attacker:9500",
-			fileContextAgentName:     "attacker",
-			fileContextAgentVolumeID: "attacker/alias",
-			VolumeContextKeyFilesystemAdoption: `{"kind":"directory","canonicalSource":"/wrong",` +
-				`"resourceId":"wrong","filesystemType":"xfs"}`,
-			VolumeContextKeyFilesystemCapacity: "999",
-		},
-		PublishContext: map[string]string{
-			fileContextAgentAddress:  "trusted-agent:9500",
-			fileContextAgentName:     "trusted-agent",
-			fileContextAgentVolumeID: "pool/native",
-			PublishContextKeyFilesystemAdoption: `{"kind":"directory","canonicalSource":"/existing/data",` +
-				`"resourceId":"uuid:42","filesystemType":"ext4","filesystemId":"uuid","inode":42,"projectId":7}`,
-			PublishContextKeyFilesystemCapacity: "1048576",
-			PublishContextKeyFilesystemLayout:   `{"directory":{"logicalPool":"pool","hostRoot":"/existing"}}`,
-		},
-	}
-	fileCtx, err := node.parseFileStageContext(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	record := fileCtx.state
-	if record.AgentEndpoint != "trusted-agent:9500" || record.AgentName != "trusted-agent" ||
-		record.AgentVolumeID != "pool/native" || record.VolumeID != request.VolumeId ||
-		record.CanonicalSource != "/existing/data" || record.CapacityBytes != 1048576 ||
-		record.PoolName != "pool" || record.ExpectedHostRoot != "/existing" {
-		t.Fatalf("untrusted VC changed admitted identity, scope or routing: %#v", record)
-	}
-	delete(request.PublishContext, fileContextAgentAddress)
-	fileCtx, err = node.parseFileStageContext(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fileCtx.state.AgentEndpoint != "" {
-		t.Fatalf("PV userdata selected agent endpoint %q", fileCtx.state.AgentEndpoint)
-	}
-}
-
-func TestFileStageMetadataMigrationPreservesBoundAndNativeIdentity(t *testing.T) {
-	old := &FileStageState{
-		ProxyPath: "/proxy/data", Local: true, CanonicalSource: "/existing/data", ResourceID: "uuid:42",
-		FilesystemType: "ext4", FilesystemID: "uuid", Inode: 42, ProjectID: 7, CapacityBytes: 1048576,
-	}
-	current := *old
-	current.VolumeID, current.Kind = "public/lifecycle", "directory"
-	current.BackendType, current.PoolName, current.ExpectedHostRoot = "directory", "pool", "/existing"
-	current.AgentEndpoint, current.AgentVolumeID = "trusted:9500", "pool/native"
-	existing := &nodeStageState{File: old}
-	if err := refreshFileStageMetadata(existing, &current); err != nil {
-		t.Fatal(err)
-	}
-	replacement := current
-	replacement.ResourceID = "uuid:43"
-	if err := refreshFileStageMetadata(existing, &replacement); err == nil {
-		t.Fatal("restage silently repinned replacement native identity")
-	}
-	replacement = current
-	replacement.CapacityBytes++
-	if err := refreshFileStageMetadata(existing, &replacement); err == nil {
-		t.Fatal("restage silently changed admitted quota")
-	}
-	replacement = current
-	replacement.ExpectedHostRoot = "/"
-	if err := refreshFileStageMetadata(existing, &replacement); err == nil {
-		t.Fatal("restage silently broadened frozen layout")
 	}
 }
 

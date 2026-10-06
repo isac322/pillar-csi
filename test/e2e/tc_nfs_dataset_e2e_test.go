@@ -35,12 +35,6 @@ const (
 	nfsHelperLedger = "/tmp/pillar-e37-nfs-helper-ledger"
 )
 
-func nfsMust(ctx context.Context, args ...string) string {
-	out, err := nfsKubectl(ctx, "", args...)
-	Expect(err).NotTo(HaveOccurred())
-	return out
-}
-
 // Only public fixture state is selected below. Drop credential-bearing log
 // lines as an additional safeguard; never collect Secrets, pod env, or config.
 var nfsDiagnosticSensitiveLine = regexp.MustCompile(`(?i)(password|passwd|token|secret|credential|authorization|dh.?chap|private[ _-]?key|://[^/\s]+@)`)
@@ -154,28 +148,6 @@ func nfsApply(ctx context.Context, manifest string) {
 func nfsPodExec(ctx context.Context, pod, command string) string {
 	return nfsMust(ctx, "-n", nfsNamespace, "exec", pod, "--", "sh", "-ceu", command)
 }
-
-func nfsComponentPod(ctx context.Context, component, node string) string {
-	args := []string{"-n", resolveHelmNamespace(), "get", "pods", "-l", "app.kubernetes.io/component=" + component}
-	if node != "" {
-		args = append(args, "--field-selector", "spec.nodeName="+node)
-	}
-	args = append(args, "-o", "jsonpath={.items[0].metadata.name}")
-	pod := nfsMust(ctx, args...)
-	Expect(pod).NotTo(BeEmpty())
-	return pod
-}
-
-func nfsAgentExec(ctx context.Context, args ...string) string {
-	pod := nfsComponentPod(ctx, "agent", os.Getenv(suiteBackendContainerEnvVar))
-	return nfsMust(ctx, append([]string{"-n", resolveHelmNamespace(), "exec", pod, "-c", "agent", "--"}, args...)...)
-}
-
-func nfsNodeExec(ctx context.Context, node string, args ...string) (string, error) {
-	pod := nfsComponentPod(ctx, "node", node)
-	return nfsKubectl(ctx, "", append([]string{"-n", resolveHelmNamespace(), "exec", pod, "-c", "node", "--"}, args...)...)
-}
-
 func nfsDeleteWorkload(ctx context.Context, resources ...string) {
 	nfsMust(ctx, append([]string{"-n", nfsNamespace, "delete", "--ignore-not-found=true", "--wait=true", "--timeout=3m"}, resources...)...)
 }
@@ -258,35 +230,6 @@ func nfsDataset(ctx context.Context, pv string) string {
 
 func nfsPublicationNodes(ctx context.Context, pv string) []string {
 	return strings.Fields(nfsState(ctx, pv, ".status.publishedNodes[*].nodeID"))
-}
-
-// exportfs -v may wrap a long filesystem path onto its own line. Parse both
-// forms and keep policies scoped to the exact physical dataset, never a
-// sibling or the wildcard pseudoroot.
-func nfsExportPolicies(exports, path string) map[string][]string {
-	policies := map[string][]string{}
-	current := ""
-	for _, line := range strings.Split(exports, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		if strings.HasPrefix(fields[0], "/") {
-			current = fields[0]
-			fields = fields[1:]
-		}
-		if current != path {
-			continue
-		}
-		for _, field := range fields {
-			client, options, ok := strings.Cut(field, "(")
-			if !ok {
-				continue
-			}
-			policies[client] = strings.Split(strings.TrimSuffix(options, ")"), ",")
-		}
-	}
-	return policies
 }
 
 func nfsHideClientHelpers(ctx context.Context, node string) {

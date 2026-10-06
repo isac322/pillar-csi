@@ -34,6 +34,7 @@ import (
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 
+	"github.com/isac322/pillar-csi/api/v1alpha1"
 	"github.com/isac322/pillar-csi/internal/telemetry"
 )
 
@@ -92,6 +93,12 @@ func (n *NodeServer) NodeExpandVolume(
 	req *csi.NodeExpandVolumeRequest,
 ) (*csi.NodeExpandVolumeResponse, error) {
 	telemetry.SetVolumeAttributes(ctx, req.GetVolumeId())
+	// The file driver does not advertise EXPAND_VOLUME: an adopted
+	// filesystem's admitted quota is immutable, so a stray call is refused.
+	if n.effectiveDriverName() == v1alpha1.FileCSIDriver {
+		return nil, status.Error(codes.Unimplemented, //nolint:wrapcheck
+			"NodeExpandVolume: adopted filesystems do not support expansion")
+	}
 
 	// ── Input validation ────────────────────────────────────────────────────
 	if req.GetVolumeId() == "" {
