@@ -512,8 +512,10 @@ func fileNodeStageStateFile(handle string) string {
 
 // teardownDiagnostics returns a lazy, bounded collector of the teardown facts
 // a bare PV finalizer timeout hides: live publications and VolumeAttachments,
-// the real file-node stage directory (and the PV's stage record when handle is
-// known) and matching mounts, and file-node/agent/controller + csi-attacher
+// the known PV/PVC phase, finalizers and claimRef, the real file-node stage
+// directory (and the PV's stage record when handle is known) and matching
+// mounts, node volumesInUse/volumesAttached and recent matching kubelet
+// journal lines, and file-node/agent plus block and file controller/sidecar
 // logs — distinguishing a genuinely stuck unpublish from slow asynchronous
 // drain. handle and target are the PV's CSI volumeHandle and export target;
 // either may be empty when unknown.
@@ -539,6 +541,13 @@ func (f *FilesystemAdoptionFixture) teardownDiagnostics(handle, target string, n
 		capture("get", "volumeattachments", "-o", "yaml")
 		capture("-n", f.Namespace, "get", "pods", "-o", "wide")
 		capture("-n", f.Namespace, "get", "events", "-o", "wide")
+		// Lifecycle facts of the known PV and claim only (never Secrets).
+		if f.PVName != "" {
+			capture("get", "pv", f.PVName, "--ignore-not-found", "-o", `jsonpath=phase={.status.phase} deletionTimestamp={.metadata.deletionTimestamp} finalizers={.metadata.finalizers} claimRef={.spec.claimRef.namespace}/{.spec.claimRef.name}/{.spec.claimRef.uid} reclaim={.spec.persistentVolumeReclaimPolicy}`)
+		}
+		if f.PVCName != "" {
+			capture("-n", f.Namespace, "get", "pvc", f.PVCName, "--ignore-not-found", "-o", `jsonpath=phase={.status.phase} volumeName={.spec.volumeName} deletionTimestamp={.metadata.deletionTimestamp} finalizers={.metadata.finalizers}`)
+		}
 		captureNode := func(node string, args ...string) {
 			output, diagnosticErr := f.NodeExec(diagnosticCtx, node, args...)
 			const maxDiagnosticBytes = 32 * 1024
@@ -572,6 +581,17 @@ func (f *FilesystemAdoptionFixture) teardownDiagnostics(handle, target string, n
 				}
 			}
 			captureNode(node, "sh", "-ceu", script+"; grep -F"+filters+" /proc/1/mountinfo || true")
+			// What kubelet still believes about this node's volumes, and its
+			// recent log lines about this PV (bounded to the last 100).
+			capture("get", "node", node, "-o", `jsonpath=volumesInUse={.status.volumesInUse} volumesAttached={.status.volumesAttached}`)
+			journal := "journalctl -u kubelet --no-pager -n 2000 2>&1"
+			if handle != "" {
+				filters += " -e " + shellQuote(handle)
+			}
+			if filters != "" {
+				journal += " | grep -F" + filters
+			}
+			captureNode(node, "sh", "-ceu", journal+" | tail -n 100 || true")
 			pod, err := capture("-n", resolveHelmNamespace(), "get", "pods", "-l", "app.kubernetes.io/component=node", "--field-selector", "spec.nodeName="+node, "-o", "jsonpath={.items[0].metadata.name}")
 			if err != nil || strings.TrimSpace(pod) == "" {
 				continue
@@ -584,8 +604,9 @@ func (f *FilesystemAdoptionFixture) teardownDiagnostics(handle, target string, n
 		}
 		pod, err = capture("-n", resolveHelmNamespace(), "get", "pods", "-l", "app.kubernetes.io/component=controller", "-o", "jsonpath={.items[0].metadata.name}")
 		if err == nil && strings.TrimSpace(pod) != "" {
-			capture("-n", resolveHelmNamespace(), "logs", strings.TrimSpace(pod), "-c", "controller", "--tail=100")
-			capture("-n", resolveHelmNamespace(), "logs", strings.TrimSpace(pod), "-c", "csi-attacher", "--tail=100")
+			for _, container := range []string{"controller", "csi-attacher", "file-controller", "file-csi-attacher", "file-csi-provisioner"} {
+				capture("-n", resolveHelmNamespace(), "logs", strings.TrimSpace(pod), "-c", container, "--tail=100")
+			}
 		}
 		diagnosticText := diagnostics.String()
 		const maxDiagnosticContextBytes = 96 * 1024

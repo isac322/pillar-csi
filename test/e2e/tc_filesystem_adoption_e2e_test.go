@@ -407,7 +407,30 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		pod := "e71-fsgroup"
 		e71ApplyPod(ctx, f, pod, f.PVCName, f.StorageNode, false, 1234, 2345)
 		Expect(f.Must(ctx, "-n", f.Namespace, "exec", pod, "--", "stat", "-c", "%u:%g:%a", "/data/tree/preexisting")).To(Equal(fmt.Sprintf("%d:%d:640", before.UID, before.GID)))
+		// Witness the real publication before deleting its last consumer, so
+		// the drain barrier below cannot pass vacuously on a wrong stage path.
+		handle := f.Must(ctx, "get", "pv", f.PVName, "-o", "jsonpath={.spec.csi.volumeHandle}")
+		Expect(handle).NotTo(BeEmpty())
+		target := f.Must(ctx, "get", "pv", f.PVName, "-o", "jsonpath={.spec.csi.volumeAttributes.target_id}")
+		stage := fileNodeStageStateFile(handle)
+		Expect(strings.Fields(f.Must(ctx, "get", "pillarvolumestate", f.PVName, "-o", "jsonpath={.status.publishedNodes[*].nodeID}"))).To(ContainElement(f.StorageNode))
+		Expect(e71Attachment(ctx, f, ".metadata.name")).NotTo(BeEmpty())
+		_, err := f.NodeExec(ctx, f.StorageNode, "test", "-e", stage)
+		Expect(err).NotTo(HaveOccurred(), "%s must persist %s while published", f.StorageNode, stage)
 		e71Delete(ctx, f, "pod", pod)
+		// Precondition of TC-E71.9 (Retain, claimRef replacement) and TC-E71.10
+		// (unpublished Delete PV): the last consumer's publication is fully
+		// drained. This barrier distinguishes an undrained publication from a
+		// later teardown failure; it is not a runtime repair.
+		nodes := append(append([]string{}, workers...), f.StorageNode)
+		diagnostics := f.teardownDiagnostics(handle, target, nodes...)
+		Eventually(func() string { return e71Attachment(ctx, f, ".metadata.name") }, 2*time.Minute, 2*time.Second).Should(BeEmpty(), diagnostics)
+		Eventually(func() string {
+			return f.Must(ctx, "get", "pillarvolumestate", f.PVName, "-o", "jsonpath={.status.publishedNodes[*].nodeID}")
+		}, 2*time.Minute, 2*time.Second).Should(BeEmpty(), diagnostics)
+		for _, node := range nodes {
+			Eventually(func() error { _, err := f.NodeExec(ctx, node, "test", "!", "-e", stage); return err }, 2*time.Minute, 2*time.Second).Should(Succeed(), diagnostics)
+		}
 		s, _ := f.Snapshot(ctx)
 		Expect(s.Properties).To(Equal(before.Properties))
 	})
