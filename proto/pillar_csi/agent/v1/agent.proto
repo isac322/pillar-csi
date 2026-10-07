@@ -116,6 +116,11 @@ service AgentService {
   // agent MUST return success.
   rpc CreateVolume(CreateVolumeRequest) returns (CreateVolumeResponse);
 
+  // InspectImport resolves an existing filesystem source and validates its
+  // native identity, exact effective quota, and configured placement read-only.
+  // The controller calls it before reserving the backing resource.
+  rpc InspectImport(InspectImportRequest) returns (InspectImportResponse);
+
   // ImportVolume adopts an already-existing backend storage resource into a
   // volume lifecycle instead of creating one.  It backs the CSI CreateVolume
   // path of a PersistentVolumeClaim that carries the
@@ -129,7 +134,9 @@ service AgentService {
   // node (a target backstore, an nvmet namespace, a mount or an exclusive
   // device claim), or when capacity_bytes exceeds the resource's current
   // size.  It must never create or modify the resource.  ZFS zvol and LVM
-  // backends implement it; other backends return UNIMPLEMENTED.
+  // backends implement it; filesystem backends implement it only for
+  // filesystem adoption, which instead carries a pinned native identity and
+  // requires an exact quota bound; other backends return UNIMPLEMENTED.
   //
   // LVM imports require expected_lvm_source and are pinned durably to that
   // identity and to preserve_original: a later import of the same volume_id
@@ -418,11 +425,19 @@ message LvmVolumeParams {
   optional string thin_pool = 4;
 }
 
+// DirectoryVolumeParams carries trusted placement for directory adoption.
+// It does not authorize creating directories or modifying existing quotas.
+message DirectoryVolumeParams {
+  string logical_pool = 1;
+  string host_root = 2;
+}
+
 // BackendParams is a oneof wrapper for backend-specific creation parameters.
 message BackendParams {
   oneof params {
     ZfsVolumeParams zfs = 1;
     LvmVolumeParams lvm = 2;
+    DirectoryVolumeParams directory = 3;
   }
 }
 
@@ -568,6 +583,9 @@ message PoolInfo {
   // LVM backends: the thin pool LV the agent creates thin volumes in; empty
   // means the backend has no thin pool (linear LVs only).
   string thin_pool = 6;
+  // Directory backends: the configured trusted host allow-root. A store must
+  // declare this exact root, not merely a path contained beneath it.
+  string host_root = 7;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -707,6 +725,51 @@ message CreateVolumeResponse {
   int64 capacity_bytes = 2;
 }
 
+// FilesystemAdoption identifies a preserved existing filesystem source.
+// Capacity is carried separately so native identity is not a quota snapshot.
+message FilesystemAdoption {
+  // "directory" or "zfs-dataset".
+  string kind = 1;
+  // Canonical host directory path or native ZFS dataset fullname.
+  string canonical_source = 2;
+  // Stable native filesystem UUID + root inode, or ZFS dataset GUID.
+  // Logical pool aliases and source-path aliases must retain the same identity.
+  string resource_id = 3;
+  // Existing dataset host mount path; omitted for directories, whose
+  // canonical_source is already their host path.
+  string host_path = 4;
+  // Native filesystem type ("ext4", "xfs", or "zfs").
+  string filesystem_type = 5;
+  // Directory's stable native filesystem UUID, never a volatile device or
+  // statfs ID. Directory-only fields are omitted for ZFS datasets.
+  string filesystem_id = 6;
+  uint64 inode = 7;
+  // Existing bounded native project-quota scope, verified without stamping.
+  uint32 project_id = 8;
+}
+
+message InspectImportRequest {
+  // Backend instance routing; identity must not depend on this logical alias.
+  string pool_name = 1;
+  string source = 2;
+  BackendType backend_type = 3;
+  // Existing effective enforceable quota must equal this positive byte count.
+  int64 required_bytes = 4;
+  // Expected placement declared by the store; compared exactly with the agent.
+  string expected_parent_dataset = 5;
+  string expected_host_root = 6;
+  // Recorded identity for read-only revalidation after adoption. When absent,
+  // inspection must prove the complete first-claim filesystem/quota scope.
+  FilesystemAdoption expected_filesystem_adoption = 7;
+}
+
+message InspectImportResponse {
+  // Canonical source, native identity, and existing host mount source.
+  FilesystemAdoption filesystem_adoption = 1;
+  // Exact existing effective enforceable quota; inspection never resizes it.
+  int64 capacity_bytes = 2;
+}
+
 // ImportVolumeRequest asks the agent to adopt an already-existing backend
 // storage resource — created by another provisioning stack, e.g.
 // democratic-csi or openebs zfs-localpv — into the given volume lifecycle.
@@ -724,7 +787,9 @@ message ImportVolumeRequest {
   int64 capacity_bytes = 2;
 
   // Backend implementation to use.  BACKEND_TYPE_ZFS_ZVOL and
-  // BACKEND_TYPE_LVM support import; other backends return UNIMPLEMENTED.
+  // BACKEND_TYPE_LVM support import; legacy zvol import semantics are
+  // unchanged.  Filesystem backends require filesystem_adoption and exact
+  // capacity.  Other backends return UNIMPLEMENTED.
   BackendType backend_type = 3;
 
   // Fencing token: the PillarVolumeState UID and the publicationGeneration
@@ -758,6 +823,17 @@ message ImportVolumeRequest {
   // later import with an explicit false is refused with FAILED_PRECONDITION.
   // Ignored for non-LVM imports; ZFS behavior is unaffected.
   optional bool preserve_original = 7;
+
+  // Resolved native filesystem identity from InspectImport. The agent reopens
+  // and pins this source, verifies identity and exact quota under its canonical
+  // resource fence, marks ownership, and closes the pin before responding.
+  // Absent for legacy zvol and LVM imports, whose fields 1..7 retain their
+  // semantics.
+  FilesystemAdoption filesystem_adoption = 8;
+
+  // Stored trusted placement, checked exactly even if the agent config changed
+  // since inspection. Filesystem adoption never applies creation properties.
+  BackendParams backend_params = 9;
 }
 
 // LvmSourceIdentity names a pre-existing LVM logical volume and its stable
@@ -926,6 +1002,10 @@ message DeleteVolumeRequest {
   // Fencing token: the PillarVolumeState UID and the publicationGeneration
   // the controller committed for this operation.  See FencingToken.
   FencingToken fence = 3;
+
+  // Recorded filesystem identity selects its canonical fence. Filesystem
+  // deletion must preserve the original source rather than invoke destruction.
+  FilesystemAdoption filesystem_adoption = 4;
 }
 
 message DeleteVolumeResponse {}
@@ -944,6 +1024,9 @@ message ReleaseVolumeRequest {
   // Fencing token: the PillarVolumeState UID and the publicationGeneration
   // the controller committed for this operation.  See FencingToken.
   FencingToken fence = 3;
+
+  // Recorded identity selects the canonical fence even if source is missing.
+  FilesystemAdoption filesystem_adoption = 4;
 }
 
 message ReleaseVolumeResponse {}
@@ -999,6 +1082,14 @@ message ExportVolumeRequest {
   // Fencing token: the PillarVolumeState UID and the publicationGeneration
   // the controller committed for this operation.  See FencingToken.
   FencingToken fence = 6;
+
+  // Adopted source must be reopened and pinned through owned proxy setup and
+  // native post-mount verification before exposure. No pin spans RPCs.
+  FilesystemAdoption filesystem_adoption = 7;
+  // Exact existing effective quota, revalidated without changing the source.
+  int64 capacity_bytes = 8;
+  // Stored placement must still exactly match the configured backend layout.
+  BackendParams backend_params = 9;
 }
 
 message ExportVolumeResponse {
@@ -1021,6 +1112,9 @@ message UnexportVolumeRequest {
   // Fencing token: the PillarVolumeState UID and the publicationGeneration
   // the controller committed for this operation.  See FencingToken.
   FencingToken fence = 3;
+
+  // Recorded identity selects the canonical fence; source may be absent.
+  FilesystemAdoption filesystem_adoption = 4;
 }
 
 message UnexportVolumeResponse {}
@@ -1119,6 +1213,11 @@ message AllowInitiatorRequest {
   // Protocol parameters the grant needs.  iSCSI applies
   // export_params.iscsi.chap to the new ACL; other protocols ignore it.
   ExportParams export_params = 5;
+
+  // Revalidate the adopted source before granting a publication.
+  FilesystemAdoption filesystem_adoption = 6;
+  int64 capacity_bytes = 7;
+  BackendParams backend_params = 8;
 }
 
 message AllowInitiatorResponse {}
@@ -1140,6 +1239,9 @@ message DenyInitiatorRequest {
   // Fencing token: the PillarVolumeState UID and the publicationGeneration
   // the controller committed for this operation.  See FencingToken.
   FencingToken fence = 4;
+
+  // Recorded identity selects the canonical fence; source may be absent.
+  FilesystemAdoption filesystem_adoption = 5;
 }
 
 message DenyInitiatorResponse {}
@@ -1162,6 +1264,12 @@ message SetLocalAttachRequest {
   // Fencing token: the PillarVolumeState UID and the publicationGeneration
   // the controller committed for this operation.  See FencingToken.
   FencingToken fence = 4;
+
+  // Revalidate native identity, exact quota, and layout before publication.
+  // Local attachment uses the recorded source, never a synthetic device path.
+  FilesystemAdoption filesystem_adoption = 5;
+  int64 capacity_bytes = 6;
+  BackendParams backend_params = 7;
 }
 
 message SetLocalAttachResponse {
@@ -1195,6 +1303,12 @@ message VolumeDesiredState {
   // Fencing token: the PillarVolumeState UID and the publicationGeneration
   // the controller committed for this operation.  See FencingToken.
   FencingToken fence = 6;
+
+  // Recorded filesystem adoption changes recovery to verification only:
+  // missing, replaced, or quota-drifted sources must NEVER be created.
+  FilesystemAdoption filesystem_adoption = 7;
+  // Exact existing effective quota, revalidated before restoring exports.
+  int64 capacity_bytes = 8;
 }
 
 // ExportDesiredState is the desired state for a single export within a volume.

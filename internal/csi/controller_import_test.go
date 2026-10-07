@@ -24,6 +24,7 @@ package csi
 import (
 	"context"
 	"io"
+	"maps"
 	"reflect"
 	"strconv"
 	"strings"
@@ -773,7 +774,8 @@ func TestReleaseBackendVolume_StaleReadKeepsReplacement(t *testing.T) {
 	env.srv.apiReader = hook
 
 	err := env.srv.releaseBackendVolume(context.Background(),
-		"pvc-data", "storage-node-1", "zfs-zvol", "hot-data/legacy-vol")
+		"pvc-data", "storage-node-1/nvmeof-tcp/zfs-zvol/hot-data/legacy-vol", "",
+		backendReservation{agent: "storage-node-1", backendType: "zfs-zvol", key: "hot-data/legacy-vol"})
 	if status.Code(err) != codes.Aborted {
 		t.Fatalf("release over a replaced reservation: err = %v, want Aborted", err)
 	}
@@ -1443,6 +1445,151 @@ func TestCreateVolume_ImportLV_RefusesLateAnnotation(t *testing.T) {
 	if after.Spec.LVMSource != nil || !reflect.DeepEqual(after.Spec, before.Spec) {
 		t.Fatalf("late annotation changed the record: %+v", after.Spec)
 	}
+}
+
+// TestCreateVolume_ReadyRetry_RefusesLateFilesystemSelector: a Ready
+// lifecycle without a recorded filesystem adoption (plain LVM create, LV
+// adoption, zvol adoption) answered from its durable record refuses a late
+// import-directory or import-zfs-dataset selector, and a mixed selector set,
+// exactly like the slow path.  The PillarProtocol is deleted before the
+// retry so only the Ready fast path can answer: the healthy control proves
+// the retry is served from the record, and the slow path would fail with
+// FailedPrecondition instead of the asserted InvalidArgument.
+func TestCreateVolume_ReadyRetry_RefusesLateFilesystemSelector(t *testing.T) {
+	t.Parallel()
+	for lifecycleName, lifecycle := range readyRetryLifecycles() {
+		t.Run(lifecycleName+"/healthy replay", func(t *testing.T) {
+			t.Parallel()
+			requireReadyReplay(t, lifecycle)
+		})
+		for name, annotations := range lateFilesystemSelectorCases(lifecycle) {
+			t.Run(lifecycleName+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				requireReadyRetryRefused(t, lifecycle, annotations)
+			})
+		}
+	}
+}
+
+// readyRetryLifecycle is a non-filesystem lifecycle fixture: setup builds
+// its env, claim is the annotation set of a healthy replay, and source the
+// recorded import selector (nil for a plain create).
+type readyRetryLifecycle struct {
+	setup  func(t *testing.T) (*controllerTestEnv, *csi.CreateVolumeRequest)
+	claim  map[string]string
+	source map[string]string
+}
+
+func readyRetryLifecycles() map[string]readyRetryLifecycle {
+	zvol := map[string]string{v1alpha1.AnnotationImportZvol: "hot-data/k8s/legacy-vol"}
+	return map[string]readyRetryLifecycle{
+		"plain lvm": {
+			setup: func(t *testing.T) (*controllerTestEnv, *csi.CreateVolumeRequest) {
+				t.Helper()
+				return newImportLVTestEnv(t, map[string]string{})
+			},
+			claim: map[string]string{},
+		},
+		"lv adoption": {
+			setup: func(t *testing.T) (*controllerTestEnv, *csi.CreateVolumeRequest) {
+				t.Helper()
+				return newImportLVTestEnv(t, importLVAnnotations(""))
+			},
+			claim:  importLVAnnotations(""),
+			source: importLVAnnotations(""),
+		},
+		"zvol adoption": {
+			setup: func(t *testing.T) (*controllerTestEnv, *csi.CreateVolumeRequest) {
+				t.Helper()
+				return newImportTestEnv(t, lvClaimName, "hot-data/k8s/legacy-vol")
+			},
+			claim:  zvol,
+			source: zvol,
+		},
+	}
+}
+
+// lateFilesystemSelectorCases returns the late filesystem selectors alone
+// and, for an adoption, mixed with its recorded source selector.
+func lateFilesystemSelectorCases(lifecycle readyRetryLifecycle) map[string]map[string]string {
+	cases := map[string]map[string]string{}
+	for name, selector := range map[string]map[string]string{
+		"late directory":   {v1alpha1.AnnotationImportDirectory: "/srv/legacy"},
+		"late zfs dataset": {v1alpha1.AnnotationImportZFSDataset: "hot-data/files/legacy"},
+	} {
+		cases[name] = selector
+		if lifecycle.source != nil {
+			mixed := maps.Clone(lifecycle.source)
+			maps.Copy(mixed, selector)
+			cases["mixed "+name] = mixed
+		}
+	}
+	return cases
+}
+
+// requireReadyReplay checks that a healthy retry is answered from the Ready
+// record with the original volume.
+func requireReadyReplay(t *testing.T, lifecycle readyRetryLifecycle) {
+	t.Helper()
+	env, req := lifecycle.setup(t)
+	first := readyLifecycleWithoutProtocol(t, env, req)
+	setClaimAnnotations(t, env, lifecycle.claim)
+	second, err := env.srv.CreateVolume(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Ready replay: %v", err)
+	}
+	if second.GetVolume().GetVolumeId() != first.GetVolume().GetVolumeId() {
+		t.Fatalf("replay VolumeId = %q, want %q",
+			second.GetVolume().GetVolumeId(), first.GetVolume().GetVolumeId())
+	}
+}
+
+// requireReadyRetryRefused checks that a Ready retry carrying annotations
+// is refused with InvalidArgument without reaching the agent or changing the
+// record.
+func requireReadyRetryRefused(t *testing.T, lifecycle readyRetryLifecycle, annotations map[string]string) {
+	t.Helper()
+	env, req := lifecycle.setup(t)
+	readyLifecycleWithoutProtocol(t, env, req)
+	before := volumeState(t, env, req.GetName())
+	imports, creates, exports := env.agent.importVolumeCalls, env.agent.createVolumeCalls,
+		env.agent.exportVolumeCalls
+	setClaimAnnotations(t, env, annotations)
+	_, err := env.srv.CreateVolume(context.Background(), req)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Ready retry with %v: err = %v, want InvalidArgument", annotations, err)
+	}
+	if env.agent.importVolumeCalls != imports || env.agent.createVolumeCalls != creates ||
+		env.agent.exportVolumeCalls != exports {
+		t.Fatal("refused Ready retry reached the agent")
+	}
+	after := volumeState(t, env, req.GetName())
+	if !reflect.DeepEqual(after.Spec, before.Spec) || after.Spec.FilesystemAdoption != nil {
+		t.Fatalf("refused Ready retry changed the record: %+v", after.Spec)
+	}
+}
+
+// readyLifecycleWithoutProtocol provisions req to Ready and deletes the
+// PillarProtocol it resolved, so a later retry can only be answered by the
+// Ready fast path.
+func readyLifecycleWithoutProtocol(
+	t *testing.T, env *controllerTestEnv, req *csi.CreateVolumeRequest,
+) *csi.CreateVolumeResponse {
+	t.Helper()
+	resp, err := env.srv.CreateVolume(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first CreateVolume: %v", err)
+	}
+	protocol := &v1alpha1.PillarProtocol{}
+	err = env.srv.k8sClient.Get(context.Background(),
+		types.NamespacedName{Name: req.GetParameters()[paramProtocolRef]}, protocol)
+	if err != nil {
+		t.Fatalf("get PillarProtocol: %v", err)
+	}
+	if err := env.srv.k8sClient.Delete(context.Background(), protocol); err != nil {
+		t.Fatalf("delete PillarProtocol: %v", err)
+	}
+	return resp
 }
 
 // TestCreateVolume_ImportLV_AgentRefusalPropagates: an agent refusal (LV in

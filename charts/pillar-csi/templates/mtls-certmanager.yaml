@@ -126,4 +126,29 @@ spec:
     name: {{ $leafIssuerName }}
     kind: {{ $leafIssuerKind }}
     group: {{ $leafIssuerGroup }}
+{{- if .Values.fileDriver.enabled }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ printf "%s-file-node-mtls" $fullname }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "pillar-csi.componentLabels" (dict "root" . "component" "node") | nindent 4 }}
+spec:
+  secretName: {{ printf "%s-file-node-mtls" $fullname }}
+  duration: {{ .Values.mtls.certManager.duration }}
+  renewBefore: {{ .Values.mtls.certManager.renewBefore }}
+  commonName: {{ printf "%s-file-node.%s.svc" $fullname $ns }}
+  uris:
+    - spiffe://pillar-csi/file-node
+  usages:
+    - digital signature
+    - key encipherment
+    - client auth
+  issuerRef:
+    name: {{ $leafIssuerName }}
+    kind: {{ $leafIssuerKind }}
+    group: {{ $leafIssuerGroup }}
+{{- end }}
 {{- end }}

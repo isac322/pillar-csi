@@ -37,6 +37,9 @@ const (
 
 	// BackendIDLVMLV provisions LVM logical volumes (block volumes).
 	BackendIDLVMLV BackendID = "lvm-lv"
+
+	// BackendIDDirectory adopts existing quota-bounded host directories.
+	BackendIDDirectory BackendID = "directory"
 )
 
 // ZFSVolumeType enumerates the ZFS volume kinds the driver can create.
@@ -120,15 +123,32 @@ type LVMBackendConfig struct {
 	ProvisioningMode LVMProvisioningMode `json:"provisioningMode,omitempty"`
 }
 
+// DirectoryBackendConfig declares a logical pool of existing host directories.
+// It does not authorize creating directories or changing their quotas.
+type DirectoryBackendConfig struct {
+	// logicalPool is the routing name of this directory backend.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern="^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"
+	LogicalPool string `json:"logicalPool"`
+
+	// hostRoot is the absolute, trusted allow-root on the storage node.
+	// It must equal the directory backend's configured root on the agent.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern="^/"
+	HostRoot string `json:"hostRoot"`
+}
+
 // BackendSpec describes the storage backend of a PillarStore.  Exactly one
-// member must be set: the member name selects the backend (zfs or lvm) and
+// member must be set: the member name selects zfs, lvm, or directory and
 // its value carries that backend's configuration.
 //
 // The same union shape is reused for the agent's backend placement config
 // file; per-volume and per-binding override documents use BackendOverrides,
 // which keeps only the tunable subset.
 //
-// +kubebuilder:validation:XValidation:rule="(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) == 1",message="exactly one of zfs or lvm must be set"
+// +kubebuilder:validation:XValidation:rule="(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) + (has(self.directory) ? 1 : 0) == 1",message="exactly one of zfs, lvm, or directory must be set"
 type BackendSpec struct {
 	// zfs holds ZFS-specific configuration.
 	// +optional
@@ -137,6 +157,10 @@ type BackendSpec struct {
 	// lvm holds LVM-specific configuration.
 	// +optional
 	LVM *LVMBackendConfig `json:"lvm,omitempty"`
+
+	// directory holds existing host-directory adoption configuration.
+	// +optional
+	Directory *DirectoryBackendConfig `json:"directory,omitempty"`
 }
 
 // Kind returns the selected backend member as a BackendID, or "" when the
@@ -149,19 +173,23 @@ func (b BackendSpec) Kind() BackendID {
 		return BackendIDZFSZvol
 	case b.LVM != nil:
 		return BackendIDLVMLV
+	case b.Directory != nil:
+		return BackendIDDirectory
 	default:
 		return ""
 	}
 }
 
-// PoolName returns the physical pool identifier used in agent volume IDs:
-// the ZFS pool name or the LVM volume group name.
+// PoolName returns the routing pool identifier used in agent volume IDs:
+// the ZFS pool, LVM volume group, or directory backend's logical pool.
 func (b BackendSpec) PoolName() string {
 	switch {
 	case b.ZFS != nil:
 		return b.ZFS.Pool
 	case b.LVM != nil:
 		return b.LVM.VolumeGroup
+	case b.Directory != nil:
+		return b.Directory.LogicalPool
 	default:
 		return ""
 	}
@@ -190,7 +218,7 @@ type PillarStoreSpec struct {
 	AgentRef string `json:"agentRef"`
 
 	// backend describes the storage backend and pool to use.  Exactly one
-	// member (zfs or lvm) must be set.
+	// member (zfs, lvm, or directory) must be set.
 	// +required
 	Backend BackendSpec `json:"backend"`
 }

@@ -88,12 +88,25 @@ const (
 	//     pillar-csi.bhyoo.com/import-zvol: "hot-data/k8s/pvc-0d5201a5-…"
 	AnnotationImportZvol = "pillar-csi.bhyoo.com/import-zvol"
 
+	// AnnotationImportDirectory names an existing host directory to adopt
+	// without changing its contents, ownership, or existing project quota.
+	// It requires the file CSI driver and is mutually exclusive with the
+	// other import selectors. It is not a StorageClass parameter.
+	AnnotationImportDirectory = "pillar-csi.bhyoo.com/import-directory"
+
+	// AnnotationImportZFSDataset names an existing ZFS filesystem dataset
+	// to adopt without changing its properties or destroying it on deletion.
+	// It requires the file CSI driver and is mutually exclusive with the
+	// other import selectors. It is not a StorageClass parameter.
+	AnnotationImportZFSDataset = "pillar-csi.bhyoo.com/import-zfs-dataset"
+
 	// AnnotationImportLV is a PVC annotation that names an existing LVM
 	// logical volume to adopt instead of provisioning a new volume.  The
 	// plain-string value is "<vg>/<lv>:<vg_uuid>:<lv_uuid>"; all four parts
 	// are required (read the UUIDs with `lvs -o vg_uuid,lv_uuid`).  It is
-	// mutually exclusive with [AnnotationImportZvol] on the same claim and is
-	// not valid as a StorageClass parameter.
+	// mutually exclusive with the other import selectors ([AnnotationImportZvol],
+	// [AnnotationImportDirectory], [AnnotationImportZFSDataset]) on the same
+	// claim and is not valid as a StorageClass parameter.
 	//
 	// Example:
 	//   annotations:

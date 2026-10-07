@@ -34,7 +34,8 @@ spec:
       openAPIV3Schema:
         description: |-
           PillarVolumeReservation atomically binds a backend volume
-          (agent + backend + agentVolumeID) to one volume lifecycle.  The CSI
+          (agent + backend + agentVolumeID, or the native filesystem resource key)
+          to one volume lifecycle. The CSI
           controller creates it before the owning PillarVolumeState with a
           deterministic name, so two concurrent CreateVolume claims on the same
           backend volume — for example two PVCs importing the same zvol — cannot both
@@ -103,6 +104,13 @@ spec:
                 required:
                 - uid
                 type: object
+              filesystemResourceID:
+                description: |-
+                  filesystemResourceID is the canonical native backing-resource key for
+                  filesystem adoption, independent of logical pool and source path.
+                  Filesystem aliases reserve this key rather than agentVolumeID; the
+                  latter remains the routing identity. Omitted for legacy block volumes.
+                type: string
               ownerVolume:
                 description: |-
                   ownerVolume is the name of the PillarVolumeState lifecycle that holds

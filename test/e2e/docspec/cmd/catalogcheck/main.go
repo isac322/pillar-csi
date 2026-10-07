@@ -143,7 +143,7 @@ func enumerateGinkgoSpecs(repoRoot string) ([]string, error) {
 	lanes := [][]string{
 		{"--dry-run", "--label-filter=default-profile", "-v", e2eDir, "--", "-test.run=^TestE2E$"},
 		{"--tags=e2e", "--dry-run", "--label-filter=default-profile", "-v", e2eDir, "--", "-test.run=^TestE2E$"},
-		{"--tags=e2e", "--dry-run", "--label-filter=nfs", "-v", e2eDir, "--", "-test.run=^TestE2E$"},
+		{"--tags=e2e,e2e_helm", "--dry-run", "--label-filter=nfs", "-v", e2eDir, "--", "-test.run=^TestE2E$"},
 	}
 	var names []string
 	seen := make(map[string]struct{})

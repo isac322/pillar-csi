@@ -170,6 +170,7 @@ type classLayer struct {
 	// localAttach is the class's local attach setting (binding
 	// spec.localAttach, or a hand-written class's local-attach parameter).
 	localAttach bool
+	driverName  string
 
 	// storeName is the PillarStore the class names (loaded into store only
 	// when the store is resolved).
@@ -195,7 +196,9 @@ type resolution struct {
 	// v1alpha1.AnnotationImportZvol annotation ("" when absent).  CreateVolume
 	// validates it against the resolved backend and switches the backend step
 	// from create to adopt.
-	importDataset string
+	importDataset    string
+	importDirectory  string
+	importZFSDataset string
 
 	// importLV and importLVPolicy are the raw values of the claim's
 	// v1alpha1.AnnotationImportLV and v1alpha1.AnnotationImportLVPolicy
@@ -224,7 +227,7 @@ func (s *ControllerServer) resolveVolumeConfig(
 	if err != nil {
 		return nil, err
 	}
-	pvc, err := s.claimDocs(ctx, scParams)
+	pvc, err := s.claimDocs(ctx, scParams, false)
 	if err != nil {
 		return nil, err
 	}
@@ -272,12 +275,14 @@ func (s *ControllerServer) resolveVolumeConfig(
 			Filesystem:  fs,
 			LocalAttach: class.localAttach,
 		},
-		agentRef:       class.store.Spec.AgentRef,
-		pvcFS:          pvc.Filesystem,
-		storeName:      class.storeName,
-		importDataset:  pvc.ImportZvol,
-		importLV:       pvc.ImportLV,
-		importLVPolicy: pvc.ImportLVPolicy,
+		agentRef:         class.store.Spec.AgentRef,
+		pvcFS:            pvc.Filesystem,
+		storeName:        class.storeName,
+		importDataset:    pvc.ImportZvol,
+		importDirectory:  pvc.ImportDirectory,
+		importZFSDataset: pvc.ImportZFSDataset,
+		importLV:         pvc.ImportLV,
+		importLVPolicy:   pvc.ImportLVPolicy,
 	}, nil
 }
 
@@ -299,7 +304,7 @@ func resolveProtocolFilesystem(
 	if err != nil {
 		return nil, invalidConfig("%v", err)
 	}
-	if class.localAttach {
+	if class.localAttach && class.driverName != v1alpha1.FileCSIDriver {
 		return nil, invalidConfig("localAttach is not supported for protocol %q", v1alpha1.ProtocolIDNFS)
 	}
 	fs.FSType = ProtocolNFS
@@ -355,7 +360,9 @@ func replayResolution(
 		iscsi.Auth = recorded.Protocol.ISCSI.Auth.DeepCopy()
 	}
 	return &resolution{resolved: exportOnly, pvcFS: pvc.Filesystem, storeName: class.storeName,
-		importDataset: pvc.ImportZvol, importLV: pvc.ImportLV, importLVPolicy: pvc.ImportLVPolicy}, nil
+		importDataset: pvc.ImportZvol, importDirectory: pvc.ImportDirectory,
+		importZFSDataset: pvc.ImportZFSDataset, importLV: pvc.ImportLV,
+		importLVPolicy: pvc.ImportLVPolicy}, nil
 }
 
 // resolveClassLayer reads the StorageClass identity parameters and loads the
@@ -378,10 +385,15 @@ func (s *ControllerServer) resolveClassLayer(
 		if err != nil {
 			return nil, err
 		}
+		if binding.Spec.EffectiveCSIDriver() != s.effectiveDriverName() {
+			return nil, invalidConfig("PillarStorageClass %q selects CSI driver %q, not %q",
+				bindingName, binding.Spec.EffectiveCSIDriver(), s.effectiveDriverName())
+		}
 		class := &classLayer{
 			filesystem:  binding.Spec.Filesystem,
 			source:      fmt.Sprintf("PillarStorageClass %q spec.overrides", bindingName),
 			localAttach: binding.Spec.LocalAttach,
+			driverName:  s.effectiveDriverName(),
 		}
 		if ov := binding.Spec.Overrides; ov != nil {
 			class.backend, class.protocolOv = ov.Backend, ov.Protocol
@@ -405,7 +417,7 @@ func (s *ControllerServer) resolveClassLayer(
 			paramBinding, paramStoreRef, paramProtocolRef)
 	}
 
-	class := &classLayer{source: "StorageClass parameter"}
+	class := &classLayer{source: "StorageClass parameter", driverName: s.effectiveDriverName()}
 	backendDoc, err := configdocs.DecodeBackendOverride(
 		paramBackendDoc+" (StorageClass parameter)", scParams[paramBackendDoc])
 	if err != nil {
@@ -448,8 +460,8 @@ func parseLocalAttachParam(scParams map[string]string) (bool, error) {
 	case "false":
 		return false, nil
 	default:
-		return false, invalidConfig("StorageClass parameter %s = %q: must be \"true\" or \"false\"",
-			paramLocalAttach, raw)
+		return false, invalidConfig("StorageClass parameter %s = %q: must be %q or \"false\"",
+			paramLocalAttach, raw, topologyValueTrue)
 	}
 }
 
@@ -481,6 +493,9 @@ func (s *ControllerServer) loadStoreAndProtocol(
 	if class.store.Spec.Backend.Kind() == "" {
 		return invalidConfig("PillarStore %q: spec.backend sets no backend member", storeName)
 	}
+	if class.store.Spec.Backend.Directory != nil && s.effectiveDriverName() != v1alpha1.FileCSIDriver {
+		return invalidConfig("PillarStore %q directory backend requires CSI driver %q", storeName, v1alpha1.FileCSIDriver)
+	}
 	compat := v1alpha1.Compatible(class.store.Spec.Backend, class.protocol.Spec.Protocol)
 	if !compat.OK {
 		return invalidConfig("PillarStore %q / PillarProtocol %q: %s", storeName, protocolName, compat.Message)
@@ -503,10 +518,12 @@ func (s *ControllerServer) getCR(ctx context.Context, name string, obj client.Ob
 
 // claimDocs decodes the configuration documents of the claim identified by
 // the external-provisioner's --extra-create-metadata parameters.  Without
-// that metadata no claim is known and the layer is empty; a claim that is
-// named but cannot be read is an error, because provisioning without it
-// would silently drop the claim's settings.
-func (s *ControllerServer) claimDocs(ctx context.Context, scParams map[string]string) (pvcDocs, error) {
+// that metadata no claim is known and the layer is empty. A named claim that
+// cannot be read is an error unless allowAbsent permits only NotFound for a
+// completed lifecycle whose recorded adoption remains authoritative.
+func (s *ControllerServer) claimDocs(
+	ctx context.Context, scParams map[string]string, allowAbsent bool,
+) (pvcDocs, error) {
 	pvcName, pvcNamespace := scParams[paramPVCNameMeta], scParams[paramPVCNamespaceMeta]
 	if pvcName == "" || pvcNamespace == "" {
 		return pvcDocs{}, nil
@@ -515,6 +532,9 @@ func (s *ControllerServer) claimDocs(ctx context.Context, scParams map[string]st
 	err := s.apiReader.Get(ctx, types.NamespacedName{Namespace: pvcNamespace, Name: pvcName}, pvc)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
+			if allowAbsent {
+				return pvcDocs{}, nil
+			}
 			return pvcDocs{}, status.Errorf(codes.FailedPrecondition,
 				"PersistentVolumeClaim %s/%s not found", pvcNamespace, pvcName)
 		}
@@ -551,6 +571,10 @@ func applyBackendOverride(backend *v1alpha1.BackendSpec, ov *v1alpha1.BackendOve
 		}
 		if ov.LVM.ProvisioningMode != "" {
 			backend.LVM.ProvisioningMode = ov.LVM.ProvisioningMode
+		}
+	case ov.Directory != nil:
+		if backend.Directory == nil {
+			return fmt.Errorf("%s: directory overrides do not apply to a %s backend", source, backend.Kind())
 		}
 	}
 	return nil

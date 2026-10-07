@@ -32,7 +32,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -43,10 +45,14 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	pillarcsiv1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
@@ -55,6 +61,114 @@ import (
 	"github.com/isac322/pillar-csi/internal/agent/backend"
 	"github.com/isac322/pillar-csi/internal/csi"
 )
+
+func nativeDatasetVolumeState(name string) *pillarcsiv1alpha1.PillarVolumeState {
+	adoption := &pillarcsiv1alpha1.FilesystemAdoption{
+		Kind:            pillarcsiv1alpha1.FilesystemAdoptionKindZFSDataset,
+		CanonicalSource: "tank/existing", ResourceID: "42",
+		HostPath: "/mnt/tank/existing", FilesystemType: "zfs",
+	}
+	fenceID := backend.FilesystemFenceID(&agentv1.FilesystemAdoption{
+		Kind: string(adoption.Kind), CanonicalSource: adoption.CanonicalSource,
+		ResourceId: adoption.ResourceID, HostPath: adoption.HostPath,
+		FilesystemType: adoption.FilesystemType,
+	})
+	agentVolumeID := "tank/fs-" + strings.TrimPrefix(fenceID, "filesystem/")
+	return &pillarcsiv1alpha1.PillarVolumeState{
+		ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID("uid-" + name)},
+		Spec: pillarcsiv1alpha1.PillarVolumeStateSpec{
+			VolumeID:      "agent/nfs/zfs-dataset/" + agentVolumeID + ".aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			AgentVolumeID: agentVolumeID, AgentRef: "agent",
+			BackendType: "zfs-dataset", ProtocolType: "nfs", CapacityBytes: 1 << 30,
+			FilesystemAdoption: adoption,
+			Resolved: &pillarcsiv1alpha1.ResolvedVolumeConfig{
+				Backend: pillarcsiv1alpha1.BackendSpec{ZFS: &pillarcsiv1alpha1.ZFSBackendConfig{
+					Pool: "tank", VolumeType: pillarcsiv1alpha1.ZFSVolumeTypeDataset,
+				}},
+				Protocol: pillarcsiv1alpha1.ProtocolSpec{NFS: &pillarcsiv1alpha1.NFSConfig{}},
+			},
+		},
+		Status: pillarcsiv1alpha1.PillarVolumeStateStatus{
+			Phase: pillarcsiv1alpha1.PillarVolumeStatePhaseReady, ImportAcquired: true,
+		},
+	}
+}
+
+// Real CSI handlers enforce descriptor-based driver ownership.  Reconciliation
+// with a mismatched handler would reject the record instead of recording its
+// missing export, so this tests the observable route without mock forwarding.
+func TestPillarVolumeState_DescriptorRoutesCSIHandlers(t *testing.T) {
+	for _, files := range []bool{false, true} {
+		name := "legacy-dynamic-nfs"
+		if files {
+			name = "adopted-files"
+		}
+		t.Run(name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			if err := clientgoscheme.AddToScheme(scheme); err != nil {
+				t.Fatal(err)
+			}
+			if err := pillarcsiv1alpha1.AddToScheme(scheme); err != nil {
+				t.Fatal(err)
+			}
+			pvs := &pillarcsiv1alpha1.PillarVolumeState{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec: pillarcsiv1alpha1.PillarVolumeStateSpec{
+					VolumeID:      "agent/nfs/zfs-dataset/tank/" + name,
+					AgentVolumeID: "tank/" + name, AgentRef: "agent",
+					BackendType: "zfs-dataset", ProtocolType: "nfs", CapacityBytes: 1 << 30,
+				},
+				Status: pillarcsiv1alpha1.PillarVolumeStateStatus{Phase: pillarcsiv1alpha1.PillarVolumeStatePhaseReady},
+			}
+			if files {
+				pvs = nativeDatasetVolumeState(name)
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(pvs).WithObjects(pvs).Build()
+			oldServer := csi.NewControllerServerWithDialer(c, pillarcsiv1alpha1.DefaultCSIDriver, nil)
+			fileServer := csi.NewControllerServerWithDialer(c, pillarcsiv1alpha1.FileCSIDriver, nil)
+			r := &PillarVolumeStateReconciler{
+				Client: c, Exports: oldServer, Reaper: oldServer, FileExports: fileServer, FileReaper: fileServer,
+			}
+			result, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: name}})
+			if err != nil {
+				t.Fatalf("descriptor-scoped reconciliation: %v", err)
+			}
+			if result.RequeueAfter != volumeExportResyncInterval {
+				t.Fatalf("reconcile result = %+v, want periodic export resync", result)
+			}
+			got := &pillarcsiv1alpha1.PillarVolumeState{}
+			if err := c.Get(context.Background(), types.NamespacedName{Name: name}, got); err != nil {
+				t.Fatal(err)
+			}
+			cond := apimeta.FindStatusCondition(got.Status.Conditions, csi.ConditionExportReconciled)
+			if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != "ExportSpecMissing" {
+				t.Fatalf("selected CSI handler did not record missing export: %v", got.Status.Conditions)
+			}
+		})
+	}
+}
+
+func TestPillarVolumeState_MissingFileHandlersFailClosed(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := pillarcsiv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	pvs := nativeDatasetVolumeState("files-no-handler")
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pvs).Build()
+	oldServer := csi.NewControllerServerWithDialer(c, pillarcsiv1alpha1.DefaultCSIDriver, nil)
+	r := &PillarVolumeStateReconciler{Client: c, Exports: oldServer, Reaper: oldServer}
+	_, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: pvs.Name}})
+	if err == nil {
+		t.Fatal("adoption record fell back to legacy handlers despite missing file handlers")
+	}
+	got := &pillarcsiv1alpha1.PillarVolumeState{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: pvs.Name}, got); err != nil {
+		t.Fatalf("adoption record was removed despite missing file handlers: %v", err)
+	}
+	if got.Spec.FilesystemAdoption == nil || len(got.Status.Conditions) != 0 {
+		t.Fatalf("adoption record changed despite missing file handlers: %+v", got)
+	}
+}
 
 const (
 	pvsResyncAgent  = "pvs-resync-agent"

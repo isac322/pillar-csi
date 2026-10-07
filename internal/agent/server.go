@@ -60,7 +60,9 @@ type Server struct {
 
 	// nfsManager is present only when a filesystem-capable backend is
 	// configured and the NFS runtime could be constructed.
-	nfsManager *nfs.Manager
+	nfsManager          *nfs.Manager
+	filesystemProxyRoot string
+	filesystemMounter   FilesystemProxyMounter
 
 	// configfsRoot is the root of the nvmet configfs tree.  Defaults to
 	// DefaultConfigfsRoot when empty.

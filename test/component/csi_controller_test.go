@@ -216,6 +216,11 @@ func (*csiMockAgent) GetCapabilities(
 ) (*agentv1.GetCapabilitiesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
 }
+func (*csiMockAgent) InspectImport(
+	_ context.Context, _ *agentv1.InspectImportRequest, _ ...grpc.CallOption,
+) (*agentv1.InspectImportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "not used in controller tests")
+}
 func (*csiMockAgent) GetCapacity(
 	_ context.Context, _ *agentv1.GetCapacityRequest, _ ...grpc.CallOption,
 ) (*agentv1.GetCapacityResponse, error) {

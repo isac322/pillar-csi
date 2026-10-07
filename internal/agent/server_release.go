@@ -50,6 +50,13 @@ func (s *Server) ReleaseVolume(
 	req *agentv1.ReleaseVolumeRequest,
 ) (*agentv1.ReleaseVolumeResponse, error) {
 	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
+	if req.GetFilesystemAdoption() != nil {
+		err := s.releaseFilesystem(ctx, req.GetVolumeId(), req.GetFilesystemAdoption(), req.GetFence(), false)
+		if err != nil {
+			return nil, err
+		}
+		return &agentv1.ReleaseVolumeResponse{}, nil
+	}
 	volumeID, fence := req.GetVolumeId(), req.GetFence()
 	check := func(stored fencingMark) error {
 		return s.verifyPinnedRelease(ctx, volumeID, stored)

@@ -106,6 +106,20 @@ Kubernetes: `>=1.24.0-0`
 | csiDriver.fsGroupPolicy | string | `"File"` | fsGroupPolicy for the CSIDriver. Valid values: None, File, ReadWriteOnceWithFSType. |
 | csiDriver.podInfoOnMount | bool | `true` | Inject Pod info (name/namespace/UID) as volume attributes on mount. |
 | csiDriver.volumeLifecycleModes | list | `["Persistent"]` | volumeLifecycleModes supported by the driver. |
+| fileDriver.attachRequired | bool | `true` |  |
+| fileDriver.controller.healthProbePort | int | `8181` | File controller probe port; must not overlap block controller/sidecars. |
+| fileDriver.controller.metricsPort | int | `8180` | File controller metrics port; distinct in the shared controller Pod. |
+| fileDriver.controllerSocketPath | string | `"/csi/files.sock"` | Controller CSI socket on the shared controller Pod emptyDir. |
+| fileDriver.enabled | bool | `false` | Render the second CSI identity and its controller/node routes. |
+| fileDriver.fsGroupPolicy | string | `"None"` |  |
+| fileDriver.name | string | `"files.pillar-csi.bhyoo.com"` | Fixed CSI identity for adopted directory/ZFS filesystems. |
+| fileDriver.nfs.enabled | bool | `false` | Enable the owned-host NFS server for directory-only RWX deployments. ZFS dataset placements retain their existing NFS deployment behavior. |
+| fileDriver.node.livenessPort | int | `9809` | File CSI liveness sidecar port; distinct in the shared node Pod. |
+| fileDriver.node.metricsPort | int | `9503` | File node metrics port; distinct from block node metrics. |
+| fileDriver.nodeSocketPath | string | `"/var/lib/kubelet/plugins/files.pillar-csi.bhyoo.com/csi.sock"` | Node CSI socket and kubelet registration path on worker hosts. |
+| fileDriver.podInfoOnMount | bool | `false` |  |
+| fileDriver.proxyRoot | string | `"/var/lib/pillar-csi/agent/datasets"` | Dedicated host-backed proxy/export root.  The same absolute path is mounted in the file node (HostToContainer) and seen Bidirectionally by the agent: the default lives below the agent-state hostPath and inherits that mount's Bidirectional propagation, while a path outside /var/lib/pillar-csi/agent gets its own Bidirectional agent mount.  A path that is a parent of /var/lib/pillar-csi/agent is rejected because the proxy root must never swallow agent state. |
+| fileDriver.sourceHostRoot | string | `"/host"` | Read-only host root used to resolve source filesystems in the agent. |
 | fullnameOverride | string | `""` | Full name override for resource naming. |
 | imagePullPolicy | string | `"IfNotPresent"` | Global image pull policy applied to all containers unless overridden per component. |
 | imagePullSecrets | list | `[]` | Optional list of imagePullSecrets applied to all Pods. |
@@ -127,7 +141,8 @@ Kubernetes: `>=1.24.0-0`
 | mtls.certManager.issuerRef | object | `{"group":"cert-manager.io","kind":"Issuer","name":""}` | Override the IssuerRef. When name is empty the chart creates a self-signed Issuer in the release namespace. |
 | mtls.certManager.renewBefore | string | `"360h"` |  |
 | mtls.enabled | bool | `false` | Enable mTLS for controller ↔ agent gRPC traffic. When false the controller dials the agent with plaintext credentials. |
-| mtls.secretRefs | object | `{"agent":{"secretName":"pillar-agent-mtls"},"controller":{"secretName":"pillar-controller-mtls"}}` | When certManager.enabled is false the chart mounts pre-existing Secrets. The operator MUST create these Secrets in the release namespace with keys tls.crt, tls.key, ca.crt before installing. |
+| mtls.secretRefs | object | `{"agent":{"secretName":"pillar-agent-mtls"},"controller":{"secretName":"pillar-controller-mtls"},"fileNode":{"secretName":"pillar-file-node-mtls"}}` | When certManager.enabled is false the chart mounts pre-existing Secrets. The operator MUST create these Secrets in the release namespace with keys tls.crt, tls.key, ca.crt before installing. |
+| mtls.secretRefs.fileNode | object | `{"secretName":"pillar-file-node-mtls"}` | Dedicated file-node InspectImport client identity (only mounted when fileDriver.enabled). Must chain to the agent's CA; never reuse the controller client private key. |
 | mtls.serverName | string | `""` | Override the TLS server name the controller uses when verifying the agent's certificate (SNI / SAN match). Required when the agent certificate is issued against a DNS name (cert-manager auto-issuance always does so) instead of the per-node IP the controller dials. Leave empty to let cert-manager mode auto-derive it as "&lt;fullname>-agent.&lt;namespace>.svc"; the operator must set it when providing custom Secrets whose agent cert SAN differs from the node IP. |
 | nameOverride | string | `""` | Name override (replaces the chart name portion of generated names). |
 | namespaceOverride | string | `""` | Namespace override. Defaults to the Helm release namespace. |

@@ -38,6 +38,8 @@ const (
 	testVolumeID = "tank/pvc-abc"
 )
 
+var errNoFilesystemIdentity = errors.New("no existing filesystem identity")
+
 // mockBackend is a test double for the VolumeBackend interface.
 // Each method records whether it was called and returns the configured outputs.
 type mockBackend struct {
@@ -119,6 +121,26 @@ func (m *mockBackend) Type() agentv1.BackendType {
 }
 
 func (m *mockBackend) Layout() backend.Layout { return m.layout }
+
+// ExistingFilesystemIdentity models native metadata for the filesystem-kind
+// test resource; absent resources and real block volumes have no filesystem.
+func (m *mockBackend) ExistingFilesystemIdentity(
+	_ context.Context,
+	volumeID string,
+) (*agentv1.FilesystemAdoption, error) {
+	if m.Type() != agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET || !m.backingResourcePresent {
+		return nil, errNoFilesystemIdentity
+	}
+	pool, leaf, _ := strings.Cut(volumeID, "/")
+	source := volumeID
+	if m.layout.ParentDataset != "" {
+		source = pool + "/" + strings.Trim(m.layout.ParentDataset, "/") + "/" + leaf
+	}
+	return &agentv1.FilesystemAdoption{
+		Kind: "zfs-dataset", CanonicalSource: source,
+		ResourceId: "test-native/" + volumeID, FilesystemType: "zfs",
+	}, nil
+}
 
 // Ensure mockBackend satisfies the interface.
 var _ backend.VolumeBackend = (*mockBackend)(nil)
@@ -299,7 +321,7 @@ func TestCreateVolume_BackendTypeRejected(t *testing.T) {
 	}{
 		{"unspecified", agentv1.BackendType_BACKEND_TYPE_UNSPECIFIED, codes.InvalidArgument},
 		{"zfs dataset on a zvol pool", agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET, codes.InvalidArgument},
-		{"directory", agentv1.BackendType_BACKEND_TYPE_DIRECTORY, codes.Unimplemented},
+		{"directory on a zvol pool", agentv1.BackendType_BACKEND_TYPE_DIRECTORY, codes.InvalidArgument},
 		{"lvm on a zfs pool", agentv1.BackendType_BACKEND_TYPE_LVM, codes.InvalidArgument},
 	}
 	for _, tc := range tests {

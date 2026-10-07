@@ -55,6 +55,19 @@ type fencingMark struct {
 	// order, so a delayed request from a retired lifecycle is recognized only
 	// by membership here.  It grows only when a volume ID is reused.
 	EndedUIDs []string `json:"endedUIDs,omitempty"`
+	// Filesystem binds a canonical native resource to the recorded lifecycle.
+	Filesystem         *agentv1.FilesystemAdoption `json:"filesystem,omitempty"`
+	FilesystemVolumeID string                      `json:"filesystemVolumeID,omitempty"`
+	FilesystemCapacity int64                       `json:"filesystemCapacity,omitempty"`
+	FilesystemLayout   *backend.Layout             `json:"filesystemLayout,omitempty"`
+	LocalAttached      bool                        `json:"localAttached,omitempty"`
+	FilesystemClients  []string                    `json:"filesystemClients,omitempty"`
+	FilesystemOpen     bool                        `json:"filesystemOpen,omitempty"`
+	FilesystemExported bool                        `json:"filesystemExported,omitempty"`
+	// Claimed before creating the proxy; independent of client publication.
+	FilesystemProxyClaimed bool `json:"filesystemProxyClaimed,omitempty"`
+	// A revoke fences its protocol namespace but cannot claim a native source.
+	LegacyRevokeOnly bool `json:"legacyRevokeOnly,omitempty"`
 	// LVMSource pins the pre-existing LV the first successful LVM import
 	// adopted for the volume ID.  It is sticky: no admission branch,
 	// release or later lifecycle clears or retargets it, so the volume ID
@@ -283,14 +296,19 @@ func (s *Server) fenced(
 	op fenceOp,
 	mutate func() error,
 ) error {
-	return s.fencedChecked(ctx, volumeID, token, op, nil, mutate)
+	return s.fencedChecked(ctx, volumeID, token, op, nil, nil, mutate)
 }
 
-// fencedChecked is fenced with an extra policy check: after admission and
-// before the pinned-source verification, persistence and mutate, check runs
-// on the stored mark (zero when absent) under the fencing lock and may
-// refuse the operation.  Neither check nor the verification runs for a
-// terminal retry of an already ended lifecycle, whose resource is gone.
+// fencedChecked is fenced with the volume's backend and an extra policy
+// check.  A non-nil b lets the filesystem-adoption guard
+// (guardLegacyFilesystem) refuse a managed dataset or zvol operation that
+// conflicts with an active adopted native owner, and records the
+// revoke-only legacy namespace claim of a ZFS dataset volume.  After
+// admission and before the pinned-source verification, persistence and
+// mutate, check runs on the stored mark (zero when absent) under the
+// fencing lock and may refuse the operation.  Neither check nor the
+// verification runs for a terminal retry of an already ended lifecycle,
+// whose resource is gone.
 //
 // A terminal destroy retry on a mark that pins an adopted LV never runs
 // mutate: the pinned LV was already deleted (or released), and the volume's
@@ -301,6 +319,7 @@ func (s *Server) fencedChecked(
 	volumeID string,
 	token *agentv1.FencingToken,
 	op fenceOp,
+	b backend.VolumeBackend,
 	check func(stored fencingMark) error,
 	mutate func() error,
 ) error {
@@ -332,15 +351,25 @@ func (s *Server) fencedChecked(
 			return err
 		}
 	}
-	next := adm.next
-	err = s.persistFencingMark(volumeID, next, adm.changed)
+	next, err := s.prepareFencingMark(ctx, b, volumeID, token, op, stored, exists, adm)
+	if err != nil {
+		return err
+	}
+	err = s.persistFencingMark(volumeID, next, adm.changed || next.LegacyRevokeOnly != stored.LegacyRevokeOnly)
 	if err != nil {
 		recordFenceDecision(ctx, op, telemetry.FenceMarkIOError)
 		return err
 	}
 	recordFenceDecision(ctx, op, adm.decision)
+	return s.runFencedMutation(volumeID, op, next, mutate)
+}
+
+// runFencedMutation runs fencedChecked's admitted mutate (nil only checks)
+// and, for fenceDestroy, records the lifecycle as ended once it succeeded.
+// The caller holds the fencing lock and has persisted next.
+func (s *Server) runFencedMutation(volumeID string, op fenceOp, next fencingMark, mutate func() error) error {
 	if mutate != nil {
-		err = mutate()
+		err := mutate()
 		if err != nil {
 			return err
 		}
@@ -350,6 +379,33 @@ func (s *Server) fencedChecked(
 		return s.writeFencingMark(volumeID, next)
 	}
 	return nil
+}
+
+func (s *Server) prepareFencingMark(
+	ctx context.Context,
+	b backend.VolumeBackend,
+	volumeID string,
+	token *agentv1.FencingToken,
+	op fenceOp,
+	stored fencingMark,
+	exists bool,
+	adm fenceAdmission,
+) (fencingMark, error) {
+	if op != fenceRevoke {
+		err := s.guardLegacyFilesystem(ctx, b, volumeID)
+		if err != nil {
+			return fencingMark{}, err
+		}
+	}
+	next := adm.next
+	if b != nil && b.Type() == agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET {
+		if op != fenceRevoke {
+			next.LegacyRevokeOnly = false
+		} else if !exists || stored.Ended || stored.VolumeUID != token.GetVolumeUid() {
+			next.LegacyRevokeOnly = true
+		}
+	}
+	return next, nil
 }
 
 // checkFencePreconditions runs fencedChecked's policy check and then, for

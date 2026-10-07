@@ -23,6 +23,8 @@ package backend
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
@@ -97,6 +99,9 @@ type Layout struct {
 	// ThinPool is the LVM thin pool LV thin volumes are created in; empty
 	// means the backend has no thin pool.
 	ThinPool string
+	// HostRoot is the directory backend's trusted host allow-root. Store and
+	// agent must declare exactly the same root, not just nested paths.
+	HostRoot string
 }
 
 // VolumeBackend abstracts the storage-backend lifecycle for a single pool.
@@ -227,6 +232,99 @@ type VolumeImporter interface {
 		capacityBytes int64,
 		expectedDataset string,
 	) (devicePath string, sizeBytes int64, err error)
+}
+
+// ImportInspection is a read-only resolution of an existing filesystem source.
+// CapacityBytes is its exact effective enforceable quota, not free pool space.
+type ImportInspection struct {
+	Filesystem    *agentv1.FilesystemAdoption
+	CapacityBytes int64
+}
+
+// VolumeInspector resolves canonical source and stable native identity before
+// the controller reserves a resource, or revalidates a recorded descriptor.
+// It must verify expected placement and exact existing quota, rejecting unknown,
+// unbounded, or shared quota scopes. A nil expected descriptor requires complete
+// first-claim scope proof; a nonnil descriptor requires matching native identity.
+// Inspection never creates resources, applies properties, or claims ownership.
+type VolumeInspector interface {
+	InspectImport(
+		ctx context.Context,
+		source string,
+		requiredBytes int64,
+		expected *agentv1.FilesystemAdoption,
+		expectedLayout Layout,
+	) (*ImportInspection, error)
+}
+
+// PinnedFilesystem holds one securely opened existing filesystem source.
+// Pins are operation-scoped: Import holds one until its durable ownership mark,
+// then closes it before responding. Export obtains a new pin and holds it until
+// its owned bind proxy passes native identity and exact-quota verification.
+// No pin may be cached between RPCs.
+type PinnedFilesystem interface {
+	// Adoption returns the verified native identity; callers must not mutate it.
+	Adoption() *agentv1.FilesystemAdoption
+	CapacityBytes() int64
+	// MountSource is a pin-backed source usable for a secure bind mount, not
+	// an original pathname that can be substituted after opening the pin.
+	MountSource() string
+	// VerifyMount proves the owned proxy still exposes the pinned native
+	// resource and exact bound. A failure must prevent exposure.
+	VerifyMount(ctx context.Context, targetPath string) error
+	Close() error
+}
+
+// FilesystemImporter reopens and pins an inspected filesystem without changing
+// it. Under the existing canonical-resource fence it must recheck the complete
+// expected descriptor, exact quota, and stored layout. A missing or replaced
+// source is refused, never created. The same read-only operation supports
+// import, export, publication, and recovery verification; ownership marking
+// remains the agent's responsibility, not the backend's.
+type FilesystemImporter interface {
+	ImportFilesystem(
+		ctx context.Context,
+		volumeID string,
+		requiredBytes int64,
+		expected *agentv1.FilesystemAdoption,
+		expectedLayout Layout,
+	) (PinnedFilesystem, error)
+}
+
+// FilesystemMountSource returns the recorded host source, not a secure pin.
+// Callers must reopen and verify it before use. Unknown source kinds fail
+// closed rather than interpreting a dataset name as a directory pathname.
+func FilesystemMountSource(adoption *agentv1.FilesystemAdoption) string {
+	switch adoption.GetKind() {
+	case "directory":
+		return adoption.GetCanonicalSource()
+	case "zfs-dataset":
+		return adoption.GetHostPath()
+	default:
+		return ""
+	}
+}
+
+// FilesystemFenceID returns the pool-independent native backing-resource key
+// shared by controller reservations and agent fencing. Active operations must
+// validate native identity first; teardown can use the recorded descriptor when
+// the source is missing. An invalid descriptor never selects a legacy key.
+func FilesystemFenceID(adoption *agentv1.FilesystemAdoption) string {
+	kind := adoption.GetKind()
+	if (kind != "directory" && kind != "zfs-dataset") || adoption.GetResourceId() == "" {
+		return ""
+	}
+	digest := sha256.New()
+	_, _ = digest.Write([]byte(kind))
+	_, _ = digest.Write([]byte{0})
+	_, _ = digest.Write([]byte(adoption.GetResourceId()))
+	var sum [sha256.Size]byte
+	digest.Sum(sum[:0])
+	const prefix = "filesystem/"
+	var key [len(prefix) + sha256.Size*2]byte
+	copy(key[:], prefix)
+	hex.Encode(key[len(prefix):], sum[:])
+	return string(key[:])
 }
 
 // ImportRefusedError is returned by VolumeImporter.Import, LVImporter.ImportLV

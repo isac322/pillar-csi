@@ -92,7 +92,13 @@ func (d *PillarStorageClassCustomDefaulter) defaultAllowVolumeExpansion(
 	if err != nil {
 		return fmt.Errorf("cannot look up PillarStore %q: %w", pb.Spec.StoreRef, err)
 	}
+	// The filesystem-adoption driver does not advertise expansion.  Keep the
+	// generated StorageClass honest even for filesystem backends that support
+	// expansion under the legacy driver.
 	val := backendSupportsVolumeExpansion(store.Spec.Backend.Kind())
+	if pb.Spec.EffectiveCSIDriver() == pillarcsiv1alpha1.FileCSIDriver {
+		val = false
+	}
 	pb.Spec.StorageClass.AllowVolumeExpansion = &val
 	return nil
 }
@@ -143,6 +149,17 @@ func (v *PillarStorageClassCustomValidator) ValidateUpdate(
 	pillarstorageclasslog.Info("Validation for PillarStorageClass upon update", "name", newBinding.GetName())
 
 	var allErrs field.ErrorList
+
+	// The generated StorageClass provisioner is immutable.  Comparing the
+	// effective value treats omitted and explicit legacy selection as the same
+	// contract while preventing an existing class from changing CSI identity.
+	if oldBinding.Spec.EffectiveCSIDriver() != newBinding.Spec.EffectiveCSIDriver() {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "csiDriver"),
+			fmt.Sprintf("field is immutable; old effective driver %q cannot be changed to %q",
+				oldBinding.Spec.EffectiveCSIDriver(), newBinding.Spec.EffectiveCSIDriver()),
+		))
+	}
 
 	// spec.storeRef is immutable: a binding owns a generated StorageClass that is tied to a
 	// specific pool.  Changing storeRef mid-flight would silently redirect new PVC provisioning
@@ -230,14 +247,28 @@ func effectiveStorageClassName(pb *pillarcsiv1alpha1.PillarStorageClass) string 
 func (v *PillarStorageClassCustomValidator) validateCompatibility(
 	ctx context.Context, pb *pillarcsiv1alpha1.PillarStorageClass,
 ) error {
+	var allErrs field.ErrorList
+	driver := pb.Spec.EffectiveCSIDriver()
+	if driver != pillarcsiv1alpha1.DefaultCSIDriver && driver != pillarcsiv1alpha1.FileCSIDriver {
+		allErrs = append(allErrs, field.NotSupported(
+			field.NewPath("spec", "csiDriver"), driver,
+			[]string{pillarcsiv1alpha1.DefaultCSIDriver, pillarcsiv1alpha1.FileCSIDriver},
+		))
+	}
+	if driver == pillarcsiv1alpha1.FileCSIDriver &&
+		pb.Spec.StorageClass.AllowVolumeExpansion != nil && *pb.Spec.StorageClass.AllowVolumeExpansion {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "storageClass", "allowVolumeExpansion"),
+			"files.pillar-csi.bhyoo.com does not support volume expansion; set allowVolumeExpansion=false",
+		))
+	}
 	if v.Client == nil {
-		return nil
+		return allErrs.ToAggregate()
 	}
 
 	store, storeErr := v.lookupStore(ctx, pb)
 	protocol, protocolErr := v.lookupProtocol(ctx, pb)
 
-	var allErrs field.ErrorList
 	allErrs = append(allErrs, validateBackendOverride(pb, store, storeErr)...)
 	allErrs = append(allErrs, validateProtocolOverride(pb, protocol, protocolErr)...)
 	if storeErr == nil && protocolErr == nil {
@@ -322,24 +353,48 @@ func validateCompatibleStorageClass(
 	store *pillarcsiv1alpha1.PillarStore,
 	protocol *pillarcsiv1alpha1.PillarProtocol,
 ) field.ErrorList {
+	var errs field.ErrorList
 	compat := pillarcsiv1alpha1.Compatible(store.Spec.Backend, protocol.Spec.Protocol)
+	if pb.Spec.EffectiveCSIDriver() == pillarcsiv1alpha1.FileCSIDriver &&
+		compat.BackendCategory != pillarcsiv1alpha1.BackendCategoryFilesystem {
+		errs = append(errs, field.Invalid(
+			field.NewPath("spec", "csiDriver"), pb.Spec.EffectiveCSIDriver(),
+			"files.pillar-csi.bhyoo.com requires a filesystem backend",
+		))
+	}
 	if !compat.OK {
-		return field.ErrorList{field.Invalid(
+		return append(errs, field.ErrorList{field.Invalid(
 			field.NewPath("spec", "protocolRef"), pb.Spec.ProtocolRef, compat.Message,
-		)}
+		)}...)
+	}
+	if store.Spec.Backend.Directory != nil {
+		if pb.Spec.EffectiveCSIDriver() != pillarcsiv1alpha1.FileCSIDriver {
+			errs = append(errs, field.Invalid(
+				field.NewPath("spec", "csiDriver"), pb.Spec.EffectiveCSIDriver(),
+				"directory backends require explicit csiDriver files.pillar-csi.bhyoo.com",
+			))
+		}
+		if compat.ProtocolID != pillarcsiv1alpha1.ProtocolIDNFS {
+			errs = append(errs, field.Invalid(
+				field.NewPath("spec", "protocolRef"), pb.Spec.ProtocolRef,
+				"directory backends require the NFS protocol",
+			))
+		}
 	}
 	if compat.ProtocolID == pillarcsiv1alpha1.ProtocolIDNFS {
-		return validateNFSStorageClass(pb)
+		errs = append(errs, validateNFSStorageClass(pb)...)
+	} else {
+		errs = append(errs, validateNonNFSStorageClass(pb)...)
 	}
-	return validateNonNFSStorageClass(pb)
+	return errs
 }
 
 func validateNFSStorageClass(pb *pillarcsiv1alpha1.PillarStorageClass) field.ErrorList {
 	var errs field.ErrorList
-	if pb.Spec.LocalAttach {
+	if pb.Spec.LocalAttach && pb.Spec.EffectiveCSIDriver() != pillarcsiv1alpha1.FileCSIDriver {
 		errs = append(errs, field.Forbidden(
 			field.NewPath("spec", "localAttach"),
-			"localAttach is not supported for NFS volumes",
+			"localAttach is not supported for NFS volumes on the legacy CSI driver",
 		))
 	}
 	if fs := pb.Spec.Filesystem; fs != nil {

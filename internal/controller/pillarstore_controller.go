@@ -480,6 +480,11 @@ func layoutMismatch(pool *pillarcsiv1alpha1.PillarStore, dp *pillarcsiv1alpha1.D
 			return fmt.Sprintf("store declares LVM thinPool %q but the agent's thin pool is %q",
 				pool.Spec.Backend.LVM.ThinPool, dp.ThinPool)
 		}
+	case pool.Spec.Backend.Directory != nil:
+		if pool.Spec.Backend.Directory.HostRoot != dp.HostRoot {
+			return fmt.Sprintf("store declares directory hostRoot %q but the agent's directory root is %q",
+				pool.Spec.Backend.Directory.HostRoot, dp.HostRoot)
+		}
 	}
 	return ""
 }

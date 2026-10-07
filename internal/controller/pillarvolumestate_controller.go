@@ -63,6 +63,12 @@ type PillarVolumeStateReconciler struct {
 	client.Client
 	Exports VolumeExportReconciler
 	Reaper  VolumeReaper
+
+	// Filesystem adoption descriptors select the file driver's lifecycle
+	// handlers. A missing file handler must never fall back to the legacy
+	// destructive DeleteVolume path.
+	FileExports VolumeExportReconciler
+	FileReaper  VolumeReaper
 }
 
 // +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarvolumestates,verbs=get;list;watch
@@ -81,7 +87,21 @@ func (r *PillarVolumeStateReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
-	reaped, err := r.Reaper.ReapAbandonedVolume(ctx, req.Name)
+	exports, reaper := r.Exports, r.Reaper
+	if pvs.Spec.FilesystemAdoption != nil {
+		exports, reaper = r.FileExports, r.FileReaper
+		if exports == nil || reaper == nil {
+			return ctrl.Result{}, fmt.Errorf(
+				"filesystem adoption PillarVolumeState %q requires configured file export and reaper handlers",
+				req.Name,
+			)
+		}
+	}
+	if exports == nil || reaper == nil {
+		return ctrl.Result{}, fmt.Errorf("PillarVolumeState %q requires configured export and reaper handlers", req.Name)
+	}
+
+	reaped, err := reaper.ReapAbandonedVolume(ctx, req.Name)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reap abandoned PillarVolumeState %q: %w", req.Name, err)
 	}
@@ -89,7 +109,7 @@ func (r *PillarVolumeStateReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
-	err = r.Exports.ReconcileVolumeExport(ctx, req.Name)
+	err = exports.ReconcileVolumeExport(ctx, req.Name)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile export of PillarVolumeState %q: %w", req.Name, err)
 	}

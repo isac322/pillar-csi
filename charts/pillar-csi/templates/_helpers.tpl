@@ -200,6 +200,48 @@ crash-looping DaemonSet:
     with a ZFS pool. Keys are trimmed so " tank " and "tank" collide.
 */}}
 {{- define "pillar-csi.agent.config" -}}
+{{- if not (kindIs "bool" .Values.fileDriver.enabled) }}
+{{- fail "fileDriver.enabled must be a boolean" }}
+{{- end }}
+{{- if .Values.fileDriver.enabled }}
+{{- if ne .Values.fileDriver.name "files.pillar-csi.bhyoo.com" }}
+{{- fail "fileDriver.name is fixed at files.pillar-csi.bhyoo.com" }}
+{{- end }}
+{{- if ne .Values.fileDriver.fsGroupPolicy "None" }}
+{{- fail "fileDriver.fsGroupPolicy is fixed at None to preserve adopted source ownership" }}
+{{- end }}
+{{- if not .Values.fileDriver.attachRequired }}
+{{- fail "fileDriver.attachRequired must be true: ControllerPublish owns filesystem fencing and exports" }}
+{{- end }}
+{{- if or (eq .Values.fileDriver.controllerSocketPath .Values.controller.csiSocketPath) (eq .Values.fileDriver.nodeSocketPath .Values.node.csiSocketPath) }}
+{{- fail "file CSI sockets must be distinct from the existing block CSI sockets" }}
+{{- end }}
+{{- range $field := list "sourceHostRoot" "proxyRoot" }}
+{{- $path := get $.Values.fileDriver $field }}
+{{- if or (not (hasPrefix "/" $path)) (ne (clean $path) $path) (eq $path "/") }}
+{{- fail (printf "fileDriver.%s must be a canonical absolute path other than /" $field) }}
+{{- end }}
+{{- end }}
+{{- if hasPrefix (printf "%s/" .Values.fileDriver.proxyRoot) "/var/lib/pillar-csi/agent" }}
+{{- fail "fileDriver.proxyRoot must not be a parent directory of the agent-state hostPath /var/lib/pillar-csi/agent" }}
+{{- end }}
+{{- $controllerPorts := dict "controller.healthProbePort" .Values.controller.healthProbePort "controller.metricsPort" .Values.controller.metricsPort "controller.livenessPort" .Values.controller.livenessPort "fileDriver.controller.healthProbePort" .Values.fileDriver.controller.healthProbePort "fileDriver.controller.metricsPort" .Values.fileDriver.controller.metricsPort }}
+{{- if .Values.webhook.enabled }}
+{{- $_ := set $controllerPorts "webhook.port" .Values.webhook.port }}
+{{- end }}
+{{- if .Values.metrics.enabled }}
+{{- $_ := set $controllerPorts "metrics.sidecars.provisionerPort" .Values.metrics.sidecars.provisionerPort }}
+{{- $_ := set $controllerPorts "metrics.sidecars.attacherPort" .Values.metrics.sidecars.attacherPort }}
+{{- $_ := set $controllerPorts "metrics.sidecars.resizerPort" .Values.metrics.sidecars.resizerPort }}
+{{- end }}
+{{- include "pillar-csi.validateFilePorts" (dict "ports" $controllerPorts "component" "controller") }}
+{{- $nodePorts := dict "node.livenessPort" .Values.node.livenessPort "fileDriver.node.livenessPort" .Values.fileDriver.node.livenessPort }}
+{{- if .Values.metrics.enabled }}
+{{- $_ := set $nodePorts "metrics.node.port" .Values.metrics.node.port }}
+{{- $_ := set $nodePorts "fileDriver.node.metricsPort" .Values.fileDriver.node.metricsPort }}
+{{- end }}
+{{- include "pillar-csi.validateFilePorts" (dict "ports" $nodePorts "component" "node") }}
+{{- end }}
 {{- $backends := .Values.agent.backends | default list }}
 {{- if not (kindIs "slice" $backends) }}
 {{- fail "agent.backends must be a list of {zfs: {...}} or {lvm: {...}} entries" }}
@@ -229,8 +271,17 @@ crash-looping DaemonSet:
 {{- $backendKind = printf "zfs-%s" $volumeType }}
 {{- else if eq $member "lvm" }}
 {{- $key = required (printf "agent.backends[%d].lvm.volumeGroup is required" $i) (get $body "volumeGroup") }}
+{{- else if eq $member "directory" }}
+{{- if not $.Values.fileDriver.enabled }}
+{{- fail "directory backends require fileDriver.enabled=true" }}
+{{- end }}
+{{- $key = required (printf "agent.backends[%d].directory.logicalPool is required" $i) (get $body "logicalPool") }}
+{{- $hostRoot := required (printf "agent.backends[%d].directory.hostRoot is required" $i) (get $body "hostRoot") }}
+{{- if not (hasPrefix "/" (toString $hostRoot)) }}
+{{- fail (printf "agent.backends[%d].directory.hostRoot must be an absolute host path" $i) }}
+{{- end }}
 {{- else }}
-{{- fail (printf "agent.backends[%d].%s is not a supported backend; use zfs or lvm" $i $member) }}
+{{- fail (printf "agent.backends[%d].%s is not a supported backend; use zfs, lvm or directory" $i $member) }}
 {{- end }}
 {{- $normKey := trim (toString $key) }}
 {{- $poolTypes := get $seen $normKey | default dict }}
@@ -339,5 +390,23 @@ interval: {{ . | quote }}
 {{- end }}
 {{- with .Values.metrics.podMonitor.scrapeTimeout }}
 scrapeTimeout: {{ . | quote }}
+{{- end }}
+{{- end }}
+
+{{/*
+Two CSI frontends share a Pod network namespace. Validate its actual listeners
+only for file opt-in; legacy values and rendering remain unchanged otherwise.
+*/}}
+{{- define "pillar-csi.validateFilePorts" -}}
+{{- $seen := dict }}
+{{- range $name, $raw := .ports }}
+{{- $port := toString $raw }}
+{{- if or (not (regexMatch "^[0-9]+$" $port)) (lt (int $raw) 1) (gt (int $raw) 65535) }}
+{{- fail (printf "%s must be an integer port between 1 and 65535" $name) }}
+{{- end }}
+{{- if hasKey $seen $port }}
+{{- fail (printf "fileDriver %s port collision: %s and %s both bind %s" $.component (get $seen $port) $name $port) }}
+{{- end }}
+{{- $_ := set $seen $port $name }}
 {{- end }}
 {{- end }}

@@ -200,6 +200,127 @@ spec:
               readOnly: true
             {{- end }}
 
+        {{- if .Values.fileDriver.enabled }}
+        # ── file CSI controller (filesystem adoption identity) ───────────────
+        - name: file-controller
+          image: {{ include "pillar-csi.image" (dict "image" .Values.controller.image "defaultTag" .Chart.AppVersion) }}
+          imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.controller.image "global" .Values.imagePullPolicy) }}
+          command:
+            - /usr/bin/manager
+          args:
+            - --driver-name={{ .Values.fileDriver.name }}
+            - --leader-elect
+            - --health-probe-bind-address=:{{ .Values.fileDriver.controller.healthProbePort }}
+            - --metrics-bind-address=:{{ .Values.fileDriver.controller.metricsPort }}
+            - --metrics-secure={{ .Values.metrics.controller.secure }}
+            - --csi-endpoint=unix://{{ .Values.fileDriver.controllerSocketPath }}
+            {{- if .Values.mtls.enabled }}
+            - --agent-tls-cert={{ include "pillar-csi.mtls.certDir" . }}/tls.crt
+            - --agent-tls-key={{ include "pillar-csi.mtls.certDir" . }}/tls.key
+            - --agent-tls-ca={{ include "pillar-csi.mtls.certDir" . }}/ca.crt
+            {{- $serverName := include "pillar-csi.mtls.serverName" . }}
+            {{- if $serverName }}
+            - --agent-tls-server-name={{ $serverName }}
+            {{- end }}
+            {{- end }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: ENABLE_WEBHOOKS
+              value: "false"
+          ports:
+            - name: file-healthz
+              containerPort: {{ .Values.fileDriver.controller.healthProbePort }}
+              protocol: TCP
+            - name: file-metrics
+              containerPort: {{ .Values.fileDriver.controller.metricsPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: file-healthz
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: file-healthz
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          securityContext:
+            runAsUser: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: socket-dir
+              mountPath: {{ .Values.fileDriver.controllerSocketPath | dir }}
+            {{- if .Values.mtls.enabled }}
+            - name: mtls-certs
+              mountPath: {{ include "pillar-csi.mtls.certDir" . }}
+              readOnly: true
+            {{- end }}
+
+        - name: file-csi-provisioner
+          image: {{ include "pillar-csi.image" (dict "image" .Values.controller.sidecars.provisioner.image "defaultTag" .Values.controller.sidecars.provisioner.image.tag) }}
+          imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.controller.sidecars.provisioner.image "global" .Values.imagePullPolicy) }}
+          args:
+            - --csi-address={{ .Values.fileDriver.controllerSocketPath }}
+            - --leader-election
+            - --leader-election-namespace={{ include "pillar-csi.namespace" . }}
+            - --v=5
+            - --extra-create-metadata
+            {{- range .Values.controller.sidecars.provisioner.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          securityContext:
+            runAsUser: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: socket-dir
+              mountPath: {{ .Values.fileDriver.controllerSocketPath | dir }}
+          resources:
+            {{- toYaml .Values.controller.sidecars.provisioner.resources | nindent 12 }}
+
+        - name: file-csi-attacher
+          image: {{ include "pillar-csi.image" (dict "image" .Values.controller.sidecars.attacher.image "defaultTag" .Values.controller.sidecars.attacher.image.tag) }}
+          imagePullPolicy: {{ include "pillar-csi.imagePullPolicy" (dict "image" .Values.controller.sidecars.attacher.image "global" .Values.imagePullPolicy) }}
+          args:
+            - --csi-address={{ .Values.fileDriver.controllerSocketPath }}
+            - --leader-election
+            - --leader-election-namespace={{ include "pillar-csi.namespace" . }}
+            - --v=5
+          securityContext:
+            runAsUser: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: socket-dir
+              mountPath: {{ .Values.fileDriver.controllerSocketPath | dir }}
+          resources:
+            {{- toYaml .Values.controller.sidecars.attacher.resources | nindent 12 }}
+        {{- end }}
+
         # ── csi-provisioner sidecar ──────────────────────────────────────────
         - name: csi-provisioner
           image: {{ include "pillar-csi.image" (dict "image" .Values.controller.sidecars.provisioner.image "defaultTag" .Values.controller.sidecars.provisioner.image.tag) }}

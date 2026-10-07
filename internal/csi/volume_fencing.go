@@ -40,6 +40,7 @@ package csi
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -81,40 +82,82 @@ func (s *ControllerServer) updateVolumeState(
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		result = nil
 		attempts++
-		pvs, exists, getErr := s.readVolumeState(ctx, pvName)
-		if getErr != nil {
-			return status.Errorf(codes.Internal, "%v", getErr)
-		}
-		if !exists || (uid != "" && pvs.UID != uid) {
-			if uid == "" {
-				return nil
-			}
-			addPVSAbortedEvent(ctx)
-			return status.Errorf(codes.Aborted,
-				"PillarVolumeState %q (uid %s) no longer exists; the volume was deleted or re-created",
-				pvName, uid)
-		}
-		phaseFrom := pvs.Status.Phase
-		mutateErr := mutate(pvs)
-		if errors.Is(mutateErr, errNoStatusChange) {
-			result = pvs
-			return nil
-		}
-		if mutateErr != nil {
-			return mutateErr
-		}
-		if bump {
-			pvs.Status.PublicationGeneration++
-		}
-		updateErr := s.k8sClient.Status().Update(ctx, pvs)
-		if updateErr != nil {
-			return updateErr //nolint:wrapcheck // conflict detection by RetryOnConflict needs the raw error
-		}
-		addPVSUpdateEvent(ctx, phaseFrom, pvs.Status.Phase, pvs.Status.PublicationGeneration, attempts-1)
-		result = pvs
-		return nil
+		return s.updateVolumeStateAttempt(
+			ctx, pvName, uid, bump, mutate, attempts, &result)
 	})
 	return result, publicationRecordError("update", pvName, "", err)
+}
+
+func (s *ControllerServer) updateVolumeStateAttempt(
+	ctx context.Context,
+	pvName string,
+	uid types.UID,
+	bump bool,
+	mutate func(pvs *v1alpha1.PillarVolumeState) error,
+	attempts int,
+	result **v1alpha1.PillarVolumeState,
+) error {
+	pvs, exists, err := s.readVolumeState(ctx, pvName)
+	if err != nil {
+		return status.Errorf(codes.Internal, "%v", err)
+	}
+	if !exists || (uid != "" && pvs.UID != uid) {
+		return handleMissingVolumeState(ctx, pvName, uid)
+	}
+	err = validateVolumeStateForUpdate(s, pvs)
+	if err != nil {
+		return err
+	}
+	phaseFrom := pvs.Status.Phase
+	mutateErr := mutate(pvs)
+	if errors.Is(mutateErr, errNoStatusChange) {
+		*result = pvs
+		return nil
+	}
+	if mutateErr != nil {
+		return mutateErr
+	}
+	if bump {
+		pvs.Status.PublicationGeneration++
+	}
+	err = s.k8sClient.Status().Update(ctx, pvs)
+	if err != nil {
+		return err //nolint:wrapcheck // conflict detection by RetryOnConflict needs the raw error
+	}
+	addPVSUpdateEvent(ctx, phaseFrom, pvs.Status.Phase, pvs.Status.PublicationGeneration, attempts-1)
+	*result = pvs
+	return nil
+}
+
+func handleMissingVolumeState(
+	ctx context.Context,
+	pvName string,
+	uid types.UID,
+) error {
+	if uid == "" {
+		return nil
+	}
+	addPVSAbortedEvent(ctx)
+	return status.Errorf(
+		codes.Aborted,
+		"PillarVolumeState %q (uid %s) no longer exists; the volume was deleted or re-created",
+		pvName, uid)
+}
+
+func validateVolumeStateForUpdate(
+	s *ControllerServer,
+	pvs *v1alpha1.PillarVolumeState,
+) error {
+	err := s.validateVolumeDriver(pvs)
+	if err != nil {
+		return err
+	}
+	if pvs.Spec.FilesystemAdoption != nil && !isFilesystemVolumeID(pvs) {
+		return status.Errorf(
+			codes.FailedPrecondition,
+			"volume %q has no valid filesystem lifecycle handle", pvs.Name)
+	}
+	return nil
 }
 
 // fenceToken returns the agent fencing token for the committed state of pvs.
@@ -157,12 +200,51 @@ func (s *ControllerServer) ensureVolumeState(
 	pvName string,
 	spec v1alpha1.PillarVolumeStateSpec,
 ) (*v1alpha1.PillarVolumeState, error) {
+	// The requested descriptor determines the CSI-driver scope. Validate it
+	// before creating the lifecycle or changing any status so a controller
+	// serving the other identity cannot acquire a lease for this volume.
+	err := s.validateVolumeDriver(&v1alpha1.PillarVolumeState{Spec: spec})
+	if err != nil {
+		return nil, err
+	}
 	pvs, exists, err := s.readVolumeState(ctx, pvName)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
 	if exists {
-		return pvs, nil
+		return s.ensureExistingVolumeState(pvs, spec)
+	}
+	return s.createVolumeState(ctx, pvName, spec)
+}
+
+func (s *ControllerServer) ensureExistingVolumeState(
+	pvs *v1alpha1.PillarVolumeState,
+	spec v1alpha1.PillarVolumeStateSpec,
+) (*v1alpha1.PillarVolumeState, error) {
+	err := s.validateVolumeDriver(pvs)
+	if err != nil {
+		return nil, err
+	}
+	err = validateFilesystemRetrySpec(pvs, spec)
+	if err != nil {
+		return nil, err
+	}
+	return pvs, nil
+}
+
+func (s *ControllerServer) createVolumeState(
+	ctx context.Context,
+	pvName string,
+	spec v1alpha1.PillarVolumeStateSpec,
+) (*v1alpha1.PillarVolumeState, error) {
+	var err error
+	if spec.FilesystemAdoption != nil {
+		baseID := filesystemVolumeIDBase(&spec)
+		spec.VolumeID, err = newFilesystemVolumeID(baseID)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.Internal, "create filesystem lifecycle handle: %v", err)
+		}
 	}
 	created := &v1alpha1.PillarVolumeState{
 		Name:        pvName,
@@ -171,26 +253,114 @@ func (s *ControllerServer) ensureVolumeState(
 	}
 	err = s.k8sClient.Create(ctx, created)
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
-		return nil, status.Errorf(codes.Internal, "create PillarVolumeState %q: %v", pvName, err)
+		return nil, status.Errorf(
+			codes.Internal, "create PillarVolumeState %q: %v", pvName, err)
 	}
-	pvs, exists, err = s.readVolumeState(ctx, pvName)
+	pvs, exists, err := s.readVolumeState(ctx, pvName)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
 	if !exists {
-		return nil, status.Errorf(codes.Aborted,
+		return nil, status.Errorf(
+			codes.Aborted,
 			"PillarVolumeState %q was deleted while it was being created", pvName)
+	}
+	err = s.validateVolumeDriver(pvs)
+	if err != nil {
+		return nil, err
+	}
+	err = validateFilesystemRetrySpec(pvs, spec)
+	if err != nil {
+		return nil, err
 	}
 	if pvs.Status.Phase != "" {
 		return pvs, nil
 	}
-	return s.updateVolumeState(ctx, pvName, pvs.UID, false, func(pvs *v1alpha1.PillarVolumeState) error {
-		if pvs.Status.Phase != "" {
-			return errNoStatusChange
-		}
-		pvs.Status.Phase = v1alpha1.PillarVolumeStatePhaseProvisioning
+	return s.updateVolumeState(ctx, pvName, pvs.UID, false,
+		func(pvs *v1alpha1.PillarVolumeState) error {
+			err := validateFilesystemRetrySpec(pvs, spec)
+			if err != nil {
+				return err
+			}
+			if pvs.Status.Phase != "" {
+				return errNoStatusChange
+			}
+			pvs.Status.Phase = v1alpha1.PillarVolumeStatePhaseProvisioning
+			return nil
+		})
+}
+
+// validateFilesystemRetrySpec pins every source attribute, its exact quota,
+// routing and local-only intent, including the winner of a concurrent Create.
+// Candidate handle nonces are deliberately not compared: same-name concurrent
+// candidates use the winner's nonce. ClaimRef rebind never mints a lifecycle.
+func validateFilesystemRetrySpec(
+	pvs *v1alpha1.PillarVolumeState,
+	spec v1alpha1.PillarVolumeStateSpec,
+) error {
+	if pvs.Spec.FilesystemAdoption == nil {
 		return nil
-	})
+	}
+	err := validateFilesystemRetryIdentity(pvs, spec)
+	if err != nil {
+		return err
+	}
+	if pvs.Spec.CapacityBytes != spec.CapacityBytes {
+		return status.Errorf(
+			codes.AlreadyExists,
+			"volume %q adopted filesystem capacity is fixed at %d bytes",
+			pvs.Name, pvs.Spec.CapacityBytes)
+	}
+	return validateFilesystemRetryLayout(pvs, spec)
+}
+
+func validateFilesystemRetryIdentity(
+	pvs *v1alpha1.PillarVolumeState,
+	spec v1alpha1.PillarVolumeStateSpec,
+) error {
+	if !isFilesystemVolumeID(pvs) {
+		return status.Errorf(
+			codes.FailedPrecondition,
+			"volume %q has no valid filesystem lifecycle handle", pvs.Name)
+	}
+	requestBase := filesystemVolumeIDBase(&spec)
+	if spec.VolumeID != requestBase &&
+		!isFilesystemVolumeID(&v1alpha1.PillarVolumeState{Spec: spec}) {
+		return status.Errorf(
+			codes.FailedPrecondition,
+			"volume %q requested an invalid filesystem lifecycle handle", pvs.Name)
+	}
+	if spec.FilesystemAdoption == nil ||
+		*pvs.Spec.FilesystemAdoption != *spec.FilesystemAdoption ||
+		pvs.Spec.AgentVolumeID != spec.AgentVolumeID ||
+		pvs.Spec.AgentRef != spec.AgentRef ||
+		pvs.Spec.BackendType != spec.BackendType ||
+		pvs.Spec.ProtocolType != spec.ProtocolType ||
+		pvs.Spec.ImportedFrom != spec.ImportedFrom {
+		return status.Errorf(
+			codes.FailedPrecondition,
+			"volume %q filesystem adoption identity and routing cannot change", pvs.Name)
+	}
+	return nil
+}
+
+func validateFilesystemRetryLayout(
+	pvs *v1alpha1.PillarVolumeState,
+	spec v1alpha1.PillarVolumeStateSpec,
+) error {
+	if (pvs.Spec.Resolved == nil) != (spec.Resolved == nil) {
+		return status.Errorf(
+			codes.FailedPrecondition,
+			"volume %q adopted filesystem layout and access scope cannot change", pvs.Name)
+	}
+	if pvs.Spec.Resolved != nil &&
+		(pvs.Spec.Resolved.LocalAttach != spec.Resolved.LocalAttach ||
+			!reflect.DeepEqual(pvs.Spec.Resolved.Backend, spec.Resolved.Backend)) {
+		return status.Errorf(
+			codes.FailedPrecondition,
+			"volume %q adopted filesystem layout and access scope cannot change", pvs.Name)
+	}
+	return nil
 }
 
 // refuseDeleting rejects a grant-class operation on a volume under deletion.
@@ -227,6 +397,10 @@ func (s *ControllerServer) currentToken(
 	if !exists {
 		return nil, status.Errorf(codes.NotFound, "volume %q not found", volumeID)
 	}
+	err = s.validateVolumeDriver(pvs)
+	if err != nil {
+		return nil, err
+	}
 	setClaimAttributes(ctx, pvs.Spec.ClaimRef)
 	err = refuseDeleting(pvs, volumeID)
 	if err != nil {
@@ -240,26 +414,45 @@ func (s *ControllerServer) currentToken(
 // rejected even across controller restarts, and returns the fencing token
 // for the AllowInitiator (or SetLocalAttach) call.  An identical re-publish
 // still commits a new generation so the re-issued grant is ordered after any
-// operation already in flight.  A local publication also sets
-// status.localAttachNode in the same compare-and-swap, so the fence of the
-// remote export is durable before the agent is asked to apply it.
+// operation already in flight. A local block publication also sets
+// status.localAttachNode to fence its remote export. File publications never
+// set this exclusive-block field: compatible direct and NFS mounts coexist.
 //
 // Returns NotFound for an unknown volume, FailedPrecondition when another
 // node holds the volume incompatibly or the volume is being deleted,
 // AlreadyExists when the node holds it with a different capability, and
 // Aborted while an unpublish of the same node is still revoking it.
+// This wrapper records a publication before granting access. The
+// compatibility wrapper preserves the historical result shape for callers that
+// do not need to distinguish a new record from an idempotent retry.
 func (s *ControllerServer) reservePublication(
 	ctx context.Context,
 	pvName, volumeID string,
 	uid types.UID,
 	pub v1alpha1.VolumePublication,
 ) (*agentv1.FencingToken, error) {
-	return s.committedToken(ctx, pvName, uid, func(pvs *v1alpha1.PillarVolumeState) error {
+	token, _, err := s.reservePublicationState(ctx, pvName, volumeID, uid, pub)
+	return token, err
+}
+
+// reservePublicationState records a publication and reports whether this call
+// appended a new record.  The result is computed inside the lifecycle-pinned
+// compare-and-swap, so a retry that observes a concurrent identical reservation
+// is correctly treated as an existing publication.
+func (s *ControllerServer) reservePublicationState(
+	ctx context.Context,
+	pvName, volumeID string,
+	uid types.UID,
+	pub v1alpha1.VolumePublication,
+) (*agentv1.FencingToken, bool, error) {
+	added := false
+	token, err := s.committedToken(ctx, pvName, uid, func(pvs *v1alpha1.PillarVolumeState) error {
+		added = false
 		err := refuseDeleting(pvs, volumeID)
 		if err != nil {
 			return err
 		}
-		if pub.Local {
+		if pub.Local && pvs.Spec.FilesystemAdoption == nil {
 			pvs.Status.LocalAttachNode = pub.NodeID
 		}
 		for _, cur := range pvs.Status.PublishedNodes {
@@ -272,8 +465,10 @@ func (s *ControllerServer) reservePublication(
 			}
 		}
 		pvs.Status.PublishedNodes = append(pvs.Status.PublishedNodes, pub)
+		added = true
 		return nil
 	})
+	return token, added, err
 }
 
 // clearLocalAttachNode clears status.localAttachNode once the agent has
@@ -359,6 +554,38 @@ func checkPublicationConflict(volumeID string, cur, pub v1alpha1.VolumePublicati
 				"requested access mode %s (readonly=%t)",
 			volumeID, pub.NodeID, cur.AccessMode, cur.Readonly, pub.AccessMode, pub.Readonly)
 	}
+}
+
+// fencePublication marks one expected publication revoking and commits a
+// generation. It always advances the generation, even when the expected
+// record is already gone, so a delayed grant from the failed publish cannot
+// land after the compensation obtains its token. The found result controls
+// whether the caller may release a durable record.
+func (s *ControllerServer) fencePublication(
+	ctx context.Context,
+	pvName string,
+	uid types.UID,
+	expected v1alpha1.VolumePublication,
+) (token *agentv1.FencingToken, found bool, err error) {
+	pvs, err := s.updateVolumeState(ctx, pvName, uid, true, func(pvs *v1alpha1.PillarVolumeState) error {
+		found = false
+		for i := range pvs.Status.PublishedNodes {
+			if pvs.Status.PublishedNodes[i] == expected {
+				pvs.Status.PublishedNodes[i].Revoking = true
+				found = true
+				break
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	token, err = fenceToken(pvs)
+	if err != nil {
+		return nil, false, err
+	}
+	return token, found, nil
 }
 
 // fencePublications selects the publications of nodeID (every publication
@@ -464,32 +691,17 @@ func (s *ControllerServer) markVolumeDeleting(
 	if !exists {
 		return nil, nil, nil
 	}
-	pvs, err := s.updateVolumeState(ctx, pvName, current.UID, true, func(pvs *v1alpha1.PillarVolumeState) error {
-		refuseErr := refuseRecoveryPending(pvs, volumeID)
-		if refuseErr != nil {
-			return refuseErr
-		}
-		if pvs.Status.Deleting {
-			return errNoStatusChange
-		}
-		if len(pvs.Status.PublishedNodes) > 0 {
-			nodes := make([]string, 0, len(pvs.Status.PublishedNodes))
-			for _, pub := range pvs.Status.PublishedNodes {
-				nodes = append(nodes, pub.NodeID)
-			}
-			return status.Errorf(codes.FailedPrecondition,
-				"volume %q is still published to nodes %v; unpublish it before deleting",
-				volumeID, nodes)
-		}
-		if admit != nil {
-			admitErr := admit(pvs)
-			if admitErr != nil {
-				return admitErr
-			}
-		}
-		pvs.Status.Deleting = true
-		return nil
-	})
+	// Name lookup can race deletion and same-name recreation before this
+	// first read. A handle from the prior lifecycle owns nothing here.
+	if (current.Spec.FilesystemAdoption != nil || current.Spec.VolumeID != "") &&
+		current.Spec.VolumeID != volumeID {
+		return nil, nil, nil
+	}
+	pvs, err := s.updateVolumeState(
+		ctx, pvName, current.UID, true,
+		func(pvs *v1alpha1.PillarVolumeState) error {
+			return markVolumeDeletingMutation(pvs, pvName, volumeID, admit)
+		})
 	if err != nil || pvs == nil {
 		return nil, nil, err
 	}
@@ -498,6 +710,44 @@ func (s *ControllerServer) markVolumeDeleting(
 		return nil, nil, err
 	}
 	return pvs, token, nil
+}
+
+func markVolumeDeletingMutation(
+	pvs *v1alpha1.PillarVolumeState,
+	pvName, volumeID string,
+	admit func(*v1alpha1.PillarVolumeState) error,
+) error {
+	if (pvs.Spec.FilesystemAdoption != nil || pvs.Spec.VolumeID != "") &&
+		pvs.Spec.VolumeID != volumeID {
+		return status.Errorf(
+			codes.Aborted,
+			"volume %q no longer belongs to PillarVolumeState %q", volumeID, pvName)
+	}
+	err := refuseRecoveryPending(pvs, volumeID)
+	if err != nil {
+		return err
+	}
+	if pvs.Status.Deleting {
+		return errNoStatusChange
+	}
+	if len(pvs.Status.PublishedNodes) > 0 {
+		nodes := make([]string, 0, len(pvs.Status.PublishedNodes))
+		for _, pub := range pvs.Status.PublishedNodes {
+			nodes = append(nodes, pub.NodeID)
+		}
+		return status.Errorf(
+			codes.FailedPrecondition,
+			"volume %q is still published to nodes %v; unpublish it before deleting",
+			volumeID, nodes)
+	}
+	if admit != nil {
+		err = admit(pvs)
+		if err != nil {
+			return err
+		}
+	}
+	pvs.Status.Deleting = true
+	return nil
 }
 
 // deleteVolumeState removes the PillarVolumeState of the lifecycle uid.  The
@@ -548,8 +798,16 @@ func (s *ControllerServer) recordAllocatedCapacity(
 				"PillarVolumeState %q (uid %s) no longer exists; the volume was deleted or re-created",
 				pvName, uid)
 		}
+		validateErr := s.validateVolumeDriver(pvs)
+		if validateErr != nil {
+			return validateErr
+		}
 		if pvs.Spec.CapacityBytes == capacity {
 			return nil
+		}
+		if pvs.Spec.FilesystemAdoption != nil {
+			return status.Errorf(codes.FailedPrecondition,
+				"volume %q adopted filesystem capacity is fixed at %d bytes", pvName, pvs.Spec.CapacityBytes)
 		}
 		pvs.Spec.CapacityBytes = capacity
 		return s.k8sClient.Update(ctx, pvs)
@@ -573,12 +831,15 @@ func (s *ControllerServer) persistCreatePartial(
 		pvs.Status.Phase = v1alpha1.PillarVolumeStatePhaseCreatePartial
 		pvs.Status.BackendDevicePath = devicePath
 		pvs.Status.ExportSpec = exportSpec
-		if pvs.Spec.ImportedFrom != "" || pvs.Spec.LVMSource != nil {
-			// ImportVolume succeeded: the agent durably adopted the
-			// pre-existing zvol or LV.  While this is unset the lifecycle
-			// cannot prove ownership and cleanup must retire the record
-			// without touching the source.  (A PreserveOriginal LV is
-			// released, never deleted, either way; see releaseOnlyTeardown.)
+		if pvs.Spec.ImportedFrom != "" || pvs.Spec.LVMSource != nil || pvs.Spec.FilesystemAdoption != nil {
+			// ImportVolume succeeded and durably bound this lifecycle: the
+			// agent adopted the pre-existing zvol, LV or filesystem.  While
+			// this is unset the lifecycle cannot prove ownership and cleanup
+			// must retire the record without touching the source.  Imported
+			// zvols and Managed LVs retain destructive Delete semantics; a
+			// PreserveOriginal LV is released, never deleted (see
+			// releaseOnlyTeardown); adopted filesystems retire owned state and
+			// preserve the source.
 			pvs.Status.ImportAcquired = true
 		}
 		pvs.Status.PartialFailure = &v1alpha1.PartialFailureInfo{
@@ -615,14 +876,29 @@ func (s *ControllerServer) persistVolumeReady(
 	uid types.UID,
 	info exportInfoGetter,
 ) error {
+	// CreateVolume passes a *ExportInfo through this interface. A typed nil
+	// must remain absent rather than being cached as an empty network export.
+	exportAbsent := info == nil
+	if agentInfo, ok := info.(*agentv1.ExportInfo); ok {
+		exportAbsent = agentInfo == nil
+	}
 	_, err := s.updateVolumeState(ctx, pvName, uid, false, func(pvs *v1alpha1.PillarVolumeState) error {
 		if pvs.Status.Deleting {
 			return status.Errorf(codes.FailedPrecondition,
 				"volume %q is being deleted", pvs.Spec.VolumeID)
 		}
+		if exportAbsent && (!localOnlyFilesystem(pvs) || !pvs.Status.ImportAcquired) {
+			return status.Errorf(codes.FailedPrecondition,
+				"volume %q has no acquired local filesystem", pvs.Spec.VolumeID)
+		}
 		pvs.Status.Phase = v1alpha1.PillarVolumeStatePhaseReady
 		pvs.Status.PartialFailure = nil
 		pvs.Status.BackendDevicePath = ""
+		if exportAbsent {
+			pvs.Status.ExportInfo = nil
+			pvs.Status.ExportSpec = nil
+			return nil
+		}
 		pvs.Status.ExportInfo = &v1alpha1.VolumeExportInfo{
 			TargetID:  info.GetTargetId(),
 			Address:   info.GetAddress(),

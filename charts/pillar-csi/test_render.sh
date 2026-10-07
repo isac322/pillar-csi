@@ -44,6 +44,17 @@
 #     - chart RBAC names only resources those CRDs serve and covers
 #       config/rbac/role.yaml
 #
+#   fileDriver.enabled (opt-in file CSI consumer, via hack/chartcontract):
+#     - both CSIDriver identities keep their fsGroupPolicy; block and file
+#       controller/node socket + registrar routes stay paired
+#     - the agent's --nfs-export-root host tree is covered by exactly one
+#       Bidirectional mount: the default proxyRoot nested under the
+#       agent-state hostPath inherits that mount's propagation, while a
+#       disjoint proxyRoot keeps its own dedicated mount — a stacked nested
+#       mount would break the agent's mount verification
+#     - a proxyRoot that is a parent of /var/lib/pillar-csi/agent fails the
+#       render instead of swallowing agent state
+#
 # Run with:   bash charts/pillar-csi/test_render.sh
 # Override:   HELM=/tmp/linux-arm64/helm bash charts/pillar-csi/test_render.sh
 # CI invokes: make test-chart
@@ -733,15 +744,67 @@ if render --set-string metrics.controller.secure=yes >/dev/null 2>&1; then
 fi
 
 # ──────────────────────────────────────────────────────────────────────────
+# File CSI opt-in consumer contract (#164)
+# ──────────────────────────────────────────────────────────────────────────
+# hack/chartcontract decodes the rendered Kubernetes objects, workload
+# arguments and resolved hostPath mounts for this check. It deliberately
+# validates resource identity, fsGroupPolicy, paired CSI socket/registrar
+# routes and the Bidirectional mount topology rather than matching chart
+# template source or incidental resource names: the agent must cover its
+# --nfs-export-root with exactly one Bidirectional mount (a proxyRoot nested
+# under the agent-state hostPath inherits that mount's propagation; a
+# dedicated mount would stack nested Bidirectional mounts on the same host
+# tree) and no container may stack Bidirectional mounts on related paths.
+REPO_ROOT="$(cd "${CHART_DIR}/../.." && pwd)"
+check_file_driver_contract() {
+  local block_policy="$1"; shift
+  if ! render "$@" | (cd "${REPO_ROOT}" && go run ./hack/chartcontract \
+    -controller-role "${RELEASE}" \
+    -file-driver \
+    -file-driver-block-policy "${block_policy}"); then
+    mark_fail "fileDriver consumer contract (${*:-default values}) must preserve both CSI identities, routes and the Bidirectional mount topology"
+  fi
+}
+check_file_driver_contract File --set fileDriver.enabled=true
+check_file_driver_contract None --set fileDriver.enabled=true --set csiDriver.fsGroupPolicy=None
+check_file_driver_contract File --set fileDriver.enabled=true --set fileDriver.nfs.enabled=true
+check_file_driver_contract File --set fileDriver.enabled=true --set fileDriver.proxyRoot=/mnt/proxies
+check_file_driver_contract File --set fileDriver.enabled=true --set fileDriver.proxyRoot=/var/lib/pillar-csi/agent-other
+check_file_driver_contract File --set fileDriver.enabled=true --set fileDriver.proxyRoot=/var/lib/pillar-csi/agent
+
+# A proxyRoot that is a parent directory of the fixed agent-state hostPath
+# would swallow the agent's fencing/export state, so the render must fail
+# clearly instead of stacking overlapping mount roots.
+PROXY_ANCESTOR_ERR="$(render --set fileDriver.enabled=true \
+  --set fileDriver.proxyRoot=/var/lib/pillar-csi 2>&1 >/dev/null || true)"
+assert_contains "${PROXY_ANCESTOR_ERR}" "fileDriver.proxyRoot" \
+  "fileDriver.proxyRoot enclosing the agent-state hostPath must fail the render naming the offending value"
+assert_contains "${PROXY_ANCESTOR_ERR}" "agent-state" \
+  "fileDriver.proxyRoot enclosing the agent-state hostPath must fail with the agent-state reason"
+PROXY_ROOT_ERR="$(render --set fileDriver.enabled=true --set fileDriver.proxyRoot=/ 2>&1 >/dev/null || true)"
+assert_contains "${PROXY_ROOT_ERR}" "must be a canonical absolute path other than /" \
+  "fileDriver.proxyRoot=/ must fail the render clearly"
+PROXY_NONCANON_ERR="$(render --set fileDriver.enabled=true \
+  --set 'fileDriver.proxyRoot=/mnt/proxies/' 2>&1 >/dev/null || true)"
+assert_contains "${PROXY_NONCANON_ERR}" "must be a canonical absolute path other than /" \
+  "non-canonical fileDriver.proxyRoot must be rejected, not normalized into an accepted path"
+
+# ──────────────────────────────────────────────────────────────────────────
 # API contract: rendered CRDs and RBAC vs controller-gen output
 # ──────────────────────────────────────────────────────────────────────────
 # Decodes the rendered objects (not text) and compares them with
 # config/crd/bases and config/rbac/role.yaml. installCRDs=false must still
 # grant RBAC only on resources the separately applied generated CRDs serve.
-REPO_ROOT="$(cd "${CHART_DIR}/../.." && pwd)"
 check_api_contract() {
   local mode="$1"; shift
-  if ! render "$@" | (cd "${REPO_ROOT}" && go run ./hack/chartcontract -controller-role "${RELEASE}" ${mode:+"${mode}"}); then
+  local -a chartcontract_args=(-controller-role "${RELEASE}")
+  if [[ -n "${mode}" ]]; then
+    chartcontract_args+=("${mode}")
+  fi
+  if ! render "$@" | (
+    cd "${REPO_ROOT}" &&
+      go run ./hack/chartcontract "${chartcontract_args[@]}"
+  ); then
     mark_fail "chart API contract (${*:-default values}) must match controller-gen CRDs and RBAC"
   fi
 }

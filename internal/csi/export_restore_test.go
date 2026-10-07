@@ -18,12 +18,14 @@ package csi
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -206,6 +208,149 @@ func TestRestoreAgentExports_ItemFailureIsReportedAndRetried(t *testing.T) {
 	}
 	if linked := env.linkedSubsystems(t); !slices.Equal(linked, []string{restoreNQN(good.Name)}) {
 		t.Errorf("linked subsystems = %v, want only %s", linked, restoreNQN(good.Name))
+	}
+}
+
+type restoreResultClient struct {
+	agentv1.AgentServiceClient
+	response *agentv1.ReconcileStateResponse
+}
+
+func (c *restoreResultClient) ReconcileState(context.Context, *agentv1.ReconcileStateRequest,
+	...grpc.CallOption,
+) (*agentv1.ReconcileStateResponse, error) {
+	return c.response, nil
+}
+
+type restoreOutcomeExpectation struct {
+	name   string
+	status metav1.ConditionStatus
+	reason string
+}
+
+type restoreOutcomeScenario struct {
+	env         *resyncEnv
+	wrongDriver *v1alpha1.PillarVolumeState
+	foreign     *v1alpha1.PillarVolumeState
+	outcomes    []restoreOutcomeExpectation
+}
+
+func TestRestoreAgentExports_RecordsEveryDriverOutcomeWithoutChurn(t *testing.T) {
+	t.Parallel()
+	for _, driverName := range []string{v1alpha1.DefaultCSIDriver, v1alpha1.FileCSIDriver} {
+		t.Run(driverName, func(t *testing.T) {
+			t.Parallel()
+			scenario := newRestoreOutcomeScenario(t, driverName)
+			assertWrongDriverRejected(t, scenario)
+			assertRestoreOutcomesStable(t, scenario)
+		})
+	}
+}
+
+func newRestoreOutcomeScenario(t *testing.T, driverName string) restoreOutcomeScenario {
+	t.Helper()
+	legacy := restorePVS(resyncAgentName, "legacy-ready", "aaaaaaaa-0000-0000-0000-000000000020")
+	fileReady := restorePVS(resyncAgentName, "file-ready", "aaaaaaaa-0000-0000-0000-000000000021")
+	fileRejected := restorePVS(resyncAgentName, "file-rejected", "aaaaaaaa-0000-0000-0000-000000000022")
+	fileMissingSpec := restorePVS(resyncAgentName, "file-missing-spec", "aaaaaaaa-0000-0000-0000-000000000023")
+	foreign := restorePVS("storage-2", "foreign-file", "aaaaaaaa-0000-0000-0000-000000000024")
+	for _, pvs := range []*v1alpha1.PillarVolumeState{fileReady, fileRejected, fileMissingSpec, foreign} {
+		configureRestoreFilesystemVolume(pvs)
+	}
+	fileMissingSpec.Status.ExportSpec = nil
+	env := newResyncEnvObjects(t, t.TempDir(),
+		[]client.Object{legacy, fileReady, fileRejected, fileMissingSpec, foreign})
+	env.srv.driverName = driverName
+	agentClient := &restoreResultClient{response: &agentv1.ReconcileStateResponse{
+		Results: []*agentv1.ReconcileItemResult{
+			{VolumeId: legacy.Spec.AgentVolumeID, Success: true},
+			{VolumeId: fileReady.Spec.AgentVolumeID, Success: true},
+			{VolumeId: fileRejected.Spec.AgentVolumeID, ErrorMessage: "adopted source identity changed"},
+		},
+	}}
+	env.srv.dialAgent = func(context.Context, string) (agentv1.AgentServiceClient, io.Closer, error) {
+		return agentClient, nopCloser{}, nil
+	}
+	wrongDrivers := map[string]*v1alpha1.PillarVolumeState{
+		v1alpha1.DefaultCSIDriver: fileReady,
+		v1alpha1.FileCSIDriver:    legacy,
+	}
+	return restoreOutcomeScenario{
+		env:         env,
+		wrongDriver: wrongDrivers[driverName],
+		foreign:     foreign,
+		outcomes: []restoreOutcomeExpectation{
+			{legacy.Name, metav1.ConditionTrue, reasonExportReconciled},
+			{fileReady.Name, metav1.ConditionTrue, reasonExportReconciled},
+			{fileRejected.Name, metav1.ConditionFalse, reasonReconcileFailed},
+			{fileMissingSpec.Name, metav1.ConditionFalse, reasonExportSpecMissing},
+		},
+	}
+}
+
+func configureRestoreFilesystemVolume(pvs *v1alpha1.PillarVolumeState) {
+	adoption, resolved := filesystemDirectoryFixture()
+	adoption.CanonicalSource += "/" + pvs.Name
+	pvs.Spec.FilesystemAdoption, pvs.Spec.Resolved = adoption, resolved
+	pvs.Spec.BackendType, pvs.Spec.ProtocolType = "directory", "nfs"
+}
+
+func assertWrongDriverRejected(t *testing.T, scenario restoreOutcomeScenario) {
+	t.Helper()
+	ctx := context.Background()
+	if err := scenario.env.srv.ReconcileVolumeExport(ctx, scenario.wrongDriver.Name); status.Code(err) != codes.NotFound {
+		t.Fatalf("wrong-driver per-volume resync = %v, want NotFound", err)
+	}
+	if cond := scenario.env.conditionOf(t, scenario.wrongDriver.Name); cond != nil {
+		t.Fatalf("wrong-driver per-volume resync changed condition: %+v", cond)
+	}
+}
+
+func assertRestoreOutcomesStable(t *testing.T, scenario restoreOutcomeScenario) {
+	t.Helper()
+	ctx := context.Background()
+	versions := make(map[string]string, len(scenario.outcomes))
+	for attempt := range 2 {
+		if err := scenario.env.srv.RestoreAgentExports(ctx, resyncAgentName); err == nil {
+			t.Fatal("restore succeeded despite rejected and missing-spec adopted volumes")
+		}
+		for _, outcome := range scenario.outcomes {
+			assertRestoreOutcome(t, scenario.env, outcome, attempt, versions)
+		}
+		if cond := scenario.env.conditionOf(t, scenario.foreign.Name); cond != nil {
+			t.Errorf("another agent's adopted volume changed: %+v", cond)
+		}
+	}
+}
+
+func assertRestoreOutcome(t *testing.T, env *resyncEnv, outcome restoreOutcomeExpectation,
+	attempt int, versions map[string]string,
+) {
+	t.Helper()
+	ctx := context.Background()
+	pvs := &v1alpha1.PillarVolumeState{}
+	if err := env.srv.k8sClient.Get(ctx, types.NamespacedName{Name: outcome.name}, pvs); err != nil {
+		t.Fatalf("get %s: %v", outcome.name, err)
+	}
+	cond := meta.FindStatusCondition(pvs.Status.Conditions, ConditionExportReconciled)
+	if cond == nil || cond.Status != outcome.status || cond.Reason != outcome.reason {
+		t.Errorf("%s ExportReconciled = %+v, want %s/%s",
+			outcome.name, cond, outcome.status, outcome.reason)
+	}
+	count := 0
+	for _, condition := range pvs.Status.Conditions {
+		if condition.Type == ConditionExportReconciled {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("%s has %d ExportReconciled conditions, want exactly one", outcome.name, count)
+	}
+	if attempt == 0 {
+		versions[outcome.name] = pvs.ResourceVersion
+	} else if pvs.ResourceVersion != versions[outcome.name] {
+		t.Errorf("%s unchanged restore outcome churned resourceVersion: %s -> %s",
+			outcome.name, versions[outcome.name], pvs.ResourceVersion)
 	}
 }
 

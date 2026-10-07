@@ -68,6 +68,7 @@ const (
 	AgentService_ListExports_FullMethodName             = "/pillar_csi.agent.v1.AgentService/ListExports"
 	AgentService_HealthCheck_FullMethodName             = "/pillar_csi.agent.v1.AgentService/HealthCheck"
 	AgentService_CreateVolume_FullMethodName            = "/pillar_csi.agent.v1.AgentService/CreateVolume"
+	AgentService_InspectImport_FullMethodName           = "/pillar_csi.agent.v1.AgentService/InspectImport"
 	AgentService_ImportVolume_FullMethodName            = "/pillar_csi.agent.v1.AgentService/ImportVolume"
 	AgentService_InspectVolume_FullMethodName           = "/pillar_csi.agent.v1.AgentService/InspectVolume"
 	AgentService_DeleteVolume_FullMethodName            = "/pillar_csi.agent.v1.AgentService/DeleteVolume"
@@ -119,6 +120,10 @@ type AgentServiceClient interface {
 	// Idempotent: if the volume already exists with the same parameters the
 	// agent MUST return success.
 	CreateVolume(ctx context.Context, in *CreateVolumeRequest, opts ...grpc.CallOption) (*CreateVolumeResponse, error)
+	// InspectImport resolves an existing filesystem source and validates its
+	// native identity, exact effective quota, and configured placement read-only.
+	// The controller calls it before reserving the backing resource.
+	InspectImport(ctx context.Context, in *InspectImportRequest, opts ...grpc.CallOption) (*InspectImportResponse, error)
 	// ImportVolume adopts an already-existing backend storage resource into a
 	// volume lifecycle instead of creating one.  It backs the CSI CreateVolume
 	// path of a PersistentVolumeClaim that carries the
@@ -132,7 +137,9 @@ type AgentServiceClient interface {
 	// node (a target backstore, an nvmet namespace, a mount or an exclusive
 	// device claim), or when capacity_bytes exceeds the resource's current
 	// size.  It must never create or modify the resource.  ZFS zvol and LVM
-	// backends implement it; other backends return UNIMPLEMENTED.
+	// backends implement it; filesystem backends implement it only for
+	// filesystem adoption, which instead carries a pinned native identity and
+	// requires an exact quota bound; other backends return UNIMPLEMENTED.
 	//
 	// LVM imports require expected_lvm_source and are pinned durably to that
 	// identity and to preserve_original: a later import of the same volume_id
@@ -385,6 +392,16 @@ func (c *agentServiceClient) CreateVolume(ctx context.Context, in *CreateVolumeR
 	return out, nil
 }
 
+func (c *agentServiceClient) InspectImport(ctx context.Context, in *InspectImportRequest, opts ...grpc.CallOption) (*InspectImportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InspectImportResponse)
+	err := c.cc.Invoke(ctx, AgentService_InspectImport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *agentServiceClient) ImportVolume(ctx context.Context, in *ImportVolumeRequest, opts ...grpc.CallOption) (*ImportVolumeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ImportVolumeResponse)
@@ -581,6 +598,10 @@ type AgentServiceServer interface {
 	// Idempotent: if the volume already exists with the same parameters the
 	// agent MUST return success.
 	CreateVolume(context.Context, *CreateVolumeRequest) (*CreateVolumeResponse, error)
+	// InspectImport resolves an existing filesystem source and validates its
+	// native identity, exact effective quota, and configured placement read-only.
+	// The controller calls it before reserving the backing resource.
+	InspectImport(context.Context, *InspectImportRequest) (*InspectImportResponse, error)
 	// ImportVolume adopts an already-existing backend storage resource into a
 	// volume lifecycle instead of creating one.  It backs the CSI CreateVolume
 	// path of a PersistentVolumeClaim that carries the
@@ -594,7 +615,9 @@ type AgentServiceServer interface {
 	// node (a target backstore, an nvmet namespace, a mount or an exclusive
 	// device claim), or when capacity_bytes exceeds the resource's current
 	// size.  It must never create or modify the resource.  ZFS zvol and LVM
-	// backends implement it; other backends return UNIMPLEMENTED.
+	// backends implement it; filesystem backends implement it only for
+	// filesystem adoption, which instead carries a pinned native identity and
+	// requires an exact quota bound; other backends return UNIMPLEMENTED.
 	//
 	// LVM imports require expected_lvm_source and are pinned durably to that
 	// identity and to preserve_original: a later import of the same volume_id
@@ -805,6 +828,9 @@ func (UnimplementedAgentServiceServer) HealthCheck(context.Context, *HealthCheck
 func (UnimplementedAgentServiceServer) CreateVolume(context.Context, *CreateVolumeRequest) (*CreateVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateVolume not implemented")
 }
+func (UnimplementedAgentServiceServer) InspectImport(context.Context, *InspectImportRequest) (*InspectImportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InspectImport not implemented")
+}
 func (UnimplementedAgentServiceServer) ImportVolume(context.Context, *ImportVolumeRequest) (*ImportVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ImportVolume not implemented")
 }
@@ -975,6 +1001,24 @@ func _AgentService_CreateVolume_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(AgentServiceServer).CreateVolume(ctx, req.(*CreateVolumeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_InspectImport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InspectImportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).InspectImport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_InspectImport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).InspectImport(ctx, req.(*InspectImportRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1261,6 +1305,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateVolume",
 			Handler:    _AgentService_CreateVolume_Handler,
+		},
+		{
+			MethodName: "InspectImport",
+			Handler:    _AgentService_InspectImport_Handler,
 		},
 		{
 			MethodName: "ImportVolume",

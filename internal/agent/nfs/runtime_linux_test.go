@@ -6,9 +6,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"syscall"
@@ -93,6 +95,65 @@ func TestAdmissionTableParsingRefusesUnprovableOwnership(t *testing.T) {
 		if _, err := parseEtab(data); err == nil {
 			t.Fatalf("unprovable admission table accepted: %q", data)
 		}
+	}
+}
+
+func TestEnsurePrivateEtabCreatesAndPreservesTable(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() != 0 {
+		t.Skip("private NFS admission table must be root-owned")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "etab")
+	if err := ensurePrivateEtab(path); err != nil {
+		t.Fatal(err)
+	}
+	assertPrivateEtab(t, path, 0o600)
+
+	const content = "/data 192.0.2.10(ro,fsid=1)\n"
+	writePermissiveEtab(t, path, content)
+	assertPrivateEtab(t, path, 0o644)
+
+	if err := ensurePrivateEtab(path); err != nil {
+		t.Fatal(err)
+	}
+	assertPrivateEtab(t, path, 0o600)
+	got, err := fs.ReadFile(os.DirFS(dir), "etab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Fatalf("private admission table content = %q, want %q", got, content)
+	}
+}
+
+func writePermissiveEtab(t *testing.T, path, content string) {
+	t.Helper()
+	//nolint:gosec // Deliberately permissive setup verifies ensurePrivateEtab tightens mode.
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	//nolint:gosec // Deliberately permissive setup verifies ensurePrivateEtab tightens mode.
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertPrivateEtab(t *testing.T, path string, wantPerm fs.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("private admission table mode = %s, want regular file", info.Mode())
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 {
+		t.Fatalf("private admission table owner = %#v, want root", info.Sys())
+	}
+	if info.Mode().Perm() != wantPerm {
+		t.Fatalf("private admission table mode = %o, want %o", info.Mode().Perm(), wantPerm)
 	}
 }
 

@@ -213,13 +213,20 @@ func bootstrapSuiteBackends(
 	// supply custom backends without touching any framework code.
 	pipeline := provisioner.NewPipeline()
 	if len(provisioners) == 0 {
+		// 512 MiB sparse image — accommodates multiple 10–20 MiB test zvols
+		// across parallel Ginkgo workers plus ZFS metadata overhead.
+		// The dedicated physical NFS lane also creates a thick 512 MiB XFS
+		// zvol (TC-E71.28), which cannot fit beside pool metadata in 512 MiB,
+		// so only that lane gets a 2 GiB image.
+		// Sparse image — truncate creates it instantly with no actual disk I/O.
+		zfsSizeMiB := 512
+		if dedicatedNFSLane {
+			zfsSizeMiB = 2048
+		}
 		pipeline.AddBackend(&provisioner.ZFSProvisioner{
 			NodeContainer: nodeContainer,
 			PoolName:      "pillar-e2e-zfs-" + suffix,
-			// 512 MiB sparse image — accommodates multiple 10–20 MiB test zvols
-			// across parallel Ginkgo workers plus ZFS metadata overhead.
-			// Sparse image — truncate creates it instantly with no actual disk I/O.
-			SizeMiB: 512,
+			SizeMiB:       zfsSizeMiB,
 		})
 		pipeline.AddBackend(&provisioner.LVMProvisioner{
 			NodeContainer: nodeContainer,

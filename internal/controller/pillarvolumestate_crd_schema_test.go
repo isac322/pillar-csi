@@ -61,6 +61,179 @@ var _ = Describe("PillarVolumeState CRD Schema Validation", func() {
 		}
 	}
 
+	Context("filesystem adoption identity", func() {
+		directoryAdoption := func() *pillarcsiv1alpha1.FilesystemAdoption {
+			return &pillarcsiv1alpha1.FilesystemAdoption{
+				Kind:            pillarcsiv1alpha1.FilesystemAdoptionKindDirectory,
+				CanonicalSource: "/srv/files/existing",
+				ResourceID:      "cde366af-d47e-4d86-a1e8-a26809ba2cce:18446744073709551615",
+				FilesystemType:  "ext4",
+				FilesystemID:    "cde366af-d47e-4d86-a1e8-a26809ba2cce",
+				Inode:           "18446744073709551615",
+				ProjectID:       42,
+			}
+		}
+		datasetAdoption := func() *pillarcsiv1alpha1.FilesystemAdoption {
+			return &pillarcsiv1alpha1.FilesystemAdoption{
+				Kind:            pillarcsiv1alpha1.FilesystemAdoptionKindZFSDataset,
+				CanonicalSource: "tank/existing",
+				ResourceID:      "123456789",
+				FilesystemType:  "zfs",
+			}
+		}
+		newVolume := func(name string, adoption *pillarcsiv1alpha1.FilesystemAdoption) *pillarcsiv1alpha1.PillarVolumeState {
+			backendType := "zfs-dataset"
+			if adoption != nil && adoption.Kind == pillarcsiv1alpha1.FilesystemAdoptionKindDirectory {
+				backendType = "directory"
+			}
+			return &pillarcsiv1alpha1.PillarVolumeState{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec: pillarcsiv1alpha1.PillarVolumeStateSpec{
+					VolumeID:           "storage-1/nfs/" + backendType + "/" + name,
+					AgentVolumeID:      "tank/" + name,
+					AgentRef:           "storage-1",
+					BackendType:        backendType,
+					ProtocolType:       "nfs",
+					CapacityBytes:      1 << 30,
+					FilesystemAdoption: adoption,
+				},
+			}
+		}
+
+		DescribeTable("accepts initial adoption and updates that retain its identity",
+			func(source string) {
+				adoption := directoryAdoption()
+				switch source {
+				case "xfs":
+					adoption.FilesystemType = "xfs"
+				case "zfs-mounted":
+					adoption = datasetAdoption()
+					adoption.HostPath = "/srv/files/existing"
+				case "zfs-unmounted":
+					adoption = datasetAdoption()
+				}
+				name := "e214-adoption-valid-" + source
+				vol := newVolume(name, adoption)
+				Expect(k8sClient.Create(crdCtx, vol)).To(Succeed())
+				DeferCleanup(func() { deleteVolumeIfExists(name) })
+
+				vol.Annotations = map[string]string{"schema-test": "identity-retained"}
+				Expect(k8sClient.Update(crdCtx, vol)).To(Succeed())
+				stored := &pillarcsiv1alpha1.PillarVolumeState{}
+				Expect(k8sClient.Get(crdCtx, types.NamespacedName{Name: name}, stored)).To(Succeed())
+				Expect(stored.Spec.FilesystemAdoption).To(Equal(adoption))
+				Expect(stored.Annotations).To(HaveKeyWithValue("schema-test", "identity-retained"))
+			},
+			Entry("ext4 directory", "ext4"),
+			Entry("XFS directory", "xfs"),
+			Entry("mounted ZFS dataset", "zfs-mounted"),
+			Entry("unmounted legacy ZFS dataset without hostPath", "zfs-unmounted"),
+		)
+
+		DescribeTable("rejects adding, removing or changing a recorded descriptor without persisting the change",
+			func(source, operation string) {
+				var adoption *pillarcsiv1alpha1.FilesystemAdoption
+				switch source {
+				case "directory":
+					adoption = directoryAdoption()
+				case "zfs":
+					adoption = datasetAdoption()
+				}
+				name := "e214-adoption-" + source + "-" + operation
+				vol := newVolume(name, adoption)
+				Expect(k8sClient.Create(crdCtx, vol)).To(Succeed())
+				DeferCleanup(func() { deleteVolumeIfExists(name) })
+				original := vol.DeepCopy()
+
+				switch operation {
+				case "add":
+					vol.Spec.FilesystemAdoption = datasetAdoption()
+				case "remove":
+					vol.Spec.FilesystemAdoption = nil
+				case "change":
+					vol.Spec.FilesystemAdoption.ResourceID = "987654321"
+					if source == "directory" {
+						vol.Spec.FilesystemAdoption.Inode = "124"
+						vol.Spec.FilesystemAdoption.ResourceID = vol.Spec.FilesystemAdoption.FilesystemID + ":124"
+					}
+				}
+				err := k8sClient.Update(crdCtx, vol)
+				Expect(errors.IsInvalid(err)).To(BeTrue())
+				stored := &pillarcsiv1alpha1.PillarVolumeState{}
+				Expect(k8sClient.Get(crdCtx, types.NamespacedName{Name: name}, stored)).To(Succeed())
+				Expect(stored.Spec.FilesystemAdoption).To(Equal(original.Spec.FilesystemAdoption))
+			},
+			Entry("adding to a legacy volume", "legacy", "add"),
+			Entry("removing directory preservation", "directory", "remove"),
+			Entry("removing ZFS preservation", "zfs", "remove"),
+			Entry("changing directory identity", "directory", "change"),
+			Entry("changing ZFS identity", "zfs", "change"),
+		)
+
+		DescribeTable("accepts initial legacy volumes and their subsequent updates without adoption",
+			func(imported bool) {
+				name := fmt.Sprintf("e214-adoption-legacy-%t", imported)
+				vol := newVolume(name, nil)
+				if imported {
+					vol.Spec.BackendType = "zfs-zvol"
+					vol.Spec.ProtocolType = "nvmeof-tcp"
+					vol.Spec.VolumeID = "storage-1/nvmeof-tcp/zfs-zvol/tank/" + name
+					vol.Spec.ImportedFrom = "tank/existing-zvol"
+				}
+				Expect(k8sClient.Create(crdCtx, vol)).To(Succeed())
+				DeferCleanup(func() { deleteVolumeIfExists(name) })
+
+				vol.Spec.CapacityBytes = 2 << 30
+				Expect(k8sClient.Update(crdCtx, vol)).To(Succeed())
+				stored := &pillarcsiv1alpha1.PillarVolumeState{}
+				Expect(k8sClient.Get(crdCtx, types.NamespacedName{Name: name}, stored)).To(Succeed())
+				Expect(stored.Spec.FilesystemAdoption).To(BeNil())
+				Expect(stored.Spec.CapacityBytes).To(Equal(int64(2 << 30)))
+				Expect(stored.Spec.ImportedFrom).To(Equal(vol.Spec.ImportedFrom))
+			},
+			Entry("existing dynamic NFS style", false),
+			Entry("existing imported zvol style", true),
+		)
+
+		DescribeTable("rejects kind-inconsistent or incomplete adoption descriptors at creation",
+			func(name string, dataset bool, mutate func(*pillarcsiv1alpha1.FilesystemAdoption)) {
+				adoption := directoryAdoption()
+				if dataset {
+					adoption = datasetAdoption()
+				}
+				mutate(adoption)
+				name = "e214-adoption-invalid-" + name
+				vol := newVolume(name, adoption)
+				DeferCleanup(func() { deleteVolumeIfExists(name) })
+				Expect(errors.IsInvalid(k8sClient.Create(crdCtx, vol))).To(BeTrue())
+				Expect(errors.IsNotFound(k8sClient.Get(crdCtx, types.NamespacedName{Name: name},
+					&pillarcsiv1alpha1.PillarVolumeState{}))).To(BeTrue())
+			},
+			Entry("directory with ZFS filesystem type", "directory-type", false,
+				func(a *pillarcsiv1alpha1.FilesystemAdoption) { a.FilesystemType = "zfs" }),
+			Entry("directory without filesystem UUID", "directory-uuid", false,
+				func(a *pillarcsiv1alpha1.FilesystemAdoption) { a.FilesystemID = "" }),
+			Entry("directory without a nonzero inode", "directory-inode", false,
+				func(a *pillarcsiv1alpha1.FilesystemAdoption) { a.Inode = "" }),
+			Entry("directory with zero inode", "directory-zero-inode", false,
+				func(a *pillarcsiv1alpha1.FilesystemAdoption) { a.Inode = "0" }),
+			Entry("directory with noncanonical inode", "directory-leading-zero", false,
+				func(a *pillarcsiv1alpha1.FilesystemAdoption) { a.Inode = "0123" }),
+			Entry("directory without a nonzero quota project", "directory-project", false,
+				func(a *pillarcsiv1alpha1.FilesystemAdoption) { a.ProjectID = 0 }),
+			Entry("directory with redundant hostPath", "directory-hostpath", false,
+				func(a *pillarcsiv1alpha1.FilesystemAdoption) { a.HostPath = a.CanonicalSource }),
+			Entry("ZFS dataset with directory filesystem type", "zfs-type", true,
+				func(a *pillarcsiv1alpha1.FilesystemAdoption) { a.FilesystemType = "ext4" }),
+			Entry("ZFS dataset with directory filesystem UUID", "zfs-uuid", true,
+				func(a *pillarcsiv1alpha1.FilesystemAdoption) { a.FilesystemID = "cde366af-d47e-4d86-a1e8-a26809ba2cce" }),
+			Entry("ZFS dataset with directory inode", "zfs-inode", true,
+				func(a *pillarcsiv1alpha1.FilesystemAdoption) { a.Inode = "123" }),
+			Entry("ZFS dataset with directory quota project", "zfs-project", true,
+				func(a *pillarcsiv1alpha1.FilesystemAdoption) { a.ProjectID = 42 }),
+		)
+	})
+
 	// ── E21.4 TC-169 — TestCRDSchema_PillarVolumeState_Phase_Invalid ─────────────
 	// status.phase is annotated +kubebuilder:validation:Enum=Provisioning;...
 	// Setting phase to an unknown value via the status subresource should be

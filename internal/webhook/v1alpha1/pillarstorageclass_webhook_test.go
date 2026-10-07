@@ -370,6 +370,79 @@ func TestPillarStorageClass_OverrideMemberMatch(t *testing.T) {
 		})
 	}
 }
+func TestPillarStorageClass_DriverAndDirectoryValidation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := pillarcsiv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	store := &pillarcsiv1alpha1.PillarStore{
+		ObjectMeta: metav1.ObjectMeta{Name: "directory-store"},
+		Spec: pillarcsiv1alpha1.PillarStoreSpec{
+			AgentRef: "agent",
+			Backend: pillarcsiv1alpha1.BackendSpec{Directory: &pillarcsiv1alpha1.DirectoryBackendConfig{
+				LogicalPool: "files", HostRoot: "/srv/files",
+			}},
+		},
+	}
+	protocol := &pillarcsiv1alpha1.PillarProtocol{
+		ObjectMeta: metav1.ObjectMeta{Name: "nfs-protocol"},
+		Spec: pillarcsiv1alpha1.PillarProtocolSpec{
+			Protocol: pillarcsiv1alpha1.ProtocolSpec{NFS: &pillarcsiv1alpha1.NFSConfig{}},
+		},
+	}
+	validator := &PillarStorageClassCustomValidator{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(store, protocol, newNVMeProtocol("nvme")).Build(),
+	}
+
+	newBinding := func(driver string) *pillarcsiv1alpha1.PillarStorageClass {
+		return &pillarcsiv1alpha1.PillarStorageClass{
+			ObjectMeta: metav1.ObjectMeta{Name: "directory-binding"},
+			Spec: pillarcsiv1alpha1.PillarStorageClassSpec{
+				CSIDriver: driver, StoreRef: store.Name, ProtocolRef: protocol.Name,
+			},
+		}
+	}
+
+	if _, err := validator.ValidateCreate(context.Background(), newBinding("")); err == nil {
+		t.Fatal("legacy driver directory binding was admitted, want explicit file driver error")
+	}
+	if _, err := validator.ValidateCreate(context.Background(), newBinding(pillarcsiv1alpha1.FileCSIDriver)); err != nil {
+		t.Fatalf("file driver directory binding rejected: %v", err)
+	}
+	local := newBinding(pillarcsiv1alpha1.FileCSIDriver)
+	local.Spec.LocalAttach = true
+	if _, err := validator.ValidateCreate(context.Background(), local); err != nil {
+		t.Fatalf("native local-only files class rejected: %v", err)
+	}
+	blockProtocol := newBinding(pillarcsiv1alpha1.FileCSIDriver)
+	blockProtocol.Spec.ProtocolRef = "nvme"
+	if _, err := validator.ValidateCreate(context.Background(), blockProtocol); err == nil {
+		t.Fatal("directory class with block protocol was admitted")
+	}
+
+	// Omitted and explicit legacy driver spellings are the same immutable
+	// selection; the webhook must not reject normal defaulting on an update.
+	legacy := newBinding("")
+	explicitLegacy := legacy.DeepCopy()
+	explicitLegacy.Spec.CSIDriver = pillarcsiv1alpha1.DefaultCSIDriver
+	noClientValidator := &PillarStorageClassCustomValidator{}
+	if _, err := noClientValidator.ValidateUpdate(context.Background(), legacy, explicitLegacy); err != nil {
+		t.Fatalf("explicit unchanged legacy driver rejected: %v", err)
+	}
+
+	expansion := true
+	fileWithExpansion := newBinding(pillarcsiv1alpha1.FileCSIDriver)
+	fileWithExpansion.Spec.StorageClass.AllowVolumeExpansion = &expansion
+	if _, err := validator.ValidateCreate(context.Background(), fileWithExpansion); err == nil {
+		t.Fatal("file driver allowVolumeExpansion=true was admitted")
+	}
+
+	oldBinding := newBinding("")
+	newBindingWithFile := newBinding(pillarcsiv1alpha1.FileCSIDriver)
+	if _, err := validator.ValidateUpdate(context.Background(), oldBinding, newBindingWithFile); err == nil {
+		t.Fatal("CSI driver update was admitted, want immutable field error")
+	}
+}
 
 // TestPillarStorageClass_DefaultAllowVolumeExpansion checks that every served
 // backend member defaults allowVolumeExpansion to true.

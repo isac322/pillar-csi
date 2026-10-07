@@ -54,6 +54,16 @@ func (s *Server) ImportVolume(
 	req *agentv1.ImportVolumeRequest,
 ) (*agentv1.ImportVolumeResponse, error) {
 	s.setVolumeSpanAttributes(ctx, req.GetVolumeId())
+	if req.GetFilesystemAdoption() != nil {
+		// Filesystem adoptions never resolve through an LV; refuse the LVM
+		// identity here, before the filesystem path claims any ownership.
+		if req.GetExpectedLvmSource() != nil {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"ImportVolume %q: expected_lvm_source is only valid for BACKEND_TYPE_LVM, not %s",
+				req.GetVolumeId(), req.GetBackendType())
+		}
+		return s.importFilesystem(ctx, req)
+	}
 	b, err := s.backendForType(req.GetVolumeId(), req.GetBackendType())
 	if err != nil {
 		return nil, err

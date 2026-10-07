@@ -33,6 +33,7 @@ package csi
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 
@@ -43,6 +44,15 @@ import (
 // newFakeKubeMounter returns a KubeMounter backed by a mount.FakeMounter
 // carrying the given in-memory mount table.
 func newFakeKubeMounter(mountPoints []mount.MountPoint) (*KubeMounter, *mount.FakeMounter) {
+	// Kernel mount tables contain resolved paths. FakeMounter also resolves
+	// probe/unmount targets, but does not normalize its initial table entries.
+	// Canonicalize them so /tmp -> /private/tmp (macOS) cannot hide mounts or
+	// prevent a failing unmount callback from running.
+	for i := range mountPoints {
+		if resolved, err := filepath.EvalSymlinks(mountPoints[i].Path); err == nil {
+			mountPoints[i].Path = resolved
+		}
+	}
 	fake := mount.NewFakeMounter(mountPoints)
 	if fake.MountCheckErrors == nil {
 		fake.MountCheckErrors = map[string]error{}
@@ -54,6 +64,76 @@ func newFakeKubeMounter(mountPoints []mount.MountPoint) (*KubeMounter, *mount.Fa
 		},
 	}
 	return km, fake
+}
+
+// sameDeviceBindProbe uses the kernel stat heuristic over real directories,
+// while FakeMounter models the mount table and unmount transition. A directory
+// bind on the same device is deliberately invisible to the stat heuristic.
+type sameDeviceBindProbe struct {
+	*mount.FakeMounter
+}
+
+func (*sameDeviceBindProbe) IsLikelyNotMountPoint(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return true, err
+	}
+	parent, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return true, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return true, fmt.Errorf("stat %q has unexpected metadata type %T", path, info.Sys())
+	}
+	parentStat, ok := parent.Sys().(*syscall.Stat_t)
+	if !ok {
+		return true, fmt.Errorf("parent stat %q has unexpected metadata type %T", filepath.Dir(path), parent.Sys())
+	}
+	return stat.Dev == parentStat.Dev && stat.Ino != parentStat.Ino, nil
+}
+
+func TestKubeMounter_SameDeviceBindMountIsDetectedAndRemoved(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, target := filepath.Join(root, "source"), filepath.Join(root, "stage")
+	for _, path := range []string{source, target} {
+		if mkdirErr := os.Mkdir(path, 0o750); mkdirErr != nil {
+			t.Fatal(mkdirErr)
+		}
+	}
+	marker := filepath.Join(source, "original-data")
+	const original = "retained source data"
+	if writeErr := os.WriteFile(marker, []byte(original), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	km, fake := newFakeKubeMounter([]mount.MountPoint{
+		{Device: "/dev/shared", Path: source, Type: "ext4"},
+		{Device: "/dev/shared", Path: target, Type: "ext4", Opts: []string{"bind"}},
+	})
+	km.inner.Interface = &sameDeviceBindProbe{FakeMounter: fake}
+	isMounted := func(path string) (bool, error) {
+		notMnt, probeErr := mount.IsNotMountPoint(km.inner.Interface, path)
+		return !notMnt, probeErr
+	}
+	if mounted, probeErr := isMounted(target); probeErr != nil || !mounted {
+		t.Fatalf("same-device bind stage was missed: mounted=%v, err=%v", mounted, probeErr)
+	}
+	if unmountErr := km.Unmount(target); unmountErr != nil {
+		t.Fatal(unmountErr)
+	}
+	if mounted, probeErr := isMounted(target); probeErr != nil || mounted {
+		t.Fatalf("bind cleanup left the stage mounted: mounted=%v, err=%v", mounted, probeErr)
+	}
+	if mounted, probeErr := isMounted(source); probeErr != nil || !mounted {
+		t.Fatalf("stage cleanup disturbed the source mount: mounted=%v, err=%v", mounted, probeErr)
+	}
+	data, readErr := os.ReadFile(filepath.Clean(marker))
+	if readErr != nil || string(data) != original {
+		t.Fatalf("stage cleanup changed source data: data=%q, err=%v", data, readErr)
+	}
 }
 
 // statPathError builds the *os.PathError os.Stat returns for target, i.e.

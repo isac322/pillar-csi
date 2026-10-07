@@ -534,6 +534,48 @@ serviceAccount:
     # -- Annotations added to the agent ServiceAccount.
     annotations: {}
 
+# ─── File CSI opt-in ─────────────────────────────────────────────────────────
+# Filesystem adoption is deliberately opt-in.  The legacy block CSI identity,
+# sockets and defaults above remain unchanged when this switch is false.
+fileDriver:
+  # -- Render the second CSI identity and its controller/node routes.
+  enabled: false
+  # -- Fixed CSI identity for adopted directory/ZFS filesystems.
+  name: files.pillar-csi.bhyoo.com
+  # -- Controller CSI socket on the shared controller Pod emptyDir.
+  controllerSocketPath: /csi/files.sock
+  # -- Node CSI socket and kubelet registration path on worker hosts.
+  nodeSocketPath: /var/lib/kubelet/plugins/files.pillar-csi.bhyoo.com/csi.sock
+  controller:
+    # -- File controller probe port; must not overlap block controller/sidecars.
+    healthProbePort: 8181
+    # -- File controller metrics port; distinct in the shared controller Pod.
+    metricsPort: 8180
+  node:
+    # -- File CSI liveness sidecar port; distinct in the shared node Pod.
+    livenessPort: 9809
+    # -- File node metrics port; distinct from block node metrics.
+    metricsPort: 9503
+  # -- Read-only host root used to resolve source filesystems in the agent.
+  sourceHostRoot: /host
+  # -- Dedicated host-backed proxy/export root.  The same absolute path is
+  # mounted in the file node (HostToContainer) and seen Bidirectionally by the
+  # agent: the default lives below the agent-state hostPath and inherits that
+  # mount's Bidirectional propagation, while a path outside
+  # /var/lib/pillar-csi/agent gets its own Bidirectional agent mount.  A path
+  # that is a parent of /var/lib/pillar-csi/agent is rejected because the proxy
+  # root must never swallow agent state.
+  proxyRoot: /var/lib/pillar-csi/agent/datasets
+  # File CSI never asks kubelet to recursively chown adopted source files.
+  fsGroupPolicy: None
+  # ControllerPublish fences local proxies and NFS client authorization.
+  attachRequired: true
+  podInfoOnMount: false
+  nfs:
+    # -- Enable the owned-host NFS server for directory-only RWX deployments.
+    # ZFS dataset placements retain their existing NFS deployment behavior.
+    enabled: false
+
 # ─── CSI Driver ──────────────────────────────────────────────────────────────
 csiDriver:
   # -- Set to false to skip CSIDriver object creation.
@@ -630,6 +672,11 @@ mtls:
       secretName: pillar-controller-mtls
     agent:
       secretName: pillar-agent-mtls
+    # -- Dedicated file-node InspectImport client identity (only mounted when
+    # fileDriver.enabled). Must chain to the agent's CA; never reuse the
+    # controller client private key.
+    fileNode:
+      secretName: pillar-file-node-mtls
 
   # -- Override the TLS server name the controller uses when verifying the
   # agent's certificate (SNI / SAN match). Required when the agent

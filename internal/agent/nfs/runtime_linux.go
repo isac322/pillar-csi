@@ -29,6 +29,7 @@ const nfsdRoot = "/proc/fs/nfsd"
 const pipefsDir = "/var/lib/nfs/rpc_pipefs"
 const trackerDir = "/var/lib/nfs/nfsdcld"
 const trackerName = "nfsdcld"
+const etabPath = "/var/lib/nfs/etab"
 const nfsTCPPort = "tcp 2049"
 
 //nolint:misspell // Exact nfs-utils executable name, not the English word "exports".
@@ -429,11 +430,11 @@ func (r *kernelRuntime) start(
 	if err != nil {
 		return err
 	}
-	err = r.verifyExports(ctx, state)
+	err = r.preparePaths()
 	if err != nil {
 		return err
 	}
-	err = r.preparePaths()
+	err = r.verifyExports(ctx, state)
 	if err != nil {
 		return err
 	}
@@ -579,10 +580,11 @@ func (r *kernelRuntime) verifyExports(ctx context.Context, state *diskState) err
 func verifyLedgerRows(rows []entry, ledger []Export, kernel bool) error {
 	for _, row := range rows {
 		known := false
-		for _, e := range ledger {
+		for i := range ledger {
+			e := &ledger[i]
 			identityMatches := optionValue(row.Options, "fsid") == e.fsid()
 			if kernel {
-				identityMatches = kernelIdentityMatches(e, row.Options)
+				identityMatches = kernelIdentityMatches(*e, row.Options)
 			}
 			if row.Path == e.Path && identityMatches && slices.Contains(e.clients(), row.Client) {
 				known = true
@@ -622,6 +624,10 @@ func (r *kernelRuntime) preparePaths() error {
 		if err != nil {
 			return fmt.Errorf("create NFS tracking directory %q: %w", dir, err)
 		}
+	}
+	err = ensurePrivateEtab(etabPath)
+	if err != nil {
+		return err
 	}
 	var stat unix.Statfs_t
 	err = unix.Statfs(pipefsDir, &stat)
@@ -1192,8 +1198,53 @@ func parseEtab(data string) ([]entry, error) {
 	return entries, nil
 }
 
+func ensurePrivateEtab(path string) error {
+	//nolint:gosec // G304: fixed private nfs-utils state path; O_NOFOLLOW rejects symlinks.
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return fmt.Errorf("open private NFS admission table %q: %w", path, err)
+	}
+	closeFile := func(operationErr error) error {
+		closeErr := file.Close()
+		if closeErr == nil {
+			return operationErr
+		}
+		closeContext := fmt.Errorf("close private NFS admission table %q: %w", path, closeErr)
+		if operationErr == nil {
+			return closeContext
+		}
+		return errors.Join(operationErr, closeContext)
+	}
+	info, statErr := file.Stat()
+	if statErr != nil {
+		return closeFile(fmt.Errorf("stat private NFS admission table %q: %w", path, statErr))
+	}
+	if !info.Mode().IsRegular() {
+		return closeFile(fmt.Errorf("private NFS admission table %q is not a regular file", path))
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 {
+		return closeFile(fmt.Errorf("private NFS admission table %q must be root-owned", path))
+	}
+	if info.Mode().Perm() != 0o600 {
+		chmodErr := file.Chmod(0o600)
+		if chmodErr != nil {
+			return closeFile(fmt.Errorf("chmod private NFS admission table %q: %w", path, chmodErr))
+		}
+		verified, verifyErr := file.Stat()
+		if verifyErr != nil {
+			return closeFile(fmt.Errorf("stat private NFS admission table %q after chmod: %w", path, verifyErr))
+		}
+		if verified.Mode().Perm() != 0o600 {
+			return closeFile(fmt.Errorf("private NFS admission table %q mode after chmod = %o, want 600",
+				path, verified.Mode().Perm()))
+		}
+	}
+	return closeFile(nil)
+}
+
 func (*kernelRuntime) list(_ context.Context) ([]entry, error) {
-	data, err := os.ReadFile("/var/lib/nfs/etab")
+	data, err := os.ReadFile(etabPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -1211,6 +1262,10 @@ func exportOperand(client, path string) string {
 }
 
 func runExportfs(ctx context.Context, args ...string) error {
+	err := ensurePrivateEtab(etabPath)
+	if err != nil {
+		return fmt.Errorf("prepare NFS admission table for export operation: %w", err)
+	}
 	// Private grant/revoke callers construct options and delimit operands with "--"; no shell is involved.
 	//nolint:gosec // G204: the executable is the fixed nfs-utils export utility.
 	output, err := exec.CommandContext(ctx, exportUtility, args...).CombinedOutput()

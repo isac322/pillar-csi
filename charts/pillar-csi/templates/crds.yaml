@@ -231,6 +231,11 @@ spec:
                       description: available is the free capacity of the pool.
                       pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                       x-kubernetes-int-or-string: true
+                    hostRoot:
+                      description: |-
+                        hostRoot is the directory backend's configured trusted allow-root.
+                        A PillarStore must declare the same directory.hostRoot to become Ready.
+                      type: string
                     name:
                       description: name is the pool name as known to the storage subsystem
                         (e.g. ZFS pool name).
@@ -724,6 +729,16 @@ spec:
           spec:
             description: PillarStorageClassSpec defines the desired state of PillarStorageClass.
             properties:
+              csiDriver:
+                default: pillar-csi.bhyoo.com
+                description: |-
+                  csiDriver selects the provisioner for newly generated StorageClasses.
+                  The default preserves existing block and dynamic NFS routing; files
+                  explicitly opts in to existing-filesystem adoption.
+                enum:
+                - pillar-csi.bhyoo.com
+                - files.pillar-csi.bhyoo.com
+                type: string
               filesystem:
                 description: |-
                   filesystem configures the filesystem axis for volumes of this binding:
@@ -772,12 +787,13 @@ spec:
                 type: object
               localAttach:
                 description: |-
-                  localAttach lets a volume of this binding bypass the protocol when a
-                  pod using it runs on the storage node itself: the node mounts the
-                  backend zvol or logical volume directly and the network export is
-                  fenced for as long as that direct attach may be in use.  Pods on any
-                  other node always use the protocol.  Recorded per volume at
-                  provisioning time.
+                  localAttach preserves the default driver's direct-attach behavior:
+                  a pod on the storage node mounts the backend directly while its network
+                  export is fenced; pods on other nodes use the protocol.
+                  For the file driver, true declares local-only native readiness, needs
+                  no NFS manager, and rejects multi-node access. Single-node file volumes
+                  always freeze localAttach=true per volume and skip network export.
+                  Multi-node file volumes require false and a working NFS manager.
                 type: boolean
               overrides:
                 description: |-
@@ -789,6 +805,10 @@ spec:
                       backend contains backend tunable overrides (same shape as the
                       pillar-csi.bhyoo.com/backend PVC annotation document).
                     properties:
+                      directory:
+                        description: directory has no tunables; valid only for a directory
+                          store.
+                        type: object
                       lvm:
                         description: |-
                           lvm overrides LVM-specific tunables; valid only when the store's
@@ -821,9 +841,9 @@ spec:
                         type: object
                     type: object
                     x-kubernetes-validations:
-                    - message: exactly one of zfs or lvm must be set
-                      rule: '(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) ==
-                        1'
+                    - message: exactly one of zfs, lvm, or directory must be set
+                      rule: '(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) + (has(self.directory)
+                        ? 1 : 0) == 1'
                   protocol:
                     description: |-
                       protocol contains protocol tunable overrides (same shape as the
@@ -1137,8 +1157,29 @@ spec:
               backend:
                 description: |-
                   backend describes the storage backend and pool to use.  Exactly one
-                  member (zfs or lvm) must be set.
+                  member (zfs, lvm, or directory) must be set.
                 properties:
+                  directory:
+                    description: directory holds existing host-directory adoption
+                      configuration.
+                    properties:
+                      hostRoot:
+                        description: |-
+                          hostRoot is the absolute, trusted allow-root on the storage node.
+                          It must equal the directory backend's configured root on the agent.
+                        minLength: 1
+                        pattern: ^/
+                        type: string
+                      logicalPool:
+                        description: logicalPool is the routing name of this directory
+                          backend.
+                        minLength: 1
+                        pattern: ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$
+                        type: string
+                    required:
+                    - hostRoot
+                    - logicalPool
+                    type: object
                   lvm:
                     description: lvm holds LVM-specific configuration.
                     properties:
@@ -1206,8 +1247,9 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-validations:
-                - message: exactly one of zfs or lvm must be set
-                  rule: '(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) == 1'
+                - message: exactly one of zfs, lvm, or directory must be set
+                  rule: '(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) + (has(self.directory)
+                    ? 1 : 0) == 1'
             required:
             - agentRef
             - backend
@@ -1355,7 +1397,8 @@ spec:
       openAPIV3Schema:
         description: |-
           PillarVolumeReservation atomically binds a backend volume
-          (agent + backend + agentVolumeID) to one volume lifecycle.  The CSI
+          (agent + backend + agentVolumeID, or the native filesystem resource key)
+          to one volume lifecycle. The CSI
           controller creates it before the owning PillarVolumeState with a
           deterministic name, so two concurrent CreateVolume claims on the same
           backend volume — for example two PVCs importing the same zvol — cannot both
@@ -1424,6 +1467,13 @@ spec:
                 required:
                 - uid
                 type: object
+              filesystemResourceID:
+                description: |-
+                  filesystemResourceID is the canonical native backing-resource key for
+                  filesystem adoption, independent of logical pool and source path.
+                  Filesystem aliases reserve this key rather than agentVolumeID; the
+                  latter remains the routing identity. Omitted for legacy block volumes.
+                type: string
               ownerVolume:
                 description: |-
                   ownerVolume is the name of the PillarVolumeState lifecycle that holds
@@ -1522,9 +1572,12 @@ spec:
                 type: string
               agentVolumeID:
                 description: |-
-                  agentVolumeID is the volume identifier used in agent RPCs.  The format
-                  is "<pool>/<volume-name>" where pool is the storage pool name (e.g. ZFS
-                  pool name), or just "<volume-name>" for backends with no pool prefix.
+                  agentVolumeID is the backing-resource routing identifier used in agent
+                  RPCs. The format is "<pool>/<volume-name>" where pool is the storage
+                  pool name, or just "<volume-name>" for backends with no pool prefix.
+                  Filesystem adoption derives its stable leaf from native resource identity,
+                  independent of the public handle's lifecycle nonce. Source re-adoption
+                  retains this routing identity but does not reuse the old public handle.
                 minLength: 1
                 type: string
               backendType:
@@ -1560,6 +1613,82 @@ spec:
                 required:
                 - uid
                 type: object
+              filesystemAdoption:
+                description: |-
+                  filesystemAdoption records the immutable identity of an existing
+                  directory or ZFS filesystem dataset. Delete retires only owned state
+                  and preserves the original source; recovery must never recreate it.
+                properties:
+                  canonicalSource:
+                    description: canonicalSource is the resolved host directory or
+                      native dataset fullname.
+                    minLength: 1
+                    type: string
+                  filesystemID:
+                    description: |-
+                      filesystemID is the directory's stable native filesystem UUID, never
+                      a volatile device number or statfs filesystem ID. Omitted for ZFS.
+                    minLength: 1
+                    type: string
+                  filesystemType:
+                    description: filesystemType identifies the native quota and identity
+                      implementation.
+                    enum:
+                    - ext4
+                    - xfs
+                    - zfs
+                    type: string
+                  hostPath:
+                    description: |-
+                      hostPath is a dataset's existing mounted host path, if mounted. It may
+                      be empty for an unmounted legacy dataset. For directories, canonicalSource
+                      already is the host path, so this field is omitted.
+                    type: string
+                  inode:
+                    description: |-
+                      inode is the existing directory root's native inode as a canonical
+                      nonzero decimal string. It is omitted for ZFS.
+                    maxLength: 20
+                    minLength: 1
+                    pattern: ^[1-9][0-9]{0,19}$
+                    type: string
+                  kind:
+                    description: kind selects the existing source type.
+                    enum:
+                    - directory
+                    - zfs-dataset
+                    type: string
+                  projectID:
+                    description: |-
+                      projectID identifies the directory's existing bounded project-quota
+                      scope. Adoption verifies it read-only; it never stamps project IDs.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  resourceID:
+                    description: |-
+                      resourceID is the stable native identity, independent of path and pool
+                      alias: filesystem UUID plus root inode, or ZFS dataset GUID.
+                    minLength: 1
+                    type: string
+                required:
+                - canonicalSource
+                - filesystemType
+                - kind
+                - resourceID
+                type: object
+                x-kubernetes-validations:
+                - message: filesystem adoption identity is immutable
+                  rule: self == oldSelf
+                - message: directory adoption requires ext4 or xfs, a filesystem UUID,
+                    inode and project ID, and no hostPath
+                  rule: self.kind != 'directory' || (self.filesystemType in ['ext4',
+                    'xfs'] && has(self.filesystemID) && has(self.inode) && has(self.projectID)
+                    && !has(self.hostPath))
+                - message: ZFS dataset adoption requires zfs and no directory identity
+                    fields
+                  rule: self.kind != 'zfs-dataset' || (self.filesystemType == 'zfs'
+                    && !has(self.filesystemID) && !has(self.inode) && !has(self.projectID))
               importedFrom:
                 description: |-
                   importedFrom records the full source dataset name when the volume was
@@ -1630,8 +1759,9 @@ spec:
                   operator-authorized ownership transfer of a pre-existing adopted
                   backend resource (see VolumeRecoveryIntent).  It is set at creation
                   for a volume born in phase RecoveryPending and cannot be added or
-                  removed after creation.  Mutually exclusive with lvmSource and
-                  importedFrom — a recovery volume is not itself an import.
+                  removed after creation.  Mutually exclusive with lvmSource,
+                  importedFrom and filesystemAdoption — a recovery volume is not itself
+                  an import.
 
                   The fields the operator cannot know at create time — newVolumeUID
                   (this object's own metadata.uid), authorization and
@@ -1776,6 +1906,27 @@ spec:
                       spec.backend with binding, StorageClass-document and PVC tunable
                       overrides applied.
                     properties:
+                      directory:
+                        description: directory holds existing host-directory adoption
+                          configuration.
+                        properties:
+                          hostRoot:
+                            description: |-
+                              hostRoot is the absolute, trusted allow-root on the storage node.
+                              It must equal the directory backend's configured root on the agent.
+                            minLength: 1
+                            pattern: ^/
+                            type: string
+                          logicalPool:
+                            description: logicalPool is the routing name of this directory
+                              backend.
+                            minLength: 1
+                            pattern: ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$
+                            type: string
+                        required:
+                        - hostRoot
+                        - logicalPool
+                        type: object
                       lvm:
                         description: lvm holds LVM-specific configuration.
                         properties:
@@ -1843,9 +1994,9 @@ spec:
                         type: object
                     type: object
                     x-kubernetes-validations:
-                    - message: exactly one of zfs or lvm must be set
-                      rule: '(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) ==
-                        1'
+                    - message: exactly one of zfs, lvm, or directory must be set
+                      rule: '(has(self.zfs) ? 1 : 0) + (has(self.lvm) ? 1 : 0) + (has(self.directory)
+                        ? 1 : 0) == 1'
                   filesystem:
                     description: |-
                       filesystem is the effective filesystem configuration the node applies
@@ -1894,10 +2045,12 @@ spec:
                     type: object
                   localAttach:
                     description: |-
-                      localAttach is true when the volume may be attached directly on the
-                      storage node, bypassing the network protocol, whenever it is published
-                      to the node that hosts its PillarAgent.  Publishes to any other node
-                      always use the protocol.
+                      localAttach records the volume's resolved attachment mode. Default-driver
+                      volumes may bypass the protocol on their PillarAgent's node; publishes
+                      on other nodes use the protocol. For filesystem adoption, true means
+                      local-only attachment with no network export or NFS manager dependency.
+                      Single-node file volumes always record true; multi-node file volumes
+                      record false and require a working NFS manager.
                     type: boolean
                   protocol:
                     description: |-
@@ -2144,8 +2297,12 @@ spec:
                 type: object
               volumeID:
                 description: |-
-                  volumeID is the CSI volume ID assigned by the controller.
-                  Format: <target-name>/<protocol-type>/<backend-type>/<agent-vol-id>
+                  volumeID is the public CSI handle assigned by the controller.
+                  Existing volumes keep the format:
+                  <target-name>/<protocol-type>/<backend-type>/<agent-vol-id>.
+                  New file volumes append "." and an opaque 32-lowercase-hex lifecycle
+                  nonce. Retries and manual Retain rebinding preserve the stored handle;
+                  adopting the same source into a later lifecycle produces a new handle.
                 minLength: 1
                 type: string
             required:
@@ -2156,12 +2313,21 @@ spec:
             - volumeID
             type: object
             x-kubernetes-validations:
+            - message: filesystemAdoption and importedFrom are mutually exclusive
+              rule: '!has(self.filesystemAdoption) || !has(self.importedFrom) || size(self.importedFrom)
+                == 0'
+            - message: filesystemAdoption and lvmSource are mutually exclusive
+              rule: '!(has(self.filesystemAdoption) && has(self.lvmSource))'
+            - message: filesystem adoption presence is immutable
+              rule: has(self.filesystemAdoption) == has(oldSelf.filesystemAdoption)
             - message: importedFrom and lvmSource are mutually exclusive
               rule: '!(has(self.importedFrom) && has(self.lvmSource))'
             - message: lvmSource cannot be added or removed after creation
               rule: has(self.lvmSource) == has(oldSelf.lvmSource)
-            - message: recovery is mutually exclusive with lvmSource and importedFrom
-              rule: '!(has(self.recovery) && (has(self.lvmSource) || has(self.importedFrom)))'
+            - message: recovery is mutually exclusive with lvmSource, importedFrom
+                and filesystemAdoption
+              rule: '!(has(self.recovery) && (has(self.lvmSource) || has(self.importedFrom)
+                || has(self.filesystemAdoption)))'
             - message: recovery cannot be added or removed after creation
               rule: has(self.recovery) == has(oldSelf.recovery)
           status:
@@ -2371,15 +2537,15 @@ spec:
                 type: object
               importAcquired:
                 description: |-
-                  importAcquired records that agent.ImportVolume succeeded for a
-                  spec.importedFrom volume: the agent durably adopted the pre-existing
-                  zvol into this lifecycle.  While it is unset the lifecycle cannot prove
-                  the agent ever took ownership, so ReapAbandonedVolume and DeleteVolume
+                  importAcquired records that agent.ImportVolume succeeded for an
+                  importedFrom, lvmSource or filesystemAdoption volume: the agent durably adopted
+                  the existing resource into this lifecycle. While it is unset, the lifecycle
+                  cannot prove the agent ever took ownership, so ReapAbandonedVolume and DeleteVolume
                   end the lifecycle with agent.ReleaseVolume — which retires it at the
-                  agent without touching the zvol — instead of UnexportVolume and
+                  agent without touching the source — instead of UnexportVolume and
                   DeleteVolume, and ControllerExpandVolume and ControllerPublishVolume
                   refuse it: a refused or lost-response import that was torn down,
-                  resized or exposed anyway would harm a zvol this driver never owned.
+                  resized or exposed anyway would harm a resource this driver never owned.
                 type: boolean
               localAttachNode:
                 description: |-

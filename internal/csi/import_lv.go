@@ -293,15 +293,22 @@ func refusePreservedExpand(pvs *v1alpha1.PillarVolumeState, volumeID string) err
 		volumeID, lvmSourceLocator(pvs.Spec.LVMSource), v1alpha1.ImportLVPolicyPreserveOriginal)
 }
 
-// refuseRecordedLVDrift is the import-lv check for a CreateVolume retry
+// refuseRecordedImportDrift is the import check for a CreateVolume retry
 // answered from a Ready record (see CreateVolume): that fast path never
 // resolves the configuration, so the claim's import annotations are read
-// here.  An LV adoption refuses an import-zvol annotation, and the import-lv
-// pair is decided by checkRecordedLVSource.  A claim that cannot be read as
-// named (no claim metadata, or the claim is gone) carries no annotation to
-// compare.  Lifecycles that are not LV adoptions keep their import-zvol
-// behavior exactly as it was.
-func (s *ControllerServer) refuseRecordedLVDrift(
+// here.  Only the import selectors are decoded, with the same exclusivity
+// and empty-value rules as a first attempt (decodePVCAnnotations); the
+// claim's configuration documents stay unconsulted.  A lifecycle without a
+// recorded filesystem adoption refuses a late import-directory or
+// import-zfs-dataset selector exactly like the slow path
+// (resolveFilesystemImportRequest); a recorded filesystem adoption is
+// verified by its own fast-path check.  An LV adoption refuses an
+// import-zvol annotation, and the import-lv pair is decided by
+// checkRecordedLVSource.  A claim that cannot be read as named (no claim
+// metadata, or the claim is gone) carries no annotation to compare.
+// Lifecycles that are not LV adoptions keep their import-zvol behavior
+// exactly as it was.
+func (s *ControllerServer) refuseRecordedImportDrift(
 	ctx context.Context,
 	pvs *v1alpha1.PillarVolumeState,
 	scParams map[string]string,
@@ -319,12 +326,30 @@ func (s *ControllerServer) refuseRecordedLVDrift(
 		return status.Errorf(codes.Internal,
 			"get PersistentVolumeClaim %s/%s: %v", pvcNamespace, pvcName, err)
 	}
-	if _, zvol := pvc.Annotations[v1alpha1.AnnotationImportZvol]; zvol && pvs.Spec.LVMSource != nil {
+	selectors := make(map[string]string)
+	for _, key := range []string{
+		v1alpha1.AnnotationImportZvol, v1alpha1.AnnotationImportDirectory, v1alpha1.AnnotationImportZFSDataset,
+		v1alpha1.AnnotationImportLV, v1alpha1.AnnotationImportLVPolicy,
+	} {
+		if value, ok := pvc.Annotations[key]; ok {
+			selectors[key] = value
+		}
+	}
+	docs, err := decodePVCAnnotations(selectors)
+	if err != nil {
+		return invalidConfig("PVC %s/%s annotation validation failed: %v", pvcNamespace, pvcName, err)
+	}
+	if pvs.Spec.FilesystemAdoption == nil {
+		_, _, err = s.resolveFilesystemImportRequest(ctx, pvs.Name, true, pvs, pvs.Spec.Resolved,
+			docs.ImportDirectory, docs.ImportZFSDataset, pvs.Spec.AgentRef, pvs.Spec.CapacityBytes)
+		if err != nil {
+			return err
+		}
+	}
+	if docs.ImportZvol != "" && pvs.Spec.LVMSource != nil {
 		return importInvalid(
 			"%s: volume %q adopted LV %s; the import source cannot be changed",
 			v1alpha1.AnnotationImportZvol, pvs.Name, lvmSourceLocator(pvs.Spec.LVMSource))
 	}
-	return checkRecordedLVSource(pvs.Name, pvs.Spec.LVMSource,
-		strings.TrimSpace(pvc.Annotations[v1alpha1.AnnotationImportLV]),
-		strings.TrimSpace(pvc.Annotations[v1alpha1.AnnotationImportLVPolicy]))
+	return checkRecordedLVSource(pvs.Name, pvs.Spec.LVMSource, docs.ImportLV, docs.ImportLVPolicy)
 }

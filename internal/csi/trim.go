@@ -137,9 +137,13 @@ type fsSizeFunc func(path string) (uint64, error)
 // mountInfoEntry is one line of /proc/<pid>/mountinfo.
 type mountInfoEntry struct {
 	Major, Minor uint32
+	Root         string
 	MountPoint   string
 	FsType       string
 	Source       string
+	// ReadOnly is the kernel's read-only flag of the mount: "ro" in the
+	// per-mount or the superblock options.
+	ReadOnly bool
 }
 
 // trimmer is the periodic trim loop.  Every dependency on time, randomness,
@@ -641,9 +645,11 @@ func parseMountInfo(r io.Reader) ([]mountInfoEntry, error) {
 		mounts = append(mounts, mountInfoEntry{
 			Major:      uint32(major),
 			Minor:      uint32(minor),
+			Root:       unescapeMountInfo(fields[3]),
 			MountPoint: unescapeMountInfo(fields[4]),
 			FsType:     fields[sep+1],
 			Source:     unescapeMountInfo(fields[sep+2]),
+			ReadOnly:   mountInfoReadOnly(fields[5], fields[sep+3:]),
 		})
 	}
 	err := sc.Err()
@@ -651,6 +657,16 @@ func parseMountInfo(r io.Reader) ([]mountInfoEntry, error) {
 		return nil, fmt.Errorf("read mountinfo: %w", err)
 	}
 	return mounts, nil
+}
+
+// mountInfoReadOnly reports whether a mountinfo line describes a read-only
+// mount: the per-mount options (field 6) or the superblock options (the
+// field after the source, when present) carry "ro".
+func mountInfoReadOnly(mountOptions string, superOptions []string) bool {
+	if slices.Contains(strings.Split(mountOptions, ","), "ro") {
+		return true
+	}
+	return len(superOptions) > 0 && slices.Contains(strings.Split(superOptions[0], ","), "ro")
 }
 
 // unescapeMountInfo decodes the \ooo octal escapes the kernel writes for

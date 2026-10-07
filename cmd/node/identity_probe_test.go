@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
 
 	csispec "github.com/container-storage-interface/spec/lib/go/csi"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	csisvc "github.com/isac322/pillar-csi/internal/csi"
 )
@@ -71,6 +75,59 @@ func TestProbe_Node_CreatesMissingStateDir(t *testing.T) {
 	}
 	if _, statErr := os.Stat(missingStateDir); statErr != nil {
 		t.Fatalf("state dir should have been auto-created: %v", statErr)
+	}
+}
+
+// File-node startup must succeed without opening the block driver's identity
+// files or its netlink namespace, and its CSI surface must reject block volumes.
+func TestFileNodeStartupDoesNotUseBlockInitiatorIdentity(t *testing.T) {
+	root := t.TempDir()
+	nameFile := filepath.Join(root, "initiatorname.iscsi")
+	const original = "InitiatorName=iqn.2026-01.example:block-node\n"
+	if err := os.WriteFile(nameFile, []byte(original), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	cfg := nodeFlags{
+		driverName: fileDriverName, nodeID: "shared-node",
+		iscsiNameFile: nameFile,
+		iscsiNetns:    filepath.Join(root, "unavailable-block-netlink-namespace"),
+	}
+	ctx := t.Context()
+	initiator, handlers := startNodeProtocols(ctx, cfg)
+	t.Cleanup(func() { closeISCSIInitiator(initiator) })
+	node := csisvc.NewNodeServer(cfg.nodeID, handlers, csisvc.NewKubeMounter()).
+		WithDriverName(cfg.driverName).WithStateDir(filepath.Join(root, "file-state"))
+	blockCapability := &csispec.VolumeCapability{
+		AccessType: &csispec.VolumeCapability_Block{Block: &csispec.VolumeCapability_BlockVolume{}},
+		AccessMode: &csispec.VolumeCapability_AccessMode{
+			Mode: csispec.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+		},
+	}
+	// The file profile never stages (NoStage): kubelet must not reach a
+	// staging surface, and a block volume is never published.
+	_, err := node.NodeStageVolume(ctx, &csispec.NodeStageVolumeRequest{
+		VolumeId:          "agent/nvmeof-tcp/zfs/tank/block-volume",
+		StagingTargetPath: filepath.Join(root, "stage"),
+		VolumeCapability:  blockCapability,
+	})
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("file node NodeStageVolume = %v, want Unimplemented", err)
+	}
+	// A block volume is never published even when the request carries the
+	// staging path a misrouted kubelet would send: the profile guard, not
+	// staging-path validation, is the refusal.
+	_, err = node.NodePublishVolume(ctx, &csispec.NodePublishVolumeRequest{
+		VolumeId:          "agent/nvmeof-tcp/zfs/tank/block-volume",
+		StagingTargetPath: filepath.Join(root, "staged"),
+		TargetPath:        filepath.Join(root, "target"),
+		VolumeCapability:  blockCapability,
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("file node accepted a block volume: %v", err)
+	}
+	identity, err := fs.ReadFile(os.DirFS(root), "initiatorname.iscsi")
+	if err != nil || string(identity) != original {
+		t.Fatalf("file node changed the block initiator identity: identity=%q, err=%v", identity, err)
 	}
 }
 

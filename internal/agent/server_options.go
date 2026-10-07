@@ -99,6 +99,14 @@ func WithBackendVariants(variants map[string]map[agentv1.BackendType]backend.Vol
 	return func(s *Server) { s.backendVariants = variants }
 }
 
+// WithFilesystemProxy configures the host-owned bind mount root. Host source
+// prefixes belong to the backend that opens and pins the native source.
+func WithFilesystemProxy(root string) ServerOption {
+	return func(s *Server) {
+		s.filesystemProxyRoot = root
+	}
+}
+
 // WithRecoveryAuthority configures the volume-recovery authority (see
 // server_recovery.go): the signer and leaf certificate are the agent's own
 // server TLS identity (from --tls-cert/--tls-key), anchors are the operator

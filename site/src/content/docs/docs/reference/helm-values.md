@@ -489,6 +489,86 @@ Type: `list`. Default: `["Persistent"]`
 
 volumeLifecycleModes supported by the driver.
 
+## fileDriver
+
+### <code>fileDriver.<wbr>attachRequired</code>
+
+Type: `bool`. Default: `true`
+
+### <code>fileDriver.<wbr>controller.<wbr>healthProbePort</code>
+
+Type: `int`. Default: `8181`
+
+File controller probe port; must not overlap block controller/sidecars.
+
+### <code>fileDriver.<wbr>controller.<wbr>metricsPort</code>
+
+Type: `int`. Default: `8180`
+
+File controller metrics port; distinct in the shared controller Pod.
+
+### <code>fileDriver.<wbr>controllerSocketPath</code>
+
+Type: `string`. Default: `"/csi/files.sock"`
+
+Controller CSI socket on the shared controller Pod emptyDir.
+
+### <code>fileDriver.<wbr>enabled</code>
+
+Type: `bool`. Default: `false`
+
+Render the second CSI identity and its controller/node routes.
+
+### <code>fileDriver.<wbr>fsGroupPolicy</code>
+
+Type: `string`. Default: `"None"`
+
+### <code>fileDriver.<wbr>name</code>
+
+Type: `string`. Default: `"files.pillar-csi.bhyoo.com"`
+
+Fixed CSI identity for adopted directory/ZFS filesystems.
+
+### <code>fileDriver.<wbr>nfs.<wbr>enabled</code>
+
+Type: `bool`. Default: `false`
+
+Enable the owned-host NFS server for directory-only RWX deployments. ZFS dataset placements retain their existing NFS deployment behavior.
+
+### <code>fileDriver.<wbr>node.<wbr>livenessPort</code>
+
+Type: `int`. Default: `9809`
+
+File CSI liveness sidecar port; distinct in the shared node Pod.
+
+### <code>fileDriver.<wbr>node.<wbr>metricsPort</code>
+
+Type: `int`. Default: `9503`
+
+File node metrics port; distinct from block node metrics.
+
+### <code>fileDriver.<wbr>nodeSocketPath</code>
+
+Type: `string`. Default: `"/var/lib/kubelet/plugins/files.pillar-csi.bhyoo.com/csi.sock"`
+
+Node CSI socket and kubelet registration path on worker hosts.
+
+### <code>fileDriver.<wbr>podInfoOnMount</code>
+
+Type: `bool`. Default: `false`
+
+### <code>fileDriver.<wbr>proxyRoot</code>
+
+Type: `string`. Default: `"/var/lib/pillar-csi/agent/datasets"`
+
+Dedicated host-backed proxy/export root. The same absolute path is mounted in the file node (HostToContainer) and seen Bidirectionally by the agent: the default lives below the agent-state hostPath and inherits that mount's Bidirectional propagation, while a path outside /var/lib/pillar-csi/agent gets its own Bidirectional agent mount. A path that is a parent of /var/lib/pillar-csi/agent is rejected because the proxy root must never swallow agent state.
+
+### <code>fileDriver.<wbr>sourceHostRoot</code>
+
+Type: `string`. Default: `"/host"`
+
+Read-only host root used to resolve source filesystems in the agent.
+
 ## fullnameOverride
 
 ### <code>fullnameOverride</code>
@@ -636,11 +716,20 @@ Type: `object`. Default:
   },
   "controller": {
     "secretName": "pillar-controller-mtls"
+  },
+  "fileNode": {
+    "secretName": "pillar-file-node-mtls"
   }
 }
 ```
 
 When certManager.enabled is false the chart mounts pre-existing Secrets. The operator MUST create these Secrets in the release namespace with keys tls.crt, tls.key, ca.crt before installing.
+
+### <code>mtls.<wbr>secretRefs.<wbr>fileNode</code>
+
+Type: `object`. Default: `{"secretName":"pillar-file-node-mtls"}`
+
+Dedicated file-node InspectImport client identity (only mounted when fileDriver.enabled). Must chain to the agent's CA; never reuse the controller client private key.
 
 ### <code>mtls.<wbr>serverName</code>
 

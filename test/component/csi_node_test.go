@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -190,6 +191,10 @@ type csiMockMounter struct {
 	mountSource map[string]string
 	// unhealthy holds device sources whose filesystem entered kernel shutdown.
 	unhealthy map[string]bool
+	// mountFsType and mountRO record each successful Mount's type and "ro"
+	// option so ObserveMount mirrors mountinfo and statfs.
+	mountFsType map[string]string
+	mountRO     map[string]bool
 }
 
 // Verify csiMockMounter implements the full Mounter interface.
@@ -200,6 +205,8 @@ func newCsiMockMounter() *csiMockMounter {
 		mounted:     make(map[string]bool),
 		mountSource: make(map[string]string),
 		unhealthy:   make(map[string]bool),
+		mountFsType: make(map[string]string),
+		mountRO:     make(map[string]bool),
 	}
 }
 
@@ -265,13 +272,25 @@ func (m *csiMockMounter) Mount(source, target, fsType string, options []string) 
 	fn := m.mountFn
 	m.mu.Unlock()
 	if fn != nil {
-		return fn(source, target, fsType, options)
+		err := fn(source, target, fsType, options)
+		if err == nil {
+			m.recordMountKind(target, fsType, options)
+		}
+		return err
 	}
 	m.mu.Lock()
 	m.mounted[target] = true
 	m.mountSource[target] = source
 	m.mu.Unlock()
+	m.recordMountKind(target, fsType, options)
 	return nil
+}
+
+func (m *csiMockMounter) recordMountKind(target, fsType string, options []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mountFsType[target] = fsType
+	m.mountRO[target] = hasOption(options, "ro")
 }
 
 func (m *csiMockMounter) Unmount(target string) error {
@@ -287,6 +306,8 @@ func (m *csiMockMounter) Unmount(target string) error {
 	source := m.resolveSourceLocked(target)
 	delete(m.mounted, target)
 	delete(m.mountSource, target)
+	delete(m.mountFsType, target)
+	delete(m.mountRO, target)
 	// The superblock dies with its last mount: the next mount replays the
 	// journal and starts clean.
 	for path := range m.mounted {
@@ -358,6 +379,18 @@ func (m *csiMockMounter) MountSource(target string) (string, error) {
 		return "", fmt.Errorf("%q is not a mount point", target)
 	}
 	return m.mountSource[target], nil
+}
+
+// ObserveMount mirrors mountinfo plus statfs for mounts made through Mount.
+func (m *csiMockMounter) ObserveMount(target string) (pillarcsi.MountObservation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.mounted[target] {
+		return pillarcsi.MountObservation{}, fmt.Errorf("%q is not a mount point", target)
+	}
+	return pillarcsi.MountObservation{
+		Source: m.mountSource[target], FsType: m.mountFsType[target], ReadOnly: m.mountRO[target],
+	}, nil
 }
 
 func (m *csiMockMounter) MountEntryExists(target string) (bool, error) {
@@ -1640,5 +1673,183 @@ func TestCSINode_PodDeleteRepairsShutdownStage(t *testing.T) {
 	}
 	if ok, err := env.mounter.MountEntryExists(newTarget); err != nil || !ok {
 		t.Errorf("replacement bind: mounted=%v err=%v, want mounted", ok, err)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// File driver profile (files.pillar-csi.bhyoo.com): NoStage direct publish
+// ─────────────────────────────────────────────────────────────────────────────.
+
+// fileRemotePublishRequest is the kubelet NodePublish of the NoStage file
+// profile for a remote consumer: empty staging path, controller-written
+// adoption identity and agent routing in PublishContext, NFS export identity
+// in VolumeContext.
+func fileRemotePublishRequest(volumeID, target string, readonly bool) *csipb.NodePublishVolumeRequest {
+	return &csipb.NodePublishVolumeRequest{
+		VolumeId:   volumeID,
+		TargetPath: target,
+		Readonly:   readonly,
+		VolumeCapability: &csipb.VolumeCapability{
+			AccessType: &csipb.VolumeCapability_Mount{Mount: &csipb.VolumeCapability_MountVolume{FsType: "nfs"}},
+			AccessMode: &csipb.VolumeCapability_AccessMode{Mode: csipb.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER},
+		},
+		VolumeContext: map[string]string{
+			pillarcsi.VolumeContextKeyProtocolType: "nfs",
+			"pillar-csi.bhyoo.com/fs-type":         "nfs",
+			pillarcsi.VolumeContextKeyAddress:      "192.0.2.10",
+			pillarcsi.VolumeContextKeyPort:         "2049",
+			"pillar-csi.bhyoo.com/volume-ref":      "/export/native",
+		},
+		PublishContext: map[string]string{
+			pillarcsi.PublishContextKeyFilesystemAdoption: `{"kind":"directory","canonicalSource":"/existing/data",` +
+				`"resourceId":"uuid:42","filesystemType":"ext4","filesystemId":"uuid","inode":42,"projectId":7}`,
+			pillarcsi.PublishContextKeyFilesystemCapacity: "1048576",
+			pillarcsi.PublishContextKeyFilesystemLayout:   `{"directory":{"logicalPool":"pool","hostRoot":"/existing"}}`,
+			"filesystem_agent_endpoint":                   "storage-node:9500",
+			"filesystem_agent_name":                       "storage-node",
+			"filesystem_agent_volume_id":                  "pool/native",
+		},
+	}
+}
+
+// TestCSINode_FileProfileDirectPublishLifecycle drives the file profile as
+// kubelet does for a NoStage driver: capabilities omit STAGE_UNSTAGE_VOLUME,
+// stage RPCs are Unimplemented, two pods (rw + ro) publish directly with no
+// staging path, stats answer the exact admitted bound for a recorded target
+// even after a restart, each unpublish removes only its target and the last
+// one removes the durable record.
+func TestCSINode_FileProfileDirectPublishLifecycle(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const volumeID = "agent/nfs/directory/pool/native/lifecycle"
+	stateDir := t.TempDir()
+	mounter := newCsiMockMounter()
+	var mountOptions [][]string
+	mounter.mountFn = func(source, target, _ string, options []string) error {
+		mounter.mu.Lock()
+		defer mounter.mu.Unlock()
+		mounter.mounted[target] = true
+		mounter.mountSource[target] = source
+		mountOptions = append(mountOptions, options)
+		return nil
+	}
+	statsReader := func(
+		_ context.Context, _ string, state *pillarcsi.FileStageState,
+	) (*csipb.NodeGetVolumeStatsResponse, error) {
+		return &csipb.NodeGetVolumeStatsResponse{Usage: []*csipb.VolumeUsage{
+			{Unit: csipb.VolumeUsage_BYTES, Total: state.CapacityBytes},
+		}}, nil
+	}
+	newNode := func() *pillarcsi.NodeServer {
+		return pillarcsi.NewNodeServer("consumer", nil, mounter).
+			WithDriverName("files.pillar-csi.bhyoo.com").WithStateDir(stateDir).
+			WithFilesystemStatsReader(statsReader)
+	}
+	node := newNode()
+
+	caps, err := node.NodeGetCapabilities(ctx, &csipb.NodeGetCapabilitiesRequest{})
+	if err != nil {
+		t.Fatalf("NodeGetCapabilities: %v", err)
+	}
+	if got := caps.GetCapabilities(); len(got) != 1 ||
+		got[0].GetRpc().GetType() != csipb.NodeServiceCapability_RPC_GET_VOLUME_STATS {
+		t.Fatalf("file profile capabilities = %v, want only GET_VOLUME_STATS", got)
+	}
+	_, err = node.NodeStageVolume(ctx, &csipb.NodeStageVolumeRequest{
+		VolumeId: volumeID, StagingTargetPath: t.TempDir(),
+	})
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("file profile NodeStageVolume = %v, want Unimplemented", err)
+	}
+
+	root := t.TempDir()
+	rwTarget, roTarget := root+"/pod-rw", root+"/pod-ro"
+	if _, err = node.NodePublishVolume(ctx, fileRemotePublishRequest(volumeID, rwTarget, false)); err != nil {
+		t.Fatalf("rw NodePublishVolume without stage: %v", err)
+	}
+	if _, err = node.NodePublishVolume(ctx, fileRemotePublishRequest(volumeID, roTarget, true)); err != nil {
+		t.Fatalf("ro NodePublishVolume without stage: %v", err)
+	}
+	assertDirectPublishPair(t, mounter, mountOptions, rwTarget, roTarget)
+
+	node = newNode() // process restart: only the durable record and mount table survive
+	stats, err := node.NodeGetVolumeStats(ctx, &csipb.NodeGetVolumeStatsRequest{VolumeId: volumeID, VolumePath: roTarget})
+	if err != nil || len(stats.GetUsage()) != 1 || stats.GetUsage()[0].GetTotal() != 1048576 {
+		t.Fatalf("stats after restart = %v, %v; want exact 1048576-byte bound", stats, err)
+	}
+
+	if _, err = node.NodeUnpublishVolume(ctx, &csipb.NodeUnpublishVolumeRequest{
+		VolumeId: volumeID, TargetPath: roTarget,
+	}); err != nil {
+		t.Fatalf("unpublish ro pod: %v", err)
+	}
+	if ok, _ := mounter.MountEntryExists(rwTarget); !ok { //nolint:errcheck // default mock never errors
+		t.Fatal("peer pod lost its mount when another pod unpublished")
+	}
+	if entries, _ := os.ReadDir(stateDir); len(entries) == 0 { //nolint:errcheck // empty dir check
+		t.Fatal("durable record removed while a peer target is still published")
+	}
+	if _, err = node.NodeUnpublishVolume(ctx, &csipb.NodeUnpublishVolumeRequest{
+		VolumeId: volumeID, TargetPath: rwTarget,
+	}); err != nil {
+		t.Fatalf("unpublish last pod: %v", err)
+	}
+	if ok, _ := mounter.MountEntryExists(rwTarget); ok { //nolint:errcheck // default mock never errors
+		t.Fatal("last target still mounted")
+	}
+	assertNoDurableRecord(t, stateDir)
+}
+
+// assertDirectPublishPair checks the rw and ro pod targets each got exactly
+// one direct mount of the NFS export, with readonly honored per target.
+func assertDirectPublishPair(
+	t *testing.T, mounter *csiMockMounter, mountOptions [][]string, rwTarget, roTarget string,
+) {
+	t.Helper()
+	if len(mountOptions) != 2 {
+		t.Fatalf("mounts = %d, want one direct mount per pod target", len(mountOptions))
+	}
+	if hasOption(mountOptions[0], "ro") || !hasOption(mountOptions[1], "ro") {
+		t.Fatalf("per-target readonly not honored: rw=%v ro=%v", mountOptions[0], mountOptions[1])
+	}
+	for _, target := range []string{rwTarget, roTarget} {
+		source, err := mounter.MountSource(target)
+		if err != nil || source != "192.0.2.10:/export/native" {
+			t.Fatalf("target %s mounted from %q (err=%v), want the NFS export directly", target, source, err)
+		}
+	}
+}
+
+// assertNoDurableRecord checks the last-target unpublish left no record file.
+func assertNoDurableRecord(t *testing.T, stateDir string) {
+	t.Helper()
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".json") {
+			t.Fatalf("last-target unpublish left durable record %s", entry.Name())
+		}
+	}
+}
+
+func hasOption(options []string, want string) bool {
+	return slices.Contains(options, want)
+}
+
+// TestCSINode_LegacyProfilePublishStillRequiresStage is the healthy control:
+// the block profile keeps STAGE_UNSTAGE_VOLUME, so a publish without a
+// staging path stays InvalidArgument and mounts nothing.
+func TestCSINode_LegacyProfilePublishStillRequiresStage(t *testing.T) {
+	t.Parallel()
+	env := newCSINodeTestEnv(t)
+	target := t.TempDir() + "/pod"
+	_, err := env.node.NodePublishVolume(context.Background(), basePublishRequest("", target))
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("legacy publish without stage = %v, want InvalidArgument", err)
+	}
+	if ok, _ := env.mounter.MountEntryExists(target); ok { //nolint:errcheck // default mock never errors
+		t.Fatal("legacy publish mounted without a stage")
 	}
 }

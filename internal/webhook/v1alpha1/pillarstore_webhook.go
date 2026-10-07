@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -59,7 +60,7 @@ func (*PillarStoreCustomValidator) ValidateCreate(
 }
 
 // validatePillarStoreSpec re-checks the backend union of a PillarStore spec.
-// The CRD schema (CEL exactly-one rule, MinLength on pool/volumeGroup)
+// The CRD schema (CEL exactly-one rule and required routing/layout fields)
 // already enforces these constraints at the API server; the webhook repeats
 // them so a schema that failed to install can never admit a store without a
 // usable backend.
@@ -69,18 +70,27 @@ func validatePillarStoreSpec(store *pillarcsiv1alpha1.PillarStore) error {
 	backend := store.Spec.Backend
 
 	switch {
-	case backend.ZFS != nil && backend.LVM != nil:
-		allErrs = append(allErrs, field.Invalid(backendPath, "zfs, lvm",
-			"exactly one of zfs or lvm must be set"))
+	case backendMemberCount(backend) > 1:
+		allErrs = append(allErrs, field.Invalid(backendPath, "multiple backend members",
+			"exactly one of zfs, lvm, or directory must be set"))
 	case backend.Kind() == "":
 		allErrs = append(allErrs, field.Required(backendPath,
-			"exactly one of zfs or lvm must be set"))
+			"exactly one of zfs, lvm, or directory must be set"))
 	case backend.ZFS != nil && backend.ZFS.Pool == "":
 		allErrs = append(allErrs, field.Required(backendPath.Child("zfs", "pool"),
 			"the ZFS pool name must be non-empty"))
 	case backend.LVM != nil && backend.LVM.VolumeGroup == "":
 		allErrs = append(allErrs, field.Required(backendPath.Child("lvm", "volumeGroup"),
 			"the LVM volume group name must be non-empty"))
+	case backend.Directory != nil && backend.Directory.LogicalPool == "":
+		allErrs = append(allErrs, field.Required(backendPath.Child("directory", "logicalPool"),
+			"the directory logical pool name must be non-empty"))
+	case backend.Directory != nil && backend.Directory.HostRoot == "":
+		allErrs = append(allErrs, field.Required(backendPath.Child("directory", "hostRoot"),
+			"the directory hostRoot must be non-empty"))
+	case backend.Directory != nil && !strings.HasPrefix(backend.Directory.HostRoot, "/"):
+		allErrs = append(allErrs, field.Invalid(backendPath.Child("directory", "hostRoot"),
+			backend.Directory.HostRoot, "the directory hostRoot must be an absolute host path"))
 	}
 
 	if len(allErrs) > 0 {
@@ -89,14 +99,30 @@ func validatePillarStoreSpec(store *pillarcsiv1alpha1.PillarStore) error {
 	return nil
 }
 
+func backendMemberCount(backend pillarcsiv1alpha1.BackendSpec) int {
+	count := 0
+	if backend.ZFS != nil {
+		count++
+	}
+	if backend.LVM != nil {
+		count++
+	}
+	if backend.Directory != nil {
+		count++
+	}
+	return count
+}
+
 // backendMember returns the name of the union member set in a backend spec
-// ("zfs" or "lvm"), or "" when none is set.
+// ("zfs", "lvm", or "directory"), or "" when none is set.
 func backendMember(b pillarcsiv1alpha1.BackendSpec) string {
 	switch {
 	case b.ZFS != nil:
 		return "zfs"
 	case b.LVM != nil:
 		return "lvm"
+	case b.Directory != nil:
+		return "directory"
 	default:
 		return ""
 	}
@@ -121,8 +147,8 @@ func (*PillarStoreCustomValidator) ValidateUpdate(
 		))
 	}
 
-	// The backend member (zfs or lvm) is immutable: switching backends would silently
-	// break volumes that were provisioned by the original backend.
+	// The backend member (zfs, lvm, or directory) is immutable: switching
+	// backends would silently break volumes provisioned by the original backend.
 	oldMember := backendMember(oldStore.Spec.Backend)
 	newMember := backendMember(newStore.Spec.Backend)
 	if oldMember != newMember {
@@ -150,6 +176,23 @@ func (*PillarStoreCustomValidator) ValidateUpdate(
 			fmt.Sprintf("field is immutable; old value %q cannot be changed to %q",
 				oldLVM.VolumeGroup, newLVM.VolumeGroup),
 		))
+	}
+	oldDirectory, newDirectory := oldStore.Spec.Backend.Directory, newStore.Spec.Backend.Directory
+	if oldDirectory != nil && newDirectory != nil {
+		if oldDirectory.LogicalPool != newDirectory.LogicalPool {
+			allErrs = append(allErrs, field.Forbidden(
+				field.NewPath("spec", "backend", "directory", "logicalPool"),
+				fmt.Sprintf("field is immutable; old value %q cannot be changed to %q",
+					oldDirectory.LogicalPool, newDirectory.LogicalPool),
+			))
+		}
+		if oldDirectory.HostRoot != newDirectory.HostRoot {
+			allErrs = append(allErrs, field.Forbidden(
+				field.NewPath("spec", "backend", "directory", "hostRoot"),
+				fmt.Sprintf("field is immutable; old value %q cannot be changed to %q",
+					oldDirectory.HostRoot, newDirectory.HostRoot),
+			))
+		}
 	}
 
 	if len(allErrs) > 0 {

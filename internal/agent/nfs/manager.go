@@ -34,9 +34,10 @@ const (
 
 // Config locates durable ownership and the advertised numeric server address.
 type Config struct {
-	StateDir    string
-	BindAddress string
-	ExportRoot  string
+	StateDir       string
+	BindAddress    string
+	ExportRoot     string
+	BeforeActivate func(context.Context, Export) error
 }
 
 // Export is the durable admission policy for one filesystem.
@@ -50,6 +51,11 @@ type Export struct {
 	ACLEnabled  bool     `json:"aclEnabled"`
 	Clients     []string `json:"clients,omitempty"`
 	Active      bool     `json:"active"`
+	// SourceKey and FenceUID are opaque durable ownership hints for adopted
+	// filesystems. Both must be present for adoption validation; when both are
+	// absent, legacy dynamically-created NFS exports retain their old path.
+	SourceKey string `json:"sourceKey,omitempty"`
+	FenceUID  string `json:"fenceUID,omitempty"`
 }
 
 // FSID survives dataset remounts, server restarts and device-number changes.
@@ -164,7 +170,13 @@ func (e Export) options() string {
 	case squashAll:
 		squash = "all_squash"
 	}
-	return mode + ",sync,no_subtree_check,secure,sec=sys,fsid=" + e.fsid() + "," + squash
+	traversal := ""
+	if e.VolumeID != rootVolumeID && e.SourceKey != "" && e.FenceUID != "" {
+		// Adopted datasets can be separate mounts beneath the pseudoroot.
+		// Admit traversal through their own exports, never global crossmnt.
+		traversal = ",nohide"
+	}
+	return mode + ",sync,no_subtree_check,secure,sec=sys,fsid=" + e.fsid() + "," + squash + traversal
 }
 
 type entry struct{ Path, Client, Options string }
@@ -257,7 +269,8 @@ func (m *Manager) updateRoot() {
 		VolumeID: rootVolumeID, Path: m.config.ExportRoot, BindAddress: m.config.BindAddress,
 		Version: nfsVersion, Squash: squashRoot, ReadOnly: true, ACLEnabled: true,
 	}
-	for id, e := range m.state.Desired {
+	for id := range m.state.Desired {
+		e := m.state.Desired[id]
 		if id == rootVolumeID || !e.Active || m.exportErrors[id] != nil {
 			continue
 		}
@@ -387,6 +400,10 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		return err
 	}
 	m.updateRoot()
+	err = m.preflightActivation(ctx)
+	if err != nil {
+		return err
+	}
 	// start compares the old identity before replacing it: a previous boot
 	// does not authorize adopting a listener in this boot.
 	err = m.runtime.start(ctx, &m.state, m.persist, m.daemonFailed)
@@ -426,7 +443,8 @@ func (m *Manager) loadState() error {
 }
 
 func (m *Manager) validateState() error {
-	for id, e := range m.state.Desired {
+	for id := range m.state.Desired {
+		e := m.state.Desired[id]
 		validated, err := m.validatePersisted(e)
 		if err != nil {
 			return err
@@ -436,8 +454,8 @@ func (m *Manager) validateState() error {
 		}
 		m.state.Desired[id] = validated
 	}
-	for i, e := range m.state.Ledger {
-		validated, err := m.validatePersisted(e)
+	for i := range m.state.Ledger {
+		validated, err := m.validatePersisted(m.state.Ledger[i])
 		if err != nil {
 			return err
 		}
@@ -536,7 +554,8 @@ func (m *Manager) revokeOwned(ctx context.Context) error {
 }
 
 func (m *Manager) owns(row entry) bool {
-	for _, e := range m.state.Ledger {
+	for i := range m.state.Ledger {
+		e := &m.state.Ledger[i]
 		if e.Path == row.Path && slices.Contains(e.clients(), row.Client) && optionValue(row.Options, "fsid") == e.fsid() {
 			return true
 		}
@@ -544,12 +563,63 @@ func (m *Manager) owns(row entry) bool {
 	return false
 }
 
+// preflightActivation withdraws unsafe persisted admissions while the runtime
+// is still stopped. This is required because etab can remain active across a
+// daemon restart and runtime.start verifies existing rows before convergence.
+func (m *Manager) preflightActivation(ctx context.Context) error {
+	guarded := false
+	for id := range m.state.Desired {
+		e := m.state.Desired[id]
+		if id != rootVolumeID && e.Active && (e.SourceKey != "" || e.FenceUID != "") {
+			guarded = true
+			break
+		}
+	}
+	if !guarded {
+		for i := range m.state.Ledger {
+			e := &m.state.Ledger[i]
+			if e.VolumeID != rootVolumeID && (e.SourceKey != "" || e.FenceUID != "") {
+				guarded = true
+				break
+			}
+		}
+	}
+	if !guarded {
+		return nil
+	}
+	rows, err := m.runtime.list(ctx)
+	if err != nil {
+		return fmt.Errorf("read NFS admissions before adopted activation: %w", err)
+	}
+	wanted, err := m.desiredEntries(ctx)
+	if err != nil {
+		return err
+	}
+	err = m.revokeObsolete(ctx, rows, wanted)
+	if err != nil {
+		return fmt.Errorf("withdraw unsafe NFS admissions before activation: %w", err)
+	}
+	m.rebuildLedger()
+	return m.persist()
+}
+
+func (m *Manager) rebuildLedger() {
+	m.state.Ledger = m.state.Ledger[:0]
+	for id := range m.state.Desired {
+		e := m.state.Desired[id]
+		if !e.Active || (id != rootVolumeID && m.exportErrors[id] != nil) {
+			continue
+		}
+		m.state.Ledger = append(m.state.Ledger, e)
+	}
+}
+
 func (m *Manager) converge(ctx context.Context) error {
 	rows, err := m.runtime.list(ctx)
 	if err != nil {
 		return err
 	}
-	wanted, err := m.desiredEntries()
+	wanted, err := m.desiredEntries(ctx)
 	if err != nil {
 		return err
 	}
@@ -575,12 +645,7 @@ func (m *Manager) converge(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	m.state.Ledger = m.state.Ledger[:0]
-	for _, e := range m.state.Desired {
-		if e.Active {
-			m.state.Ledger = append(m.state.Ledger, e)
-		}
-	}
+	m.rebuildLedger()
 	err = m.persist()
 	if err != nil {
 		m.failure = err
@@ -588,14 +653,40 @@ func (m *Manager) converge(ctx context.Context) error {
 	return err
 }
 
-func (m *Manager) desiredEntries() (map[[2]string]entry, error) {
+// beforeActivate validates opaque durable ownership hints before any kernel
+// admission is granted. Exports without hints are legacy dynamic NFS state and
+// deliberately retain their existing recovery behavior.
+func (m *Manager) beforeActivate(ctx context.Context, e Export) error {
+	if e.SourceKey == "" && e.FenceUID == "" {
+		return nil
+	}
+	if e.SourceKey == "" || e.FenceUID == "" {
+		return errors.New("incomplete adopted NFS ownership hint")
+	}
+	if m.config.BeforeActivate == nil {
+		return errors.New("adopted NFS activation guard is unavailable")
+	}
+	guarded := e
+	guarded.Clients = slices.Clone(e.Clients)
+	err := m.config.BeforeActivate(ctx, guarded)
+	if err != nil {
+		return fmt.Errorf("validate adopted NFS export: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) desiredEntries(ctx context.Context) (map[[2]string]entry, error) {
 	wanted := make(map[[2]string]entry)
 	m.exportErrors = make(map[string]error)
-	for id, e := range m.state.Desired {
+	for id := range m.state.Desired {
+		e := m.state.Desired[id]
 		if id == rootVolumeID || !e.Active {
 			continue
 		}
 		err := m.runtime.validateExport(e)
+		if err == nil {
+			err = m.beforeActivate(ctx, e)
+		}
 		if err != nil {
 			//nolint:errcheck // AsType's bool is checked; preserve the original error and its wrapping.
 			if _, ok := errors.AsType[*runtimeValidationError](err); ok {
@@ -628,7 +719,8 @@ type runtimeValidationError struct{ error }
 
 func (m *Manager) foreignConflict(row entry) error {
 	// A foreign path or fsid conflicts even when its admitted client differs.
-	for _, e := range m.state.Ledger {
+	for i := range m.state.Ledger {
+		e := &m.state.Ledger[i]
 		if row.Path == e.Path || optionValue(row.Options, "fsid") == e.fsid() {
 			return fmt.Errorf("foreign NFS export conflicts with volume %q", e.VolumeID)
 		}
@@ -664,7 +756,8 @@ func (m *Manager) grantDesired(ctx context.Context, rows []entry, wanted map[[2]
 			existing[[2]string{row.Path, row.Client}] = row
 		}
 	}
-	for _, e := range m.state.Desired {
+	for id := range m.state.Desired {
+		e := m.state.Desired[id]
 		for _, client := range e.clients() {
 			key := [2]string{e.Path, client}
 			want, needed := wanted[key]
@@ -721,9 +814,10 @@ func optionValue(options, key string) string {
 
 func optionsMatch(actual, wanted string) bool {
 	flags := strings.Split(actual, ",")
-	if slices.Contains(flags, "crossmnt") || slices.Contains(flags, "nohide") {
+	if slices.Contains(flags, "crossmnt") {
 		return false
 	}
+	wantNohide := false
 	for option := range strings.SplitSeq(wanted, ",") {
 		if !slices.Contains(flags, option) {
 			return false
@@ -746,12 +840,15 @@ func optionsMatch(actual, wanted string) bool {
 			opposite = "async"
 		case "no_subtree_check":
 			opposite = "subtree_check"
+		case "nohide":
+			wantNohide = true
+			opposite = "hide"
 		}
 		if opposite != "" && slices.Contains(flags, opposite) {
 			return false
 		}
 	}
-	return true
+	return slices.Contains(flags, "nohide") == wantNohide
 }
 
 // Put preserves grants on ordinary export retries; exact=true replaces the ACL.
@@ -819,11 +916,19 @@ func (m *Manager) putPolicy(e Export, exact bool) (Export, error) {
 		if old.Path != e.Path {
 			return e, errors.New("NFS volume export path cannot change")
 		}
+		if old.SourceKey != "" || old.FenceUID != "" {
+			if e.SourceKey == "" && e.FenceUID == "" {
+				e.SourceKey, e.FenceUID = old.SourceKey, old.FenceUID
+			} else if e.SourceKey != old.SourceKey || e.FenceUID != old.FenceUID {
+				return e, errors.New("NFS adopted ownership hint cannot change")
+			}
+		}
 		if !exact && old.ACLEnabled && e.ACLEnabled {
 			e.Clients = slices.Clone(old.Clients)
 		}
 	}
-	for id, old := range m.state.Desired {
+	for id := range m.state.Desired {
+		old := m.state.Desired[id]
 		if id != e.VolumeID && old.Path == e.Path {
 			return e, errors.New("NFS export path already belongs to another volume")
 		}

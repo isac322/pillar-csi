@@ -53,6 +53,7 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 	agentv1 "github.com/isac322/pillar-csi/gen/go/pillar_csi/agent/v1"
@@ -258,8 +259,18 @@ func (s *ControllerServer) LoadStateFromPillarVolumeStates(ctx context.Context) 
 	}
 	for i := range pvList.Items {
 		pv := &pvList.Items[i]
+		if scopedDriverForVolume(pv) != s.effectiveDriverName() {
+			continue
+		}
 		state := pillarVolumeStatePhaseToVolumeState(pv.Status.Phase)
 		if state == StateCreated && len(pv.Status.PublishedNodes) > 0 {
+			state = StateControllerPublished
+		}
+		// The file driver never stages: a stage phase recorded for one of
+		// its volumes can only mean it was controller-published, which is
+		// the state its direct NodePublishVolume follows.
+		if s.effectiveDriverName() == v1alpha1.FileCSIDriver &&
+			(state == StateNodeStagePartial || state == StateNodeStaged) {
 			state = StateControllerPublished
 		}
 		if state != StateNonExistent {
@@ -333,6 +344,11 @@ func (s *ControllerServer) ControllerGetCapabilities(
 		csi.ControllerServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
 		// GET_CAPACITY lets the CO schedule PVCs on nodes with sufficient space.
 		csi.ControllerServiceCapability_RPC_GET_CAPACITY,
+	}
+	if s.driverName == v1alpha1.FileCSIDriver {
+		rpcTypes = slices.DeleteFunc(rpcTypes, func(rpc csi.ControllerServiceCapability_RPC_Type) bool {
+			return rpc == csi.ControllerServiceCapability_RPC_EXPAND_VOLUME
+		})
 	}
 
 	caps := make([]*csi.ControllerServiceCapability, 0, len(rpcTypes))
@@ -591,13 +607,12 @@ const (
 // CreateVolume
 // ─────────────────────────────────────────────────────────────────────────────.
 
-// CreateVolume provisions a new volume by orchestrating three agent RPCs.
-//
-// Lifecycle (CSI spec §4.3.1):
-//  1. Call agent.CreateVolume — creates the backend storage resource
-//     (ZFS zvol, LVM LV, …).
-//  2. Call agent.ExportVolume — publishes the volume over the configured
-//     network protocol (NVMe-oF TCP or iSCSI).
+// CreateVolume provisions or adopts storage under a durable lifecycle.
+// Ordinary volumes use CreateVolume; existing zvols and filesystems use fenced
+// ImportVolume. Filesystems are inspected read-only before reservation.
+// Network volumes are exported through their configured protocol. Local-only
+// filesystem adoption has no network export; its owned proxy is mounted when
+// the storage node publishes it.
 //
 // The returned VolumeId encodes routing metadata in the form:
 //
@@ -650,8 +665,8 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	setSpanAttributes(ctx, telemetry.KeyPVName.String(pvName))
 	setPVCAttributes(ctx, scParams[paramPVCNameMeta], scParams[paramPVCNamespaceMeta])
 
-	// Access modes depend only on the request (every served protocol is a
-	// block protocol), so they are checked before any retry fast path.
+	// Reject unsupported access modes before any retry fast path; the resolved
+	// protocol imposes further restrictions below.
 	for _, cap := range req.GetVolumeCapabilities() {
 		if !isSupportedAccessMode(cap.GetAccessMode().GetMode()) {
 			return nil, status.Errorf(codes.InvalidArgument,
@@ -675,28 +690,70 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		return nil, status.Errorf(codes.Internal,
 			"failed to load PillarVolumeState %q: %v", pvName, pvErr)
 	}
+	if pvExists {
+		err := s.validateVolumeDriver(existingPV)
+		if err != nil {
+			return nil, err
+		}
+		if existingPV.Spec.FilesystemAdoption != nil && !isFilesystemVolumeID(existingPV) {
+			return nil, status.Errorf(codes.FailedPrecondition, "file lifecycle handle is invalid")
+		}
+	}
 
 	// ── Completed volume: answer from the durable record ─────────────────────
 	// A Ready lifecycle is answered from its recorded routing and resolved
 	// configuration without consulting the CRDs or the claim, so the retry
 	// response (which becomes the PV's VolumeContext) reproduces the first
 	// success even when those sources no longer exist.
-	if pvExists && existingPV.Spec.Resolved != nil && existingPV.Status.ExportInfo != nil &&
-		!existingPV.Status.Deleting {
+	if pvExists && existingPV.Spec.Resolved != nil &&
+		(existingPV.Status.ExportInfo != nil || localOnlyFilesystem(existingPV)) && !existingPV.Status.Deleting {
 		volumeID := existingPV.Spec.VolumeID
-		s.sm.ForceState(volumeID, pillarVolumeStatePhaseToVolumeState(existingPV.Status.Phase))
-		if s.sm.GetState(volumeID) == StateCreated {
+		state := pillarVolumeStatePhaseToVolumeState(existingPV.Status.Phase)
+		if existingPV.Spec.FilesystemAdoption != nil && state == StateCreated && len(existingPV.Status.PublishedNodes) > 0 {
+			state = StateControllerPublished
+		}
+		s.sm.ForceState(volumeID, state)
+		if s.sm.GetState(volumeID) == StateCreated || completedFilesystemAdoption(existingPV) {
+			if existingPV.Spec.FilesystemAdoption != nil {
+				err := refuseUnadoptedImport(existingPV, volumeID, "retry create")
+				if err != nil {
+					return nil, err
+				}
+				docs, docsErr := s.claimDocs(ctx, scParams, true)
+				if docsErr != nil {
+					return nil, docsErr
+				}
+				if docs.ImportZvol != "" {
+					return nil, status.Errorf(codes.InvalidArgument, "a filesystem lifecycle cannot import a zvol")
+				}
+				_, _, inspectErr := s.resolveFilesystemImportRequest(ctx, pvName, true, existingPV,
+					existingPV.Spec.Resolved, docs.ImportDirectory, docs.ImportZFSDataset,
+					existingPV.Spec.AgentRef, capacityBytes)
+				if inspectErr != nil {
+					return nil, inspectErr
+				}
+			}
 			telemetry.SetVolumeAttributes(ctx, volumeID)
 			setSpanAttributes(ctx, telemetry.KeyCreateResumedFrom.String(createResumedFromReady))
-			// The recorded LV source stays authoritative on this path too:
-			// a claim re-annotated to another LV or policy, or a late
-			// import-lv annotation, is refused instead of answered.
-			driftErr := s.refuseRecordedLVDrift(ctx, existingPV, scParams)
+			// The recorded import source stays authoritative on this path
+			// too: a claim re-annotated to another LV or policy, or a late
+			// import-lv, import-directory or import-zfs-dataset annotation,
+			// is refused instead of answered.
+			driftErr := s.refuseRecordedImportDrift(ctx, existingPV, scParams)
 			if driftErr != nil {
 				return nil, driftErr
 			}
 			resp, respErr := completedVolumeResponse(req, existingPV)
 			if respErr == nil {
+				topology, err := s.filesystemAccessibleTopology(ctx, existingPV, req.GetVolumeCapabilities())
+				if err != nil {
+					return nil, err
+				}
+				resp.Volume.AccessibleTopology = topology
+				err = validateFilesystemTopology(req.GetAccessibilityRequirements(), topology)
+				if err != nil {
+					return nil, err
+				}
 				setSpanAttributes(ctx,
 					telemetry.KeyCapacityAllocatedBytes.Int64(resp.GetVolume().GetCapacityBytes()))
 			}
@@ -744,7 +801,8 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// resolution below run would add a second, ambiguous source of truth (and
 	// an orphaned backend reservation).
 	recoveryIntent := pvExists && existingPV.Spec.Recovery != nil
-	if recoveryIntent && (res.importLV != "" || res.importLVPolicy != "" || res.importDataset != "") {
+	if recoveryIntent && (res.importLV != "" || res.importLVPolicy != "" || res.importDataset != "" ||
+		res.importDirectory != "" || res.importZFSDataset != "") {
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"cannot recover volume for PillarVolumeState %q: the claim carries an "+
 				"import annotation but the record is a recovery record; the intent "+
@@ -781,6 +839,31 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	if err != nil {
 		return nil, err
 	}
+	adoption, fileLeaf, err := s.resolveFilesystemImportRequest(ctx, pvName, pvExists, existingPV,
+		resolved, res.importDirectory, res.importZFSDataset, targetName, capacityBytes)
+	if err != nil {
+		return nil, err
+	}
+	if adoption != nil {
+		if importedFrom != "" || protocolID != v1alpha1.ProtocolIDNFS {
+			return nil, status.Errorf(codes.InvalidArgument, "filesystem adoption requires NFS and cannot import a zvol")
+		}
+		if limit := req.GetCapacityRange().GetLimitBytes(); limit > 0 && capacityBytes > limit {
+			return nil, status.Errorf(codes.InvalidArgument, "filesystem exact capacity exceeds the requested limit")
+		}
+		importLeaf = fileLeaf
+		if !pvExists && resolved.LocalAttach && filesystemCapabilitiesMultiNode(req.GetVolumeCapabilities()) {
+			return nil, status.Errorf(codes.InvalidArgument, "local-only file class cannot serve multi-node capabilities")
+		}
+		if !pvExists {
+			resolved.LocalAttach = !filesystemCapabilitiesMultiNode(req.GetVolumeCapabilities())
+		} else {
+			resolved.LocalAttach = existingPV.Spec.Resolved.LocalAttach
+		}
+		if resolved.LocalAttach && filesystemCapabilitiesMultiNode(req.GetVolumeCapabilities()) {
+			return nil, status.Errorf(codes.AlreadyExists, "local-only filesystem adoption cannot change to network access")
+		}
+	}
 
 	// ── LV import (PVC annotation pillar-csi.bhyoo.com/import-lv) ────────────
 	// The adopted LV's "<vg>/<lv>" is the agent volume ID, and its identity
@@ -814,6 +897,9 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		[]string{targetName, string(protocolID), string(backendID), agentVolID},
 		"/",
 	)
+	if adoption != nil && pvExists {
+		volumeID = existingPV.Spec.VolumeID
+	}
 	telemetry.SetVolumeAttributes(ctx, volumeID)
 	setSpanAttributes(ctx,
 		telemetry.KeyStoreName.String(res.storeName),
@@ -832,15 +918,16 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// configuration is recorded with it and stays authoritative for the whole
 	// lifecycle (the spec is immutable once created).
 	spec := v1alpha1.PillarVolumeStateSpec{
-		VolumeID:      volumeID,
-		AgentVolumeID: agentVolID,
-		AgentRef:      targetName,
-		BackendType:   string(backendID),
-		ProtocolType:  string(protocolID),
-		CapacityBytes: capacityBytes,
-		Resolved:      resolved,
-		ImportedFrom:  importedFrom,
-		LVMSource:     lvmSource,
+		VolumeID:           volumeID,
+		AgentVolumeID:      agentVolID,
+		AgentRef:           targetName,
+		BackendType:        string(backendID),
+		ProtocolType:       string(protocolID),
+		CapacityBytes:      capacityBytes,
+		Resolved:           resolved,
+		ImportedFrom:       importedFrom,
+		FilesystemAdoption: adoption,
+		LVMSource:          lvmSource,
 	}
 	attempt := existingPV
 	if !pvExists {
@@ -857,15 +944,33 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	if err != nil {
 		return nil, err
 	}
+	accessibleTopology, topologyErr := s.filesystemAccessibleTopology(ctx, attempt, req.GetVolumeCapabilities())
+	if topologyErr != nil {
+		return nil, topologyErr
+	}
+	err = validateFilesystemTopology(req.GetAccessibilityRequirements(), accessibleTopology)
+	if err != nil {
+		return nil, err
+	}
 	// An import reserves the backend volume before the PillarVolumeState
 	// exists: the reservation's deterministic name makes the claim atomic,
-	// so two concurrent imports of one zvol (or one LV, keyed by its UUID)
-	// cannot both start a lifecycle.  The reservation belongs to the
-	// lifecycle and outlives refused or failed attempts until the record is
-	// retired; finishDelete releases it.
+	// so two concurrent imports of one zvol (or one LV, keyed by its UUID, or
+	// one filesystem, keyed by its canonical native resource) cannot both
+	// start a lifecycle.  The reservation belongs to the lifecycle and
+	// outlives refused or failed attempts until the record is retired;
+	// finishDelete releases it.
 	var importRsv backendReservation
 	var importSubject reservationSubject
 	switch {
+	case adoption != nil:
+		resourceID, resourceErr := filesystemResourceID(adoption)
+		if resourceErr != nil {
+			return nil, invalidFilesystemDescriptor(resourceErr)
+		}
+		importRsv = backendReservation{
+			agent: targetName, backendType: string(backendID), key: agentVolID, resourceID: resourceID,
+		}
+		importSubject = filesystemImportSubject(adoption.CanonicalSource)
 	case importedFrom != "":
 		importRsv = backendReservation{agent: targetName, backendType: string(backendID), key: agentVolID}
 		importSubject = reservationSubject{annotation: v1alpha1.AnnotationImportZvol, noun: "zvol", source: importedFrom}
@@ -882,6 +987,12 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	pvs, err := s.ensureVolumeState(ctx, pvName, spec)
 	if err != nil {
 		return nil, err
+	}
+	if pvs.Spec.FilesystemAdoption != nil {
+		volumeID = pvs.Spec.VolumeID
+		agentVolID = pvs.Spec.AgentVolumeID
+		targetName = pvs.Spec.AgentRef
+		telemetry.SetVolumeAttributes(ctx, volumeID)
 	}
 	err = refuseDeleting(pvs, volumeID)
 	if err != nil {
@@ -948,6 +1059,9 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// controller can re-create the export after the storage node loses its
 	// target state, independent of later parameter changes.
 	exportSpec := exportSpecFor(exportParams, aclEnabled)
+	if localOnlyFilesystem(pvs) {
+		exportSpec = nil
+	}
 	// A lifecycle already in CreatePartial created its backend in an earlier
 	// attempt whose export failed; the device path recorded then is reused and
 	// only the export is retried, so a zvol that may hold data is never
@@ -965,7 +1079,8 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 		if err != nil {
 			return nil, err
 		}
-	case pvs.Status.Phase == v1alpha1.PillarVolumeStatePhaseCreatePartial && devicePath != "":
+	case pvs.Status.Phase == v1alpha1.PillarVolumeStatePhaseCreatePartial &&
+		(devicePath != "" || (adoption != nil && pvs.Status.ImportAcquired)):
 		if pvs.Spec.CapacityBytes > 0 {
 			actualCapacity = pvs.Spec.CapacityBytes
 		}
@@ -977,6 +1092,30 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 			if err != nil {
 				return nil, err
 			}
+		}
+	case adoption != nil:
+		resourceID, resourceErr := filesystemResourceID(adoption)
+		if resourceErr != nil {
+			return nil, invalidFilesystemDescriptor(resourceErr)
+		}
+		err = s.verifyReservation(ctx, pvName, backendReservation{
+			agent: targetName, backendType: string(backendID), key: agentVolID, resourceID: resourceID,
+		}, filesystemImportSubject(adoption.CanonicalSource), pvs.Spec.ClaimRef)
+		if err != nil {
+			return nil, err
+		}
+		adoptionProto, adoptionProtoErr := filesystemAdoptionProto(adoption)
+		if adoptionProtoErr != nil {
+			return nil, invalidFilesystemDescriptor(adoptionProtoErr)
+		}
+		devicePath, actualCapacity, err = s.importBackend(ctx, agentClient, pvName, volumeID, pvs.UID,
+			&agentv1.ImportVolumeRequest{
+				VolumeId: agentVolID, CapacityBytes: pvs.Spec.CapacityBytes,
+				BackendType: agentBackendType, FilesystemAdoption: adoptionProto,
+				BackendParams: backendParamsFromResolved(recorded.Backend),
+			}, exportSpec)
+		if err != nil {
+			return nil, err
 		}
 	case importedFrom != "":
 		// Adopt the existing zvol named by the import annotation instead of
@@ -1039,24 +1178,34 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// The export bind address is the storage node's IP (no port).
 	// agent.ExportVolume is idempotent: if the export already exists (retry
 	// scenario), it returns the existing ExportInfo without error.
-	exportToken, err := s.claimOperation(ctx, pvName, volumeID, pvs.UID)
-	if err != nil {
-		return nil, err
-	}
-	exportResp, err := agentClient.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
-		VolumeId:     agentVolID,
-		ProtocolType: agentProtocolType,
-		ExportParams: withISCSIChap(exportParams, chap),
-		DevicePath:   devicePath,
-		AclEnabled:   aclEnabled,
-		Fence:        exportToken,
-	})
-	if err != nil {
-		// The PillarVolumeState records CreatePartial durably; the CO may
-		// retry safely and the next attempt only re-exports.
-		grpcSt, _ := status.FromError(err)
-		return nil, status.Errorf(grpcSt.Code(),
-			"agent ExportVolume(%q) failed: %v", agentVolID, err)
+	var info *agentv1.ExportInfo
+	if !localOnlyFilesystem(pvs) {
+		exportToken, tokenErr := s.claimOperation(ctx, pvName, volumeID, pvs.UID)
+		if tokenErr != nil {
+			return nil, tokenErr
+		}
+		var adoptionProto *agentv1.FilesystemAdoption
+		if adoption := pvs.Spec.FilesystemAdoption; adoption != nil {
+			var adoptionProtoErr error
+			adoptionProto, adoptionProtoErr = filesystemAdoptionProto(adoption)
+			if adoptionProtoErr != nil {
+				return nil, invalidFilesystemDescriptor(adoptionProtoErr)
+			}
+		}
+		exportResp, exportErr := agentClient.ExportVolume(ctx, &agentv1.ExportVolumeRequest{
+			VolumeId: agentVolID, ProtocolType: agentProtocolType,
+			ExportParams: withISCSIChap(exportParams, chap), DevicePath: devicePath,
+			AclEnabled: aclEnabled, Fence: exportToken,
+			FilesystemAdoption: adoptionProto,
+			CapacityBytes:      pvs.Spec.CapacityBytes, BackendParams: backendParamsFromResolved(recorded.Backend),
+		})
+		if exportErr != nil {
+			return nil, status.Errorf(status.Code(exportErr), "agent ExportVolume(%q) failed: %v", agentVolID, exportErr)
+		}
+		info = exportResp.GetExportInfo()
+		if info == nil {
+			return nil, status.Errorf(codes.Internal, "agent export returned no connection information")
+		}
 	}
 
 	// ── Record the lifecycle Ready before reporting success ──────────────────
@@ -1065,7 +1214,6 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// has a PersistentVolume, which is what lets ReapAbandonedVolume end one
 	// whose claim is gone.  A failure is returned; the retry re-exports
 	// idempotently from CreatePartial and records Ready again.
-	info := exportResp.GetExportInfo()
 	err = s.persistVolumeReady(ctx, pvName, pvs.UID, info)
 	if err != nil {
 		return nil, err
@@ -1075,22 +1223,27 @@ func (s *ControllerServer) CreateVolume( //nolint:gocognit,gocyclo,funlen // com
 	// ── Build VolumeContext from ExportInfo ───────────────────────────────────
 	// These key/value pairs are stored in the PersistentVolume and forwarded to
 	// NodeStageVolume so the node can connect to the volume over the network.
-	volumeContext := map[string]string{
-		vcTargetID:     info.GetTargetId(),
-		vcAddress:      info.GetAddress(),
-		vcPort:         strconv.Itoa(int(info.GetPort())),
-		vcVolumeRef:    info.GetVolumeRef(),
-		vcProtocolType: string(protocolID),
+	volumeContext := map[string]string{vcProtocolType: string(protocolID)}
+	if info != nil {
+		volumeContext[vcTargetID] = info.GetTargetId()
+		volumeContext[vcAddress] = info.GetAddress()
+		volumeContext[vcPort] = strconv.Itoa(int(info.GetPort()))
+		volumeContext[vcVolumeRef] = info.GetVolumeRef()
 	}
 	nodeVolumeContext(recorded, volumeContext)
+	err = addFilesystemPublishContext(pvs, volumeContext, "", agentAddr)
+	if err != nil {
+		return nil, err
+	}
 	addVolumePreserveContext(pvs, volumeContext)
 	setSpanAttributes(ctx, telemetry.KeyCapacityAllocatedBytes.Int64(actualCapacity))
 
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
-			VolumeId:      volumeID,
-			CapacityBytes: actualCapacity,
-			VolumeContext: volumeContext,
+			VolumeId:           volumeID,
+			CapacityBytes:      actualCapacity,
+			VolumeContext:      volumeContext,
+			AccessibleTopology: accessibleTopology,
 		},
 	}, nil
 }
@@ -1102,43 +1255,23 @@ func completedVolumeResponse(
 	pvs *v1alpha1.PillarVolumeState,
 ) (*csi.CreateVolumeResponse, error) {
 	ei := pvs.Status.ExportInfo
-	capabilityErr := validateCapabilitiesForProtocol(pvs.Spec.ProtocolType, req.GetVolumeCapabilities())
-	if capabilityErr != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", capabilityErr)
-	}
-	if v1alpha1.ProtocolID(pvs.Spec.ProtocolType) == v1alpha1.ProtocolIDNFS &&
-		pvs.Status.ExportSpec != nil && pvs.Status.ExportSpec.NFS != nil &&
-		pvs.Status.ExportSpec.NFS.Readonly && hasWritableVolumeCapability(req.GetVolumeCapabilities()) {
-		return nil, status.Errorf(codes.AlreadyExists,
-			"volume %q already exists with a read-only NFS export", req.GetName())
-	}
-	existingCap := pvs.Spec.CapacityBytes
-
-	// CSI spec §5.1.1: if the existing volume doesn't satisfy the new
-	// capacity range, return AlreadyExists to signal incompatibility.
-	if cr := req.GetCapacityRange(); cr != nil {
-		if cr.GetRequiredBytes() > 0 && existingCap < cr.GetRequiredBytes() {
-			return nil, status.Errorf(codes.AlreadyExists,
-				"volume %q already exists with capacity %d bytes, which is less than "+
-					"the requested minimum %d bytes",
-				req.GetName(), existingCap, cr.GetRequiredBytes())
-		}
-		if cr.GetLimitBytes() > 0 && existingCap > cr.GetLimitBytes() {
-			return nil, status.Errorf(codes.AlreadyExists,
-				"volume %q already exists with capacity %d bytes, which exceeds "+
-					"the requested limit %d bytes",
-				req.GetName(), existingCap, cr.GetLimitBytes())
-		}
+	existingCap, err := completedVolumeCapacity(req, pvs)
+	if err != nil {
+		return nil, err
 	}
 
-	volumeContext := map[string]string{
-		vcTargetID:     ei.TargetID,
-		vcAddress:      ei.Address,
-		vcPort:         strconv.Itoa(int(ei.Port)),
-		vcVolumeRef:    ei.VolumeRef,
-		vcProtocolType: pvs.Spec.ProtocolType,
+	volumeContext := map[string]string{vcProtocolType: pvs.Spec.ProtocolType}
+	if ei != nil {
+		volumeContext[vcTargetID] = ei.TargetID
+		volumeContext[vcAddress] = ei.Address
+		volumeContext[vcPort] = strconv.Itoa(int(ei.Port))
+		volumeContext[vcVolumeRef] = ei.VolumeRef
 	}
 	nodeVolumeContext(pvs.Spec.Resolved, volumeContext)
+	err = addFilesystemPublishContext(pvs, volumeContext, "", "")
+	if err != nil {
+		return nil, err
+	}
 	addVolumePreserveContext(pvs, volumeContext)
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
@@ -1147,6 +1280,66 @@ func completedVolumeResponse(
 			VolumeContext: volumeContext,
 		},
 	}, nil
+}
+
+func completedVolumeCapacity(req *csi.CreateVolumeRequest, pvs *v1alpha1.PillarVolumeState) (int64, error) {
+	err := validateCompletedVolumeRequest(req, pvs)
+	if err != nil {
+		return 0, err
+	}
+	existingCap := pvs.Spec.CapacityBytes
+	err = validateCompletedVolumeCapacityRange(req, pvs, existingCap)
+	if err != nil {
+		return 0, err
+	}
+	return existingCap, nil
+}
+
+func validateCompletedVolumeRequest(
+	req *csi.CreateVolumeRequest,
+	pvs *v1alpha1.PillarVolumeState,
+) error {
+	capabilityErr := validateCapabilitiesForProtocol(pvs.Spec.ProtocolType, req.GetVolumeCapabilities())
+	if capabilityErr != nil {
+		return status.Errorf(codes.InvalidArgument, "%v", capabilityErr)
+	}
+	if localOnlyFilesystem(pvs) && filesystemCapabilitiesMultiNode(req.GetVolumeCapabilities()) {
+		return status.Errorf(codes.AlreadyExists,
+			"local-only filesystem adoption cannot change to network access")
+	}
+	if v1alpha1.ProtocolID(pvs.Spec.ProtocolType) == v1alpha1.ProtocolIDNFS &&
+		pvs.Status.ExportSpec != nil && pvs.Status.ExportSpec.NFS != nil &&
+		pvs.Status.ExportSpec.NFS.Readonly && hasWritableVolumeCapability(req.GetVolumeCapabilities()) {
+		return status.Errorf(codes.AlreadyExists,
+			"volume %q already exists with a read-only NFS export", req.GetName())
+	}
+	return nil
+}
+
+func validateCompletedVolumeCapacityRange(
+	req *csi.CreateVolumeRequest,
+	pvs *v1alpha1.PillarVolumeState,
+	existingCap int64,
+) error {
+	if cr := req.GetCapacityRange(); cr != nil {
+		if cr.GetRequiredBytes() > 0 && existingCap < cr.GetRequiredBytes() {
+			return status.Errorf(codes.AlreadyExists,
+				"volume %q already exists with capacity %d bytes, which is less than "+
+					"the requested minimum %d bytes",
+				req.GetName(), existingCap, cr.GetRequiredBytes())
+		}
+		if cr.GetLimitBytes() > 0 && existingCap > cr.GetLimitBytes() {
+			return status.Errorf(codes.AlreadyExists,
+				"volume %q already exists with capacity %d bytes, which exceeds "+
+					"the requested limit %d bytes",
+				req.GetName(), existingCap, cr.GetLimitBytes())
+		}
+		if pvs.Spec.FilesystemAdoption != nil && cr.GetRequiredBytes() != existingCap {
+			return status.Errorf(codes.AlreadyExists,
+				"adopted filesystem capacity is fixed at %d bytes", existingCap)
+		}
+	}
+	return nil
 }
 
 // commitBackendVolume commits a generation on the lifecycle uid, runs the
@@ -1221,8 +1414,8 @@ func (s *ControllerServer) createBackend(
 //     volume's PillarVolumeState; this succeeds only while no publication is
 //     recorded, and blocks every later publish, create, or export.
 //  1. Call agent.UnexportVolume — removes the network-protocol export entry.
-//  2. Call agent.DeleteVolume — destroys the backend storage resource and
-//     ends the lifecycle at the agent.
+//  2. Destroy provisioned storage through agent.DeleteVolume, or retire an
+//     adopted filesystem through agent.ReleaseVolume without touching its source.
 //  3. Delete the PillarVolumeState (UID-preconditioned).
 //
 // Both agent RPCs carry the deletion's fencing token, so a delayed delete
@@ -1283,18 +1476,27 @@ func (s *ControllerServer) DeleteVolume(
 	}
 	setClaimAttributes(ctx, pvs.Spec.ClaimRef)
 
-	err = s.teardownMarkedVolume(ctx, volumeTeardown{
-		volumeID:       volumeID,
-		pvName:         pvName,
-		uid:            pvs.UID,
-		targetName:     targetName,
-		protocolType:   mapProtocolType(parts[1]),
-		backendType:    mapBackendType(parts[2]),
-		agentVolID:     parts[3],
-		fence:          fence,
-		releaseOnly:    releaseOnlyTeardown(pvs),
-		reservationKey: reservationOf(pvs),
-	})
+	var adoptionProto *agentv1.FilesystemAdoption
+	if adoption := pvs.Spec.FilesystemAdoption; adoption != nil {
+		var adoptionProtoErr error
+		adoptionProto, adoptionProtoErr = filesystemAdoptionProto(adoption)
+		if adoptionProtoErr != nil {
+			return nil, invalidFilesystemDescriptor(adoptionProtoErr)
+		}
+	}
+	teardown := volumeTeardown{
+		volumeID: volumeID, pvName: pvName, uid: pvs.UID, targetName: targetName,
+		protocolType: mapProtocolType(parts[1]), backendType: mapBackendType(parts[2]),
+		agentVolID: parts[3], fence: fence, releaseOnly: releaseOnlyTeardown(pvs),
+		reservationKey: reservationOf(pvs), filesystemAdoption: adoptionProto,
+	}
+	if pvs.Spec.FilesystemAdoption != nil {
+		teardown.targetName = pvs.Spec.AgentRef
+		teardown.protocolType = mapProtocolType(pvs.Spec.ProtocolType)
+		teardown.backendType = mapBackendType(pvs.Spec.BackendType)
+		teardown.agentVolID = pvs.Spec.AgentVolumeID
+	}
+	err = s.teardownMarkedVolume(ctx, teardown)
 	if err != nil {
 		return nil, err
 	}
@@ -1304,14 +1506,15 @@ func (s *ControllerServer) DeleteVolume(
 // volumeTeardown identifies one lifecycle whose PillarVolumeState is already
 // marked deleting, and routes its agent RPCs.
 type volumeTeardown struct {
-	volumeID     string
-	pvName       string
-	uid          types.UID
-	targetName   string
-	protocolType agentv1.ProtocolType
-	backendType  agentv1.BackendType
-	agentVolID   string
-	fence        *agentv1.FencingToken
+	volumeID           string
+	pvName             string
+	uid                types.UID
+	targetName         string
+	protocolType       agentv1.ProtocolType
+	backendType        agentv1.BackendType
+	agentVolID         string
+	fence              *agentv1.FencingToken
+	filesystemAdoption *agentv1.FilesystemAdoption
 	// releaseOnly ends the lifecycle at the agent with ReleaseVolume instead
 	// of UnexportVolume + DeleteVolume: the volume was an import whose agent
 	// never durably adopted the backend resource, or an LV adopted under
@@ -1331,13 +1534,13 @@ func releaseOnlyTeardown(pvs *v1alpha1.PillarVolumeState) bool {
 	return importNeverAdopted(pvs) || volumePreservesOriginal(pvs)
 }
 
-// importNeverAdopted reports whether pvs is an import lifecycle (zvol or LV)
-// that never durably recorded adoption: status.importAcquired is the
-// explicit record written after a successful agent.ImportVolume;
+// importNeverAdopted reports whether pvs is an import lifecycle (zvol, LV or
+// filesystem) that never durably recorded adoption: status.importAcquired is
+// the explicit record written after a successful agent.ImportVolume;
 // backendDevicePath and exportInfo are set only after the backend call
 // succeeded, so states written by older versions still count as adopted.
 func importNeverAdopted(pvs *v1alpha1.PillarVolumeState) bool {
-	if pvs.Spec.ImportedFrom == "" && pvs.Spec.LVMSource == nil {
+	if pvs.Spec.ImportedFrom == "" && pvs.Spec.LVMSource == nil && pvs.Spec.FilesystemAdoption == nil {
 		return false
 	}
 	return !pvs.Status.ImportAcquired &&
@@ -1422,9 +1625,10 @@ func (s *ControllerServer) teardownMarkedVolume(ctx context.Context, t volumeTea
 	// agent keeps the record (still marked deleting) and its reservation.
 	if t.releaseOnly {
 		_, releaseErr := agentClient.ReleaseVolume(ctx, &agentv1.ReleaseVolumeRequest{
-			VolumeId:     t.agentVolID,
-			ProtocolType: t.protocolType,
-			Fence:        t.fence,
+			VolumeId:           t.agentVolID,
+			ProtocolType:       t.protocolType,
+			Fence:              t.fence,
+			FilesystemAdoption: t.filesystemAdoption,
 		})
 		if releaseErr != nil {
 			return status.Errorf(status.Code(releaseErr),
@@ -1435,14 +1639,26 @@ func (s *ControllerServer) teardownMarkedVolume(ctx context.Context, t volumeTea
 
 	// ── Step 1: Remove the network export (idempotent) ────────────────────────
 	_, unexportErr := agentClient.UnexportVolume(ctx, &agentv1.UnexportVolumeRequest{
-		VolumeId:     t.agentVolID,
-		ProtocolType: t.protocolType,
-		Fence:        t.fence,
+		VolumeId:           t.agentVolID,
+		ProtocolType:       t.protocolType,
+		Fence:              t.fence,
+		FilesystemAdoption: t.filesystemAdoption,
 	})
 	unexportCode := status.Code(unexportErr)
 	if unexportErr != nil && unexportCode != codes.NotFound {
 		return status.Errorf(unexportCode,
 			"agent UnexportVolume(%q) failed: %v", t.agentVolID, unexportErr)
+	}
+	if t.filesystemAdoption != nil {
+		_, releaseErr := agentClient.ReleaseVolume(ctx, &agentv1.ReleaseVolumeRequest{
+			VolumeId: t.agentVolID, ProtocolType: t.protocolType, Fence: t.fence,
+			FilesystemAdoption: t.filesystemAdoption,
+		})
+		if releaseErr != nil {
+			return status.Errorf(status.Code(releaseErr),
+				"agent ReleaseVolume(%q) failed: %v", t.agentVolID, releaseErr)
+		}
+		return s.finishDelete(ctx, t.volumeID, t.pvName, t.uid, t.reservationKey)
 	}
 
 	// ── Step 2: Destroy the backend storage resource (idempotent) ─────────────
@@ -1476,9 +1692,22 @@ func (s *ControllerServer) finishDelete(
 	// and would block a re-import of the same zvol or LV until a contender
 	// reclaims it.  Releasing only while this lifecycle owns it keeps a
 	// reservation a contender already took.
-	err := s.releaseBackendVolume(ctx, pvName, rsv.agent, rsv.backendType, rsv.key)
+	err := s.releaseBackendVolume(ctx, pvName, volumeID, uid, rsv)
 	if err != nil {
 		return err
+	}
+	if s.effectiveDriverName() == v1alpha1.FileCSIDriver {
+		current, exists, readErr := s.readVolumeState(ctx, pvName)
+		if readErr != nil {
+			return status.Errorf(codes.Internal, "recheck file cleanup lifecycle: %v", readErr)
+		}
+		if exists && (current.UID != uid || !current.Status.Deleting ||
+			scopedDriverForVolume(current) != v1alpha1.FileCSIDriver) {
+			return status.Errorf(
+				codes.Aborted,
+				"file cleanup lifecycle changed before final deletion; retry",
+			)
+		}
 	}
 	err = s.deleteVolumeState(ctx, pvName, uid)
 	if err != nil {
@@ -1548,6 +1777,8 @@ func mapBackendType(s string) agentv1.BackendType {
 		return agentv1.BackendType_BACKEND_TYPE_ZFS_ZVOL
 	case v1alpha1.BackendIDZFSDataset:
 		return agentv1.BackendType_BACKEND_TYPE_ZFS_DATASET
+	case v1alpha1.BackendIDDirectory:
+		return agentv1.BackendType_BACKEND_TYPE_DIRECTORY
 	case v1alpha1.BackendIDLVMLV:
 		return agentv1.BackendType_BACKEND_TYPE_LVM
 	default:
@@ -1556,7 +1787,7 @@ func mapBackendType(s string) agentv1.BackendType {
 }
 
 func volumeAccessType(b v1alpha1.BackendSpec) agentv1.VolumeAccessType {
-	if b.ZFS != nil && b.ZFS.VolumeType == v1alpha1.ZFSVolumeTypeDataset {
+	if b.Directory != nil || (b.ZFS != nil && b.ZFS.VolumeType == v1alpha1.ZFSVolumeTypeDataset) {
 		return agentv1.VolumeAccessType_VOLUME_ACCESS_TYPE_MOUNT
 	}
 	return agentv1.VolumeAccessType_VOLUME_ACCESS_TYPE_BLOCK
@@ -1700,6 +1931,12 @@ func backendParamsFromResolved(b v1alpha1.BackendSpec) *agentv1.BackendParams {
 				},
 			},
 		}
+	case b.Directory != nil:
+		return &agentv1.BackendParams{Params: &agentv1.BackendParams_Directory{
+			Directory: &agentv1.DirectoryVolumeParams{
+				LogicalPool: b.Directory.LogicalPool, HostRoot: b.Directory.HostRoot,
+			},
+		}}
 	case b.LVM != nil:
 		mode := b.LVM.ProvisioningMode
 		if mode == "" {
@@ -2002,6 +2239,11 @@ func publishInitiatorError(nodeID string, err error) error {
 // publish of a localAttach volume re-enables at its reservation, so a stale
 // resync can never leave the export disabled under a successful publish
 // (see finishPublish).
+//
+// Adopted filesystems always use an owned direct proxy on their storage node,
+// including RWX publications. Their direct attachment does not disable remote
+// NFS or set the block-exclusive status.localAttachNode. A local-only adoption
+// cannot be published remotely.
 func (s *ControllerServer) ControllerPublishVolume(
 	ctx context.Context,
 	req *csi.ControllerPublishVolumeRequest,
@@ -2010,91 +2252,165 @@ func (s *ControllerServer) ControllerPublishVolume(
 	nodeID := req.GetNodeId()
 	setPublishTargetAttributes(ctx, volumeID, nodeID)
 
-	requestErr := validatePublishRequest(req)
-	if requestErr != nil {
-		return nil, requestErr
+	publishReq, err := parsePublishVolumeRequest(req)
+	if err != nil {
+		return nil, err
 	}
-
-	// ── Parse the encoded volume ID ───────────────────────────────────────────
-	// CSI spec §4.5.1: a malformed or non-existent volume_id must return
-	// NotFound, not InvalidArgument.  A volume_id that does not match this
-	// driver's encoded format provably cannot identify any volume that this
-	// driver provisioned, so it is treated as "not found" rather than "bad
-	// input" — matching the behavior csi-sanity expects.
-	parts := strings.SplitN(volumeID, "/", volumeIDParts)
-	if len(parts) != volumeIDParts {
-		return nil, status.Errorf(codes.NotFound,
-			"volume %q not found (unknown volume_id format)", volumeID)
-	}
-	targetName := parts[0]
-	protocolTypeStr := parts[1]
-	agentVolID := parts[3]
-
-	mode := req.GetVolumeCapability().GetAccessMode().GetMode()
-	modeErr := validatePublishAccessMode(protocolTypeStr, mode)
-	if modeErr != nil {
-		return nil, modeErr
-	}
-
-	agentProtocolType := mapProtocolType(protocolTypeStr)
-
-	unlock := s.volumeLocks.lock(volumeID)
+	unlock := s.volumeLocks.lock(publishReq.volumeID)
 	defer unlock()
 
-	// ── The volume must exist (CSI: NotFound for an unknown volume) ──────────
-	pvName, pvs, pvErr := s.mustVolumeState(ctx, volumeID)
-	if pvErr != nil {
-		return nil, pvErr
+	target, err := s.resolvePublishTarget(ctx, publishReq, req)
+	if err != nil {
+		return nil, err
 	}
-	capabilityErr := validateStoredPublishCapabilities(pvs, req)
-	if capabilityErr != nil {
-		return nil, capabilityErr
+	publication := v1alpha1.VolumePublication{
+		NodeID:      publishReq.nodeID,
+		InitiatorID: target.initiatorID,
+		AccessMode:  publishReq.mode.String(),
+		Readonly:    req.GetReadonly(),
+		Local:       target.local,
+	}
+	fence, newPublication, err := s.reservePublicationState(
+		ctx, target.pvName, publishReq.volumeID, target.pvs.UID, publication,
+	)
+	if err != nil {
+		return nil, err
 	}
 
+	ctx = withAgentName(ctx, target.targetName)
+	return s.finishPublish(ctx, target.local, target.pvName, target.agentAddr,
+		publishReq.volumeID, target.agentVolID, target.agentProtocolType,
+		publishReq.nodeID, target.initiatorID, target.pvs, fence, target.chap,
+		publication, newPublication)
+}
+
+type publishVolumeRequest struct {
+	volumeID          string
+	nodeID            string
+	targetName        string
+	protocolType      string
+	agentVolID        string
+	mode              csi.VolumeCapability_AccessMode_Mode
+	agentProtocolType agentv1.ProtocolType
+}
+
+func parsePublishVolumeRequest(req *csi.ControllerPublishVolumeRequest) (publishVolumeRequest, error) {
+	err := validatePublishRequest(req)
+	if err != nil {
+		return publishVolumeRequest{}, err
+	}
+	volumeID := req.GetVolumeId()
+	// CSI §4.5.1 treats an unknown encoded ID as NotFound, not InvalidArgument.
+	parts := strings.SplitN(volumeID, "/", volumeIDParts)
+	if len(parts) != volumeIDParts {
+		return publishVolumeRequest{}, status.Errorf(codes.NotFound,
+			"volume %q not found (unknown volume_id format)", volumeID)
+	}
+	mode := req.GetVolumeCapability().GetAccessMode().GetMode()
+	err = validatePublishAccessMode(parts[1], mode)
+	if err != nil {
+		return publishVolumeRequest{}, err
+	}
+	return publishVolumeRequest{
+		volumeID:          volumeID,
+		nodeID:            req.GetNodeId(),
+		targetName:        parts[0],
+		protocolType:      parts[1],
+		agentVolID:        parts[3],
+		mode:              mode,
+		agentProtocolType: mapProtocolType(parts[1]),
+	}, nil
+}
+
+type publishVolumeTarget struct {
+	pvName            string
+	pvs               *v1alpha1.PillarVolumeState
+	targetName        string
+	agentAddr         string
+	agentVolID        string
+	agentProtocolType agentv1.ProtocolType
+	local             bool
+	initiatorID       string
+	chap              *agentv1.IscsiChap
+}
+
+func (s *ControllerServer) resolvePublishTarget(
+	ctx context.Context,
+	publishReq publishVolumeRequest,
+	req *csi.ControllerPublishVolumeRequest,
+) (publishVolumeTarget, error) {
+	pvName, pvs, err := s.mustVolumeState(ctx, publishReq.volumeID)
+	if err != nil {
+		return publishVolumeTarget{}, err
+	}
+	targetName := publishReq.targetName
+	agentVolID := publishReq.agentVolID
+	protocolType := publishReq.protocolType
+	agentProtocolType := publishReq.agentProtocolType
+	if pvs.Spec.FilesystemAdoption != nil {
+		targetName = pvs.Spec.AgentRef
+		agentVolID = pvs.Spec.AgentVolumeID
+		protocolType = pvs.Spec.ProtocolType
+		agentProtocolType = mapProtocolType(pvs.Spec.ProtocolType)
+	}
+	err = validateStoredPublishCapabilities(pvs, req)
+	if err != nil {
+		return publishVolumeTarget{}, err
+	}
 	setClaimAttributes(ctx, pvs.Spec.ClaimRef)
-	err := refuseUnadoptedImport(pvs, volumeID, "publish")
+	err = refuseUnadoptedImport(pvs, publishReq.volumeID, "publish")
 	if err != nil {
-		return nil, err
+		return publishVolumeTarget{}, err
 	}
-	err = refuseRecoveryPending(pvs, volumeID)
+	err = refuseRecoveryPending(pvs, publishReq.volumeID)
 	if err != nil {
-		return nil, err
+		return publishVolumeTarget{}, err
 	}
-
-	// ── Resolve the storage node's PillarAgent ───────────────────────────────
-	agent, agentErr := s.getReadyAgent(ctx, targetName)
-	if agentErr != nil {
-		return nil, agentErr
+	agent, err := s.getReadyAgent(ctx, targetName)
+	if err != nil {
+		return publishVolumeTarget{}, err
 	}
 	agentAddr := agent.Status.ResolvedAddress
-	local := isLocalAttachPublish(pvs, agent, nodeID, mode)
+	local := isLocalAttachPublish(pvs, agent, publishReq.nodeID, publishReq.mode)
+	err = s.validateFilesystemPublish(ctx, pvs, publishReq.mode, local)
+	if err != nil {
+		return publishVolumeTarget{}, err
+	}
 	setAttachAttributes(ctx, local, req.GetReadonly())
-
-	// ── Resolve the grant: initiator identity and CHAP credentials ───────────
-	initiatorID, chap, grantErr := s.resolvePublishGrant(
-		ctx, local, nodeID, protocolTypeStr, extractIP(agentAddr), pvs)
-	if grantErr != nil {
-		return nil, grantErr
+	initiatorID, chap, err := s.resolvePublishGrant(
+		ctx, local, publishReq.nodeID, protocolType, extractIP(agentAddr), pvs)
+	if err != nil {
+		return publishVolumeTarget{}, err
 	}
+	return publishVolumeTarget{
+		pvName:            pvName,
+		pvs:               pvs,
+		targetName:        targetName,
+		agentAddr:         agentAddr,
+		agentVolID:        agentVolID,
+		agentProtocolType: agentProtocolType,
+		local:             local,
+		initiatorID:       initiatorID,
+		chap:              chap,
+	}, nil
+}
 
-	// ── Record the publication before granting access ────────────────────────
-	// The committed token orders the grant: a stale controller whose
-	// reservation was superseded (or whose lifecycle was replaced) is rejected
-	// by the agent even if its AllowInitiator lands late.
-	fence, reserveErr := s.reservePublication(ctx, pvName, volumeID, pvs.UID, v1alpha1.VolumePublication{
-		NodeID:      nodeID,
-		InitiatorID: initiatorID,
-		AccessMode:  mode.String(),
-		Readonly:    req.GetReadonly(),
-		Local:       local,
-	})
-	if reserveErr != nil {
-		return nil, reserveErr
+func (s *ControllerServer) validateFilesystemPublish(
+	ctx context.Context,
+	pvs *v1alpha1.PillarVolumeState,
+	mode csi.VolumeCapability_AccessMode_Mode,
+	local bool,
+) error {
+	if pvs.Spec.FilesystemAdoption == nil {
+		return nil
 	}
-
-	ctx = withAgentName(ctx, targetName)
-	return s.finishPublish(ctx, local, pvName, agentAddr, volumeID, agentVolID, agentProtocolType,
-		nodeID, initiatorID, pvs, fence, chap)
+	if !local && (localOnlyFilesystem(pvs) || !filesystemMultiNodeMode(mode)) {
+		return status.Errorf(
+			codes.FailedPrecondition,
+			"local filesystem volume is accessible only on its storage node",
+		)
+	}
+	return s.revalidateFilesystemImport(ctx, pvs)
 }
 
 func validatePublishRequest(req *csi.ControllerPublishVolumeRequest) error {
@@ -2124,7 +2440,7 @@ func validateStoredPublishCapabilities(
 	if v1alpha1.ProtocolID(pvs.Spec.ProtocolType) != v1alpha1.ProtocolIDNFS {
 		return nil
 	}
-	if pvs.Spec.Resolved != nil && pvs.Spec.Resolved.LocalAttach {
+	if pvs.Spec.FilesystemAdoption == nil && pvs.Spec.Resolved != nil && pvs.Spec.Resolved.LocalAttach {
 		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
 		return status.Error(codes.InvalidArgument, "localAttach is not supported for NFS volumes")
 	}
@@ -2142,7 +2458,9 @@ func validateStoredPublishCapabilities(
 // device path, protocol publishes re-enable the export of a localAttach
 // volume (returning it from a previous local attach when
 // status.localAttachNode is set) and grant the initiator with the volume's
-// CHAP credentials (chap, nil for none).
+// CHAP credentials (chap, nil for none). A failed grant compensates only a
+// publication newly appended by this attempt; an idempotent retry keeps the
+// existing record fail-closed.
 func (s *ControllerServer) finishPublish(
 	ctx context.Context,
 	local bool,
@@ -2152,100 +2470,121 @@ func (s *ControllerServer) finishPublish(
 	pvs *v1alpha1.PillarVolumeState,
 	fence *agentv1.FencingToken,
 	chap *agentv1.IscsiChap,
+	publication v1alpha1.VolumePublication,
+	newPublication bool,
 ) (*csi.ControllerPublishVolumeResponse, error) {
 	if local {
-		return s.finishLocalPublish(ctx, agentAddr, volumeID, agentVolID, protocolType, nodeID, fence)
+		return s.finishLocalPublish(ctx, agentAddr, volumeID, agentVolID, protocolType, nodeID, fence, pvs)
+	}
+	fence, err := s.restorePublishedExport(ctx, pvName, agentAddr, agentVolID, protocolType, pvs, fence)
+	if err != nil {
+		return nil, err
+	}
+	err = s.grantPublishedExport(ctx, agentAddr, agentVolID, protocolType, initiatorID,
+		fence, chap, pvs, pvName, newPublication, publication)
+	if err != nil {
+		return nil, err
 	}
 
-	// ── Return the export of a local attach to the network ─────────────────
-	// Clearing status.localAttachNode changes the desired export state the
-	// resync loop derives (local_attach=false), so the clear commits a new
-	// fencing generation and the unfence is issued twice:
-	//
-	//   1. at the reservation's generation, as a gate: the agent refuses
-	//      (FailedPrecondition) while the storage node still holds the backend
-	//      device, so the CO retries until the direct attach is really gone
-	//      and the reservation is kept meanwhile (fail-closed);
-	//   2. at the clear's generation, so the agent's applied fence advances
-	//      past every generation at which status.localAttachNode was set — a
-	//      resync desired-state built from a stale snapshot can no longer be
-	//      admitted and re-disable the namespace, and if one slipped in
-	//      between the two calls this re-enables it — and so the grant below
-	//      is ordered after the export's return to the network.
-	//
-	// A retry that already finds status.localAttachNode empty (a previous
-	// attempt committed the clear and then failed) still re-enables at its
-	// own reservation, which is newer than every generation that recorded
-	// the field: a stale resync admitted just before the failed attempt's
-	// re-fence may have left the namespace disabled, and skipping the call
-	// would grant — or, for an ACL-off export, succeed without any agent RPC
-	// at all — while the export still refuses the initiator.  An empty field
-	// cannot be told apart from "never attached locally" here, so every
-	// protocol publish of a localAttach volume re-enables at least once; the
-	// agent answers a no-op success when the export is already enabled.
-	if prevLocal := pvs.Status.LocalAttachNode; prevLocal != "" {
-		_, unfenceErr := s.setLocalAttach(ctx, agentAddr, agentVolID, protocolType, false, fence)
-		if unfenceErr != nil {
-			return nil, unfenceErr
-		}
-		fence, unfenceErr = s.clearLocalAttachNode(ctx, pvName, pvs.UID, prevLocal)
-		if unfenceErr != nil {
-			return nil, unfenceErr
-		}
-		_, unfenceErr = s.setLocalAttach(ctx, agentAddr, agentVolID, protocolType, false, fence)
-		if unfenceErr != nil {
-			return nil, unfenceErr
-		}
-	} else if r := pvs.Spec.Resolved; r != nil && r.LocalAttach {
-		_, unfenceErr := s.setLocalAttach(ctx, agentAddr, agentVolID, protocolType, false, fence)
-		if unfenceErr != nil {
-			return nil, unfenceErr
-		}
-	}
-
-	// An export with ACL off (attr_allow_any_host=1) has no per-host ACL: the
-	// kernel rejects allowed_hosts links with EINVAL.  The publication record
-	// above still orders exclusivity; only the grant RPC is skipped (the
-	// unfence above is independent of the ACL).
-	if exportACLEnabled(pvs) {
-		grantErr := s.grantPublication(ctx, agentAddr, agentVolID, protocolType, initiatorID, fence,
-			grantExportParams(protocolType, pvs.Status.ExportSpec, chap))
-		if grantErr != nil {
-			return nil, grantErr
-		}
-	}
-
-	// ── Advance state machine to ControllerPublished ─────────────────────────
-	// The durable publication record above is authoritative for exclusivity;
-	// the in-memory state machine only mirrors that at least one node is
-	// published.  ForceState is used because CreateVolume may have run in a
-	// previous controller process.
+	// Durable records order exclusivity; the state machine only mirrors that
+	// at least one node is published, including across controller restarts.
 	s.sm.ForceState(volumeID, StateControllerPublished)
-
-	// PublishContext is forwarded to NodeStageVolume.  No additional keys are
-	// required here; the volume connection parameters are already stored in
-	// the PersistentVolume's VolumeContext by CreateVolume.
-	return &csi.ControllerPublishVolumeResponse{
-		PublishContext: map[string]string{},
-	}, nil
+	publishContext := map[string]string{}
+	err = addFilesystemPublishContext(pvs, publishContext, "", agentAddr)
+	if err != nil {
+		return nil, err
+	}
+	return &csi.ControllerPublishVolumeResponse{PublishContext: publishContext}, nil
 }
 
-// isLocalAttachPublish reports whether publishing the volume to nodeID with
-// mode is a local attach: the volume resolved localAttach, the agent is an
-// in-cluster agent whose spec.nodeRef names nodeID, and the access mode is a
-// SINGLE_NODE_* mode (a multi-node mode always uses the protocol, which is
-// what other nodes need).
+// restorePublishedExport gates the return from local attach at the reserved
+// fence, clears the durable local node under a newer generation, then re-enables
+// at that new fence before granting. Even an already-cleared localAttach record
+// is re-enabled at its reservation so a delayed stale resync cannot leave the
+// export disabled under a successful protocol publish.
+func (s *ControllerServer) restorePublishedExport(
+	ctx context.Context,
+	pvName, agentAddr, agentVolID string,
+	protocolType agentv1.ProtocolType,
+	pvs *v1alpha1.PillarVolumeState,
+	fence *agentv1.FencingToken,
+) (*agentv1.FencingToken, error) {
+	if prevLocal := pvs.Status.LocalAttachNode; prevLocal != "" {
+		_, err := s.setLocalAttach(ctx, agentAddr, agentVolID, protocolType, false, fence, pvs)
+		if err != nil {
+			return nil, err
+		}
+		fence, err = s.clearLocalAttachNode(ctx, pvName, pvs.UID, prevLocal)
+		if err != nil {
+			return nil, err
+		}
+		_, err = s.setLocalAttach(ctx, agentAddr, agentVolID, protocolType, false, fence, pvs)
+		if err != nil {
+			return nil, err
+		}
+		return fence, nil
+	}
+	if r := pvs.Spec.Resolved; pvs.Spec.FilesystemAdoption == nil && r != nil && r.LocalAttach {
+		_, err := s.setLocalAttach(ctx, agentAddr, agentVolID, protocolType, false, fence, pvs)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return fence, nil
+}
+
+// grantPublishedExport skips block ACL-off grants but keeps the filesystem
+// identity/quota check. A failed new filesystem grant is fenced and denied before
+// its record can be removed; retries and failed compensation stay fail-closed.
+func (s *ControllerServer) grantPublishedExport(
+	ctx context.Context,
+	agentAddr, agentVolID string,
+	protocolType agentv1.ProtocolType,
+	initiatorID string,
+	fence *agentv1.FencingToken,
+	chap *agentv1.IscsiChap,
+	pvs *v1alpha1.PillarVolumeState,
+	pvName string,
+	newPublication bool,
+	publication v1alpha1.VolumePublication,
+) error {
+	if !exportACLEnabled(pvs) && pvs.Spec.FilesystemAdoption == nil {
+		return nil
+	}
+	grantErr := s.grantPublication(ctx, agentAddr, agentVolID, protocolType, initiatorID,
+		fence, grantExportParams(protocolType, pvs.Status.ExportSpec, chap), pvs)
+	if grantErr == nil {
+		return nil
+	}
+	if newPublication && pvs.Spec.FilesystemAdoption != nil {
+		rollbackErr := s.rollbackNewPublication(
+			ctx, agentAddr, agentVolID, protocolType, pvName, pvs.UID, publication, pvs,
+		)
+		if rollbackErr != nil {
+			logf.FromContext(ctx).Error(rollbackErr, "Failed to roll back new publication",
+				"volume", agentVolID, "node", publication.NodeID)
+		}
+	}
+	return grantErr
+}
+
+// isLocalAttachPublish selects a direct attachment on a real storage NodeRef.
+// Filesystems qualify regardless of access mode; blocks retain their explicit
+// localAttach and SINGLE_NODE requirements.
 func isLocalAttachPublish(
 	pvs *v1alpha1.PillarVolumeState,
 	agent *v1alpha1.PillarAgent,
 	nodeID string,
 	mode csi.VolumeCapability_AccessMode_Mode,
 ) bool {
-	if pvs.Spec.Resolved == nil || !pvs.Spec.Resolved.LocalAttach {
+	if pvs.Spec.FilesystemAdoption == nil && (pvs.Spec.Resolved == nil || !pvs.Spec.Resolved.LocalAttach) {
 		return false
 	}
 	if agent.Spec.External != nil || agent.Spec.NodeRef == nil || agent.Spec.NodeRef.Name != nodeID {
 		return false
+	}
+	if pvs.Spec.FilesystemAdoption != nil {
+		return true
 	}
 	switch mode {
 	case csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
@@ -2258,19 +2597,18 @@ func isLocalAttachPublish(
 	}
 }
 
-// finishLocalPublish completes a local-attach publish whose publication
-// (and status.localAttachNode) is already recorded under fence: the agent
-// fences the network export and reports the backend device, which the
-// PublishContext hands to NodeStageVolume.  Retrying is idempotent: the agent
-// call is idempotent and returns the same device path.
+// finishLocalPublish applies the fenced direct attachment and returns its real
+// path. Blocks fence the network export; filesystems mount an owned proxy without
+// changing the source or disabling simultaneous NFS access.
 func (s *ControllerServer) finishLocalPublish(
 	ctx context.Context,
 	agentAddr, volumeID, agentVolID string,
 	protocolType agentv1.ProtocolType,
 	nodeID string,
 	fence *agentv1.FencingToken,
+	recorded *v1alpha1.PillarVolumeState,
 ) (*csi.ControllerPublishVolumeResponse, error) {
-	devicePath, err := s.setLocalAttach(ctx, agentAddr, agentVolID, protocolType, true, fence)
+	devicePath, err := s.setLocalAttach(ctx, agentAddr, agentVolID, protocolType, true, fence, recorded)
 	if err != nil {
 		return nil, err
 	}
@@ -2279,13 +2617,19 @@ func (s *ControllerServer) finishLocalPublish(
 			"agent SetLocalAttach(%q, local=true) returned no device path", agentVolID)
 	}
 	s.sm.ForceState(volumeID, StateControllerPublished)
-	return &csi.ControllerPublishVolumeResponse{
-		PublishContext: map[string]string{
-			PublishContextKeyAttachMode:      AttachModeLocal,
-			PublishContextKeyLocalNode:       nodeID,
-			PublishContextKeyLocalDevicePath: devicePath,
-		},
-	}, nil
+	publishContext := map[string]string{
+		PublishContextKeyAttachMode:      AttachModeLocal,
+		PublishContextKeyLocalNode:       nodeID,
+		PublishContextKeyLocalDevicePath: devicePath,
+	}
+	if recordedFilesystemAdoption(recorded) != nil {
+		publishContext[PublishContextKeyFilesystemLocalNode] = nodeID
+	}
+	err = addFilesystemPublishContext(recorded, publishContext, devicePath, agentAddr)
+	if err != nil {
+		return nil, err
+	}
+	return &csi.ControllerPublishVolumeResponse{PublishContext: publishContext}, nil
 }
 
 // setLocalAttach asks the agent to fence (local=true) or re-enable
@@ -2299,25 +2643,45 @@ func (s *ControllerServer) setLocalAttach(
 	protocolType agentv1.ProtocolType,
 	local bool,
 	fence *agentv1.FencingToken,
+	recorded *v1alpha1.PillarVolumeState,
 ) (string, error) {
 	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
 	if err != nil {
 		return "", status.Errorf(codes.Unavailable,
 			"failed to dial agent at %q: %v", agentAddr, err)
 	}
-	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
+	defer closeAgentConnection(ctx, closer)
 
+	var adoptionProto *agentv1.FilesystemAdoption
+	if adoption := recordedFilesystemAdoption(recorded); adoption != nil {
+		var adoptionProtoErr error
+		adoptionProto, adoptionProtoErr = filesystemAdoptionProto(adoption)
+		if adoptionProtoErr != nil {
+			return "", invalidFilesystemDescriptor(adoptionProtoErr)
+		}
+	}
 	resp, err := agentClient.SetLocalAttach(ctx, &agentv1.SetLocalAttachRequest{
-		VolumeId:     agentVolID,
-		ProtocolType: protocolType,
-		Local:        local,
-		Fence:        fence,
+		VolumeId:           agentVolID,
+		ProtocolType:       protocolType,
+		Local:              local,
+		Fence:              fence,
+		FilesystemAdoption: adoptionProto,
+		CapacityBytes:      recordedFilesystemCapacity(recorded),
+		BackendParams:      recordedBackendParams(recorded),
 	})
 	if err != nil {
 		return "", status.Errorf(status.Code(err),
 			"agent SetLocalAttach(%q, local=%t) failed: %v", agentVolID, local, err)
 	}
 	return resp.GetDevicePath(), nil
+}
+
+// closeAgentConnection keeps transport cleanup best-effort without hiding errors.
+func closeAgentConnection(ctx context.Context, closer io.Closer) {
+	closeErr := closer.Close()
+	if closeErr != nil {
+		logf.FromContext(ctx).Error(closeErr, "Failed to close agent connection")
+	}
 }
 
 // exportACLEnabled reports whether the volume's export enforces a per-host
@@ -2353,20 +2717,32 @@ func (s *ControllerServer) grantPublication(
 	initiatorID string,
 	fence *agentv1.FencingToken,
 	exportParams *agentv1.ExportParams,
+	recorded *v1alpha1.PillarVolumeState,
 ) error {
 	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
 	if err != nil {
 		return status.Errorf(codes.Unavailable,
 			"failed to dial agent at %q: %v", agentAddr, err)
 	}
-	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
+	defer closeAgentConnection(ctx, closer)
 
+	var adoptionProto *agentv1.FilesystemAdoption
+	if adoption := recordedFilesystemAdoption(recorded); adoption != nil {
+		var adoptionProtoErr error
+		adoptionProto, adoptionProtoErr = filesystemAdoptionProto(adoption)
+		if adoptionProtoErr != nil {
+			return invalidFilesystemDescriptor(adoptionProtoErr)
+		}
+	}
 	allowResp, allowErr := agentClient.AllowInitiator(ctx, &agentv1.AllowInitiatorRequest{
-		VolumeId:     agentVolID,
-		ProtocolType: agentProtocolType,
-		InitiatorId:  initiatorID,
-		Fence:        fence,
-		ExportParams: exportParams,
+		VolumeId:           agentVolID,
+		ProtocolType:       agentProtocolType,
+		InitiatorId:        initiatorID,
+		Fence:              fence,
+		ExportParams:       exportParams,
+		FilesystemAdoption: adoptionProto,
+		CapacityBytes:      recordedFilesystemCapacity(recorded),
+		BackendParams:      recordedBackendParams(recorded),
 	})
 	_ = allowResp
 	if allowErr != nil {
@@ -2376,6 +2752,55 @@ func (s *ControllerServer) grantPublication(
 			agentVolID, initiatorID, allowErr)
 	}
 	return nil
+}
+
+// rollbackNewPublication fences a failed new grant before issuing an
+// idempotent deny. The newer token orders the deny after an AllowInitiator
+// whose response was lost or whose side effects were only partially applied.
+// The publication is removed only when the expected record was fenced and the
+// deny succeeded; otherwise it remains revoking for a fail-closed retry.
+func (s *ControllerServer) rollbackNewPublication(
+	ctx context.Context,
+	agentAddr, agentVolID string,
+	protocolType agentv1.ProtocolType,
+	pvName string,
+	uid types.UID,
+	publication v1alpha1.VolumePublication,
+	recorded *v1alpha1.PillarVolumeState,
+) error {
+	fence, found, err := s.fencePublication(ctx, pvName, uid, publication)
+	if err != nil {
+		return err
+	}
+	if !found {
+		// A completed revoke may have removed the expected record while the
+		// failed publish was waiting. Its newer fence already orders out the
+		// failed grant; do not deny by initiator alone, since that initiator may
+		// belong to a later publication on the same node.
+		return nil
+	}
+	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
+	if err != nil {
+		return status.Errorf(codes.Unavailable,
+			"failed to dial agent at %q for publication rollback: %v", agentAddr, err)
+	}
+	defer closeAgentConnection(ctx, closer)
+
+	var adoptionProto *agentv1.FilesystemAdoption
+	if adoption := recordedFilesystemAdoption(recorded); adoption != nil {
+		adoptionProto, err = filesystemAdoptionProto(adoption)
+		if err != nil {
+			return invalidFilesystemDescriptor(err)
+		}
+	}
+	err = denyPublication(
+		ctx, agentClient, agentVolID, protocolType, fence, adoptionProto, publication,
+	)
+	if err != nil {
+		return err
+	}
+	_, err = s.releasePublication(ctx, pvName, uid, []string{publication.NodeID}, fence)
+	return err
 }
 
 // grantExportParams returns the AllowInitiator export parameters for a grant
@@ -2504,92 +2929,126 @@ func (s *ControllerServer) ControllerUnpublishVolume(
 		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
 		return nil, status.Error(codes.InvalidArgument, "volume_id is required")
 	}
-
-	// ── Parse the encoded volume ID ───────────────────────────────────────────
 	parts := strings.SplitN(volumeID, "/", volumeIDParts)
 	if len(parts) != volumeIDParts {
-		// Unknown volume ID format; treat as already unpublished.
 		return &csi.ControllerUnpublishVolumeResponse{}, nil
 	}
-	targetName, protocolTypeStr, agentVolID := parts[0], parts[1], parts[3]
-
-	agentProtocolType := mapProtocolType(protocolTypeStr)
+	targetName := parts[0]
 	ctx = withAgentName(ctx, targetName)
-
 	unlock := s.volumeLocks.lock(volumeID)
 	defer unlock()
 
-	// ── Select the publications to revoke ────────────────────────────────────
-	pvName, nameErr := s.volumeStateNameForID(ctx, volumeID)
-	if nameErr != nil {
-		return nil, nameErr
+	selection, err := s.selectUnpublishPublications(
+		ctx, volumeID, nodeID, targetName, parts[1], parts[3],
+	)
+	if err != nil {
+		return nil, err
+	}
+	if selection.pvs == nil {
+		return &csi.ControllerUnpublishVolumeResponse{}, nil
+	}
+	ctx = withAgentName(ctx, selection.targetName)
+
+	// ACL-off block exports have no per-host ACL to revoke. Files still require
+	// fenced cleanup, including detaching their owned direct proxy.
+	var agentClient agentv1.AgentServiceClient
+	var agentCloser io.Closer
+	if selection.acl || selection.pvs.Spec.FilesystemAdoption != nil {
+		agentClient, agentCloser, err = s.dialUnpublishAgent(ctx, selection.targetName, volumeID)
+		if err != nil {
+			return nil, err
+		}
+		defer closeAgentConnection(ctx, agentCloser)
+	}
+
+	remaining, err := s.revokePublications(ctx, agentClient, selection.agentVolID,
+		selection.agentProtocolType, selection.pvName, selection.pvs.UID, nodeID,
+		selection.acl, selection.pvs)
+	if err != nil {
+		return nil, err
+	}
+	s.syncUnpublishedState(volumeID, remaining)
+	return &csi.ControllerUnpublishVolumeResponse{}, nil
+}
+
+type unpublishSelection struct {
+	pvName            string
+	pvs               *v1alpha1.PillarVolumeState
+	targetName        string
+	agentVolID        string
+	agentProtocolType agentv1.ProtocolType
+	acl               bool
+}
+
+func (s *ControllerServer) selectUnpublishPublications(
+	ctx context.Context,
+	volumeID, nodeID, targetName, protocolTypeStr, agentVolID string,
+) (unpublishSelection, error) {
+	pvName, err := s.volumeStateNameForID(ctx, volumeID)
+	if err != nil {
+		return unpublishSelection{}, err
 	}
 	if pvName == "" {
-		// No PillarVolumeState owns this backend volume: the driver never
-		// issued the ID, and unpublishing an unknown volume is a no-op.
-		return &csi.ControllerUnpublishVolumeResponse{}, nil
+		return unpublishSelection{}, nil
 	}
-	existingPV, pvExists, pvErr := s.readVolumeState(ctx, pvName)
-	if pvErr != nil {
-		return nil, status.Errorf(codes.Internal, "%v", pvErr)
+	existingPV, pvExists, err := s.readVolumeState(ctx, pvName)
+	if err != nil {
+		return unpublishSelection{}, status.Errorf(codes.Internal, "%v", err)
 	}
-	if !pvExists {
-		// The volume does not exist; no access can have been granted.
-		return &csi.ControllerUnpublishVolumeResponse{}, nil
+	if !pvExists || (existingPV.Spec.VolumeID != "" && existingPV.Spec.VolumeID != volumeID) {
+		return unpublishSelection{}, nil
+	}
+	err = s.validateVolumeDriver(existingPV)
+	if err != nil {
+		return unpublishSelection{}, err
+	}
+	agentProtocolType := mapProtocolType(protocolTypeStr)
+	if existingPV.Spec.FilesystemAdoption != nil {
+		targetName = existingPV.Spec.AgentRef
+		agentProtocolType = mapProtocolType(existingPV.Spec.ProtocolType)
+		agentVolID = existingPV.Spec.AgentVolumeID
+		ctx = withAgentName(ctx, targetName)
 	}
 	setClaimAttributes(ctx, existingPV.Spec.ClaimRef)
 	if !hasPublicationFor(existingPV.Status.PublishedNodes, nodeID) {
-		return &csi.ControllerUnpublishVolumeResponse{}, nil
+		return unpublishSelection{}, nil
 	}
+	return unpublishSelection{
+		pvName:            pvName,
+		pvs:               existingPV,
+		targetName:        targetName,
+		agentVolID:        agentVolID,
+		agentProtocolType: agentProtocolType,
+		acl:               exportACLEnabled(existingPV),
+	}, nil
+}
 
-	// An export with ACL off (attr_allow_any_host=1) has no per-host ACL to
-	// revoke — and the kernel rejects allowed_hosts changes with EINVAL —
-	// so the records are dropped without contacting the agent.
-	acl := exportACLEnabled(existingPV)
-	var agentClient agentv1.AgentServiceClient
-	if acl {
-		// ── Resolve the agent address from PillarAgent ───────────────────────
-		target := &v1alpha1.PillarAgent{}
-		getTargetErrCUV := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
-		if getTargetErrCUV != nil {
-			if !k8serrors.IsNotFound(getTargetErrCUV) {
-				return nil, status.Errorf(codes.Internal,
-					"failed to get PillarAgent %q: %v", targetName, getTargetErrCUV)
-			}
-			// A missing PillarAgent object does not prove the node's ACL entries
-			// are gone; dropping the records would let another node be granted
-			// while the old grant may still exist.  Keep them and fail closed.
-			return nil, status.Errorf(codes.FailedPrecondition,
-				"PillarAgent %q not found; cannot revoke volume %q on its storage node",
-				targetName, volumeID)
+func (s *ControllerServer) dialUnpublishAgent(
+	ctx context.Context,
+	targetName, volumeID string,
+) (agentv1.AgentServiceClient, io.Closer, error) {
+	target := &v1alpha1.PillarAgent{}
+	err := s.k8sClient.Get(ctx, types.NamespacedName{Name: targetName}, target)
+	if err != nil {
+		if !k8serrors.IsNotFound(err) {
+			return nil, nil, status.Errorf(codes.Internal,
+				"failed to get PillarAgent %q: %v", targetName, err)
 		}
-
-		agentAddr := target.Status.ResolvedAddress
-		if agentAddr == "" {
-			// Transient; CO will retry.
-			return nil, status.Errorf(codes.Unavailable,
-				"PillarAgent %q has no resolved address", targetName)
-		}
-
-		// ── Dial the agent ────────────────────────────────────────────────────
-		dialed, closer, err := s.dialAgent(ctx, agentAddr)
-		if err != nil {
-			return nil, status.Errorf(codes.Unavailable,
-				"failed to dial agent at %q: %v", agentAddr, err)
-		}
-		defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
-		agentClient = dialed
+		return nil, nil, status.Errorf(codes.FailedPrecondition,
+			"PillarAgent %q not found; cannot revoke volume %q on its storage node",
+			targetName, volumeID)
 	}
-
-	// ── Revoke initiator access (idempotent), then drop the records ──────────
-	remaining, revokeErr := s.revokePublications(ctx, agentClient, agentVolID,
-		agentProtocolType, pvName, existingPV.UID, nodeID, acl)
-	if revokeErr != nil {
-		return nil, revokeErr
+	agentAddr := target.Status.ResolvedAddress
+	if agentAddr == "" {
+		return nil, nil, status.Errorf(codes.Unavailable,
+			"PillarAgent %q has no resolved address", targetName)
 	}
-
-	s.syncUnpublishedState(volumeID, remaining)
-	return &csi.ControllerUnpublishVolumeResponse{}, nil
+	dialed, closer, err := s.dialAgent(ctx, agentAddr)
+	if err != nil {
+		return nil, nil, status.Errorf(codes.Unavailable,
+			"failed to dial agent at %q: %v", agentAddr, err)
+	}
+	return dialed, closer, nil
 }
 
 // hasPublicationFor reports whether ControllerUnpublishVolume has anything to
@@ -2628,35 +3087,110 @@ func (s *ControllerServer) revokePublications(
 	uid types.UID,
 	nodeID string,
 	acl bool,
+	recorded *v1alpha1.PillarVolumeState,
 ) (remaining int, err error) {
 	fence, revoke, err := s.fencePublications(ctx, pvName, uid, nodeID)
 	if err != nil {
 		return 0, err
 	}
+	var adoptionProto *agentv1.FilesystemAdoption
+	if adoption := recordedFilesystemAdoption(recorded); adoption != nil {
+		var adoptionProtoErr error
+		adoptionProto, adoptionProtoErr = filesystemAdoptionProto(adoption)
+		if adoptionProtoErr != nil {
+			return 0, invalidFilesystemDescriptor(adoptionProtoErr)
+		}
+	}
 	revokedNodes := make([]string, 0, len(revoke))
 	for _, pub := range revoke {
-		if !acl || pub.Local {
+		if pub.Local || (!acl && recordedFilesystemAdoption(recorded) == nil) {
 			revokedNodes = append(revokedNodes, pub.NodeID)
 			continue
 		}
-		_, denyErr := agentClient.DenyInitiator(ctx, &agentv1.DenyInitiatorRequest{
-			VolumeId:     agentVolID,
-			ProtocolType: protocolType,
-			InitiatorId:  pub.InitiatorID,
-			Fence:        fence,
-		})
-		// NotFound → ACL entry already absent; success.
-		denyCode := status.Code(denyErr)
-		if denyErr != nil && denyCode != codes.NotFound {
-			return 0, status.Errorf(denyCode,
-				"agent DenyInitiator(%q, node=%q, initiator=%q) failed: %v",
-				agentVolID, pub.NodeID, pub.InitiatorID, denyErr)
+		err = denyPublication(ctx, agentClient, agentVolID, protocolType, fence, adoptionProto, pub)
+		if err != nil {
+			return 0, err
 		}
 		revokedNodes = append(revokedNodes, pub.NodeID)
+	}
+	if adoption := recordedFilesystemAdoption(recorded); adoption != nil &&
+		slices.ContainsFunc(revoke, func(pub v1alpha1.VolumePublication) bool { return pub.Local }) {
+		err = s.detachFilesystemPublication(
+			ctx, agentClient, agentVolID, protocolType, pvName, uid, fence, adoptionProto,
+		)
+		if err != nil {
+			return 0, err
+		}
 	}
 	// With nothing selected, releasePublication commits nothing and only
 	// reports the current count.
 	return s.releasePublication(ctx, pvName, uid, revokedNodes, fence)
+}
+
+func denyPublication(
+	ctx context.Context,
+	agentClient agentv1.AgentServiceClient,
+	agentVolID string,
+	protocolType agentv1.ProtocolType,
+	fence *agentv1.FencingToken,
+	adoption *agentv1.FilesystemAdoption,
+	pub v1alpha1.VolumePublication,
+) error {
+	_, denyErr := agentClient.DenyInitiator(ctx, &agentv1.DenyInitiatorRequest{
+		VolumeId:           agentVolID,
+		ProtocolType:       protocolType,
+		InitiatorId:        pub.InitiatorID,
+		Fence:              fence,
+		FilesystemAdoption: adoption,
+	})
+	denyCode := status.Code(denyErr)
+	if denyErr != nil && denyCode != codes.NotFound {
+		return status.Errorf(denyCode,
+			"agent DenyInitiator(%q, node=%q, initiator=%q) failed: %v",
+			agentVolID, pub.NodeID, pub.InitiatorID, denyErr)
+	}
+	return nil
+}
+
+func (s *ControllerServer) detachFilesystemPublication(
+	ctx context.Context,
+	agentClient agentv1.AgentServiceClient,
+	agentVolID string,
+	protocolType agentv1.ProtocolType,
+	pvName string,
+	uid types.UID,
+	fence *agentv1.FencingToken,
+	adoption *agentv1.FilesystemAdoption,
+) error {
+	current, exists, readErr := s.readVolumeState(ctx, pvName)
+	if readErr != nil {
+		return status.Errorf(codes.Internal, "read file publications: %v", readErr)
+	}
+	if !exists || current.UID != uid {
+		return status.Errorf(codes.Aborted, "file publications changed during unpublish; retry")
+	}
+	currentFence, tokenErr := fenceToken(current)
+	if tokenErr != nil {
+		return tokenErr
+	}
+	if currentFence.GetGeneration() != fence.GetGeneration() {
+		return status.Errorf(codes.Aborted, "file publications changed during unpublish; retry")
+	}
+	if slices.ContainsFunc(current.Status.PublishedNodes, func(pub v1alpha1.VolumePublication) bool {
+		return pub.Local && !pub.Revoking
+	}) {
+		return nil
+	}
+	_, detachErr := agentClient.SetLocalAttach(ctx, &agentv1.SetLocalAttachRequest{
+		VolumeId: agentVolID, ProtocolType: protocolType, Local: false, Fence: fence,
+		FilesystemAdoption: adoption,
+		CapacityBytes:      current.Spec.CapacityBytes,
+		BackendParams:      backendParamsFromResolved(current.Spec.Resolved.Backend),
+	})
+	if detachErr != nil {
+		return status.Errorf(status.Code(detachErr), "detach local filesystem proxy: %v", detachErr)
+	}
+	return nil
 }
 
 // syncUnpublishedState reverts the in-memory state machine to Created once no
@@ -2681,10 +3215,9 @@ func (s *ControllerServer) syncUnpublishedState(volumeID string, remaining int) 
 // ControllerExpandVolume resizes a volume on the storage backend by delegating
 // to agent.ExpandVolume.
 //
-// The method returns the actual capacity after expansion.  Every served
-// protocol is a block protocol, so node_expansion_required is always true:
-// the CO subsequently calls NodeExpandVolume to rescan the block device and
-// resize the filesystem.
+// Adopted filesystem quotas are read-only and expansion is refused before any
+// mutation. Provisioned block volumes require a node rescan/filesystem resize;
+// legacy provisioned NFS datasets expose their expanded quota directly.
 //
 // Idempotency: ExpandVolume on the agent is idempotent — calling it with a
 // requested_bytes ≤ current size is a no-op and returns the current size.
@@ -2692,136 +3225,141 @@ func (s *ControllerServer) ControllerExpandVolume(
 	ctx context.Context,
 	req *csi.ControllerExpandVolumeRequest,
 ) (*csi.ControllerExpandVolumeResponse, error) {
+	expandReq, err := s.prepareExpandVolume(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return s.expandBackend(ctx, expandReq, expandReq.pvName, expandReq.pvs)
+}
+
+type expandVolumeRequest struct {
+	volumeID         string
+	requiredBytes    int64
+	targetName       string
+	protocolType     string
+	agentVolID       string
+	agentBackendType agentv1.BackendType
+	pvName           string
+	pvs              *v1alpha1.PillarVolumeState
+}
+
+func (s *ControllerServer) prepareExpandVolume(
+	ctx context.Context,
+	req *csi.ControllerExpandVolumeRequest,
+) (expandVolumeRequest, error) {
 	volumeID := req.GetVolumeId()
 	telemetry.SetVolumeAttributes(ctx, volumeID)
 	if volumeID == "" {
 		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
-		return nil, status.Error(codes.InvalidArgument, "volume_id is required")
+		return expandVolumeRequest{}, status.Error(codes.InvalidArgument, "volume_id is required")
 	}
 	if req.GetCapacityRange() == nil {
 		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
-		return nil, status.Error(codes.InvalidArgument, "capacity_range is required")
+		return expandVolumeRequest{}, status.Error(codes.InvalidArgument, "capacity_range is required")
 	}
 	requiredBytes := req.GetCapacityRange().GetRequiredBytes()
 	setSpanAttributes(ctx, telemetry.KeyCapacityRequestedBytes.Int64(requiredBytes))
 	if requiredBytes < 0 {
 		//nolint:wrapcheck // gRPC status errors must not be double-wrapped
-		return nil, status.Error(codes.InvalidArgument,
-			"capacity_range.required_bytes must not be negative")
+		return expandVolumeRequest{},
+			status.Error(codes.InvalidArgument, "capacity_range.required_bytes must not be negative")
 	}
-
-	// ── Parse the encoded volume ID ───────────────────────────────────────────
 	parts := strings.SplitN(volumeID, "/", volumeIDParts)
 	if len(parts) != volumeIDParts {
-		return nil, status.Errorf(codes.InvalidArgument,
+		return expandVolumeRequest{}, status.Errorf(codes.InvalidArgument,
 			"malformed volume_id %q: expected format <target>/<protocol>/<backend>/<vol-id>",
 			volumeID)
 	}
-	targetName := parts[0]
-	protocolTypeStr := parts[1]
-	backendTypeStr := parts[2]
-	agentVolID := parts[3]
-	agentBackendType := mapBackendType(backendTypeStr)
+	pvName, pvs, err := s.mustVolumeState(ctx, volumeID)
+	if err != nil {
+		return expandVolumeRequest{}, err
+	}
+	if pvs.Spec.FilesystemAdoption != nil {
+		return expandVolumeRequest{}, status.Errorf(
+			codes.FailedPrecondition,
+			"adopted filesystem quota is read-only; expansion is not supported",
+		)
+	}
+	return expandVolumeRequest{
+		volumeID:         volumeID,
+		requiredBytes:    requiredBytes,
+		targetName:       parts[0],
+		protocolType:     parts[1],
+		agentVolID:       parts[3],
+		agentBackendType: mapBackendType(parts[2]),
+		pvName:           pvName,
+		pvs:              pvs,
+	}, nil
+}
 
+func (s *ControllerServer) expandBackend(
+	ctx context.Context,
+	expandReq expandVolumeRequest,
+	pvName string,
+	pvs *v1alpha1.PillarVolumeState,
+) (*csi.ControllerExpandVolumeResponse, error) {
 	// ── Refuse a preserving adoption or pending recovery before any agent
 	// dial or token ──────────────────────────────────────────────────────────
-	err := s.refuseEarlyExpand(ctx, volumeID)
+	err := refuseEarlyExpand(pvs, expandReq.volumeID)
 	if err != nil {
 		return nil, err
 	}
-
-	// ── Resolve the agent address from PillarAgent ───────────────────────────
-	target, getTargetErr := s.getReadyAgent(ctx, targetName)
-	if getTargetErr != nil {
-		return nil, getTargetErr
+	target, err := s.getReadyAgent(ctx, expandReq.targetName)
+	if err != nil {
+		return nil, err
 	}
 	agentAddr := target.Status.ResolvedAddress
-
-	// ── Dial the agent ────────────────────────────────────────────────────────
-	ctx = withAgentName(ctx, targetName)
+	ctx = withAgentName(ctx, expandReq.targetName)
 	agentClient, closer, err := s.dialAgent(ctx, agentAddr)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable,
 			"failed to dial agent at %q: %v", agentAddr, err)
 	}
-	defer closer.Close() //nolint:errcheck // best-effort close; dial errors already handled
-
-	// ── Expand the backend storage resource ───────────────────────────────────
-	fence, err := s.expandFence(ctx, volumeID)
+	defer closeAgentConnection(ctx, closer)
+	// The request carries the lifecycle's current token: an expand of a
+	// deleted, deleting, or re-created volume is refused here or by the agent.
+	err = refuseUnadoptedImport(pvs, expandReq.volumeID, "expand")
 	if err != nil {
 		return nil, err
 	}
-	expandResp, expandErr := agentClient.ExpandVolume(ctx, &agentv1.ExpandVolumeRequest{
-		VolumeId:       agentVolID,
-		RequestedBytes: requiredBytes,
-		BackendType:    agentBackendType,
+	fence, err := s.currentToken(ctx, pvName, expandReq.volumeID)
+	if err != nil {
+		return nil, err
+	}
+	expandResp, err := agentClient.ExpandVolume(ctx, &agentv1.ExpandVolumeRequest{
+		VolumeId:       expandReq.agentVolID,
+		RequestedBytes: expandReq.requiredBytes,
+		BackendType:    expandReq.agentBackendType,
 		Fence:          fence,
 	})
-	if expandErr != nil {
-		grpcSt, _ := status.FromError(expandErr)
+	if err != nil {
+		grpcSt, _ := status.FromError(err)
 		return nil, status.Errorf(grpcSt.Code(),
-			"agent ExpandVolume(%q) failed: %v", agentVolID, expandErr)
+			"agent ExpandVolume(%q) failed: %v", expandReq.agentVolID, err)
 	}
-
 	actualBytes := expandResp.GetCapacityBytes()
 	if actualBytes == 0 {
-		// Agent did not report the new size; fall back to the requested value
-		// so the CO can update the PVC status correctly.
-		actualBytes = requiredBytes
+		// Preserve the requested capacity when an older agent omits its size.
+		actualBytes = expandReq.requiredBytes
 	}
 	setSpanAttributes(ctx, telemetry.KeyCapacityAllocatedBytes.Int64(actualBytes))
-
-	// NFS expansion changes the server-side dataset quota; clients observe the
-	// new capacity through statfs and do not require a block-device rescan.
+	// NFS clients observe the expanded quota through statfs without a rescan.
 	return &csi.ControllerExpandVolumeResponse{
 		CapacityBytes:         actualBytes,
-		NodeExpansionRequired: v1alpha1.ProtocolID(protocolTypeStr) != v1alpha1.ProtocolIDNFS,
+		NodeExpansionRequired: v1alpha1.ProtocolID(expandReq.protocolType) != v1alpha1.ProtocolIDNFS,
 	}, nil
 }
 
 // refuseEarlyExpand refuses a preserving adoption or pending recovery before
 // ControllerExpandVolume resolves or dials any agent or reads a token.  A
 // PreserveOriginal LV is never resized, and a recovery record is non-serving
-// until its transfer commits.  Only these refusals are decided this early; a
-// state lookup error is deliberately ignored so every other outcome (unknown
-// volume, unadopted import, deleting) keeps its established order in
-// expandFence.
-func (s *ControllerServer) refuseEarlyExpand(ctx context.Context, volumeID string) error {
-	_, early, earlyErr := s.mustVolumeState(ctx, volumeID)
-	if earlyErr == nil {
-		err := refusePreservedExpand(early, volumeID)
-		if err != nil {
-			return err
-		}
-		return refuseRecoveryExpand(early, volumeID)
-	}
-	return nil
-}
-
-// expandFence runs ControllerExpandVolume's post-dial lifecycle guards and
-// returns the fencing token the expand request carries.  The token is the
-// lifecycle's current one, so an expand of a deleted, deleting, or
-// re-created volume is refused here or by the agent.  Guards run in their
-// established order: an unknown volume, then an unadopted import, then a
-// preserving adoption, and only then is the token read.
-func (s *ControllerServer) expandFence(ctx context.Context, volumeID string) (*agentv1.FencingToken, error) {
-	pvName, pvs, err := s.mustVolumeState(ctx, volumeID)
+// until its transfer commits.
+func refuseEarlyExpand(pvs *v1alpha1.PillarVolumeState, volumeID string) error {
+	err := refusePreservedExpand(pvs, volumeID)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	err = refuseUnadoptedImport(pvs, volumeID, "expand")
-	if err != nil {
-		return nil, err
-	}
-	err = refuseRecoveryExpand(pvs, volumeID)
-	if err != nil {
-		return nil, err
-	}
-	err = refusePreservedExpand(pvs, volumeID)
-	if err != nil {
-		return nil, err
-	}
-	return s.currentToken(ctx, pvName, volumeID)
+	return refuseRecoveryExpand(pvs, volumeID)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

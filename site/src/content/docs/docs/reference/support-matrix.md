@@ -114,17 +114,19 @@ The node image build fails if its `mkfs` would create a filesystem that Linux 5.
 | Identity | `VolumeExpansion`: `ONLINE` | Yes |
 | Controller | `CREATE_DELETE_VOLUME` | Yes |
 | Controller | `PUBLISH_UNPUBLISH_VOLUME` | Yes |
-| Controller | `EXPAND_VOLUME` | Yes |
+| Controller | `EXPAND_VOLUME` | Yes, `pillar-csi.bhyoo.com` only |
 | Controller | `SINGLE_NODE_MULTI_WRITER` | Yes |
 | Controller | `MULTI_NODE_MULTI_WRITER` | Yes, NFS only |
 | Controller | `GET_CAPACITY` | Yes. The chart does not turn on capacity tracking in `csi-provisioner`. |
 | Controller | `CREATE_DELETE_SNAPSHOT`, `LIST_SNAPSHOTS` | Not supported yet |
 | Controller | `CLONE_VOLUME` | Not supported yet |
-| Node | `STAGE_UNSTAGE_VOLUME` | Yes |
-| Node | `EXPAND_VOLUME` | Yes |
+| Node | `STAGE_UNSTAGE_VOLUME` | Yes, `pillar-csi.bhyoo.com` only |
+| Node | `EXPAND_VOLUME` | Yes, `pillar-csi.bhyoo.com` only |
 | Node | `GET_VOLUME_STATS` | Yes |
 
-Volume expansion runs online. For block protocols, the agent grows the zvol or logical volume and the node grows the filesystem with `resize2fs` or `xfs_growfs`. For NFS, the agent grows the server-side dataset quota; the mounted client filesystem sees the new capacity without a node-side resize and `NodeExpansionRequired` is false. A generated StorageClass allows expansion unless `spec.storageClass.allowVolumeExpansion` is set to `false`.
+Volume expansion runs online for `pillar-csi.bhyoo.com` volumes. For block protocols, the agent grows the zvol or logical volume and the node grows the filesystem with `resize2fs` or `xfs_growfs`. For NFS, the agent grows the server-side dataset quota; the mounted client filesystem sees the new capacity without a node-side resize and `NodeExpansionRequired` is false. A generated StorageClass allows expansion unless `spec.storageClass.allowVolumeExpansion` is set to `false`.
+
+The branch-only file identity `files.pillar-csi.bhyoo.com` advertises `GET_VOLUME_STATS` as its only node capability. Its node never stages a volume: the kubelet calls `NodePublishVolume` once per pod target and the node mounts that target directly, binding the owned proxy of the source for a local volume or mounting the owned-host NFS export for a multi-node volume. `NodeStageVolume`, `NodeUnstageVolume` and `NodeExpandVolume` return `Unimplemented`, and volume expansion is refused.
 
 ## Kubernetes features
 
@@ -135,8 +137,8 @@ Volume expansion runs online. For block protocols, the agent grows the zvol or l
 | CSI ephemeral inline volumes | No. The CSIDriver lists only the `Persistent` lifecycle mode. |
 | Volume snapshots | Not supported yet |
 | Volume cloning | Not supported yet |
-| `fsGroup` ownership changes | Yes, with protocol limits. The CSIDriver sets `fsGroupPolicy: File`; NFS uses the export's squash policy, so use `squash: none` explicitly when root/fsGroup initialization must reach the dataset. |
-| Attach before mount | Yes. The CSIDriver sets `attachRequired: true`. |
+| `fsGroup` ownership changes | Yes, with protocol limits. The `pillar-csi.bhyoo.com` CSIDriver sets `fsGroupPolicy: File`; NFS uses the export's squash policy, so use `squash: none` explicitly when root/fsGroup initialization must reach the dataset. The `files.pillar-csi.bhyoo.com` CSIDriver sets `fsGroupPolicy: None`, so kubelet never rewrites ownership of an adopted source. |
+| Attach before mount | Yes. Both CSIDrivers set `attachRequired: true`. |
 | Reclaim policies | `Delete` (default) and `Retain` |
 | Binding modes | `Immediate` (default) and `WaitForFirstConsumer` |
 
@@ -152,6 +154,7 @@ A PVC annotation can adopt a volume that already exists on a storage node instea
 | Inspect an LV through the agent `InspectVolume` RPC | Partial, unreleased | Read-only report of identity, layout, filesystem signature, exclusive-open state, consumers and exports. An unknown filesystem probe is reported as unknown, not blank. An empty consumer list does not rule out a mount the agent cannot see, which is why the exclusive-open check is reported separately. The RPC is not a separate permission: a client certificate the agent trusts can call every agent RPC. |
 | Rebind a retained adopted volume to a new PVC | Partial, manual | The same PV, `volumeHandle` and `PillarVolumeState` are bound to a replacement claim; no new `CreateVolume` runs. The operator steps are in [Rebind a retained volume](/docs/how-to/import-lv/#rebind-a-retained-volume). |
 | Recover an adopted LV after its PV or `PillarVolumeState` is lost | Partial, unreleased | Requires an agent-signed observation, an operator-signed authorization, persistent agent state, exact old/new lifecycle and LV identity, and verified owner-stop evidence. Recovery records are non-serving and non-reapable until the transfer commits; missing or uncertain evidence refuses the transfer. See [Recover after metadata loss](/docs/how-to/import-lv/#recover-after-metadata-loss). |
+| Adopt an existing directory or ZFS filesystem (`import-directory`, `import-zfs-dataset`) | Partial, branch-only, unreleased | Opt-in `files.pillar-csi.bhyoo.com` identity only. The source must already carry an exact finite quota equal to the request; deleting the volume keeps the original directory or dataset, and expansion is refused. See [Existing filesystem adoption annotations](/docs/reference/annotations/#existing-filesystem-adoption-annotations). |
 | Adopt snapshots, thin snapshot origins, thin pools, mirrors, RAID or inactive LVs | Unsupported | Import never activates or converts an LV. |
 
 The pinned LV identity lives in the agent's persistent state under `/var/lib/pillar-csi/agent`, so LV adoption needs that hostPath to survive agent and node restarts. Mounting an adopted filesystem without formatting is implemented only for Linux nodes; on other platforms the stage fails with an error and never falls back to formatting. See [Adopt an existing LVM logical volume](/docs/how-to/import-lv/) for the workflow and [What is not supported](/docs/how-to/import-lv/#what-is-not-supported) for the remaining limits.

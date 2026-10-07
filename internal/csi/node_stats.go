@@ -23,10 +23,11 @@ import (
 	"syscall"
 	"unsafe"
 
+	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	csi "github.com/container-storage-interface/spec/lib/go/csi"
+	"github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
 // blkgetsize64 is the Linux ioctl request number to query the size of a block
@@ -76,13 +77,16 @@ func linuxBlockDeviceSize(path string) (int64, error) {
 //   - Filesystem mount point (regular directory / file): syscall.Statfs is
 //     called and both BYTES and INODES usage entries are returned.
 //
+// The file-driver profile instead reads its durable adoption record and uses
+// InspectImport to revalidate native identity and exact quota. It never reports
+// a shared filesystem or pool's capacity as the adopted volume's total.
 // The CO calls this RPC periodically to populate PersistentVolumeClaim status
 // capacity fields and to drive node-level storage pressure eviction decisions.
 //
 // Capability: NodeServiceCapability_RPC_GET_VOLUME_STATS must be advertised in
 // NodeGetCapabilities for the CO to invoke this RPC.
 func (n *NodeServer) NodeGetVolumeStats(
-	_ context.Context,
+	ctx context.Context,
 	req *csi.NodeGetVolumeStatsRequest,
 ) (*csi.NodeGetVolumeStatsResponse, error) {
 	// ── Input validation ────────────────────────────────────────────────────
@@ -92,6 +96,9 @@ func (n *NodeServer) NodeGetVolumeStats(
 	volumePath := req.GetVolumePath()
 	if volumePath == "" {
 		return nil, status.Error(codes.InvalidArgument, "NodeGetVolumeStats: volume_path is required") //nolint:wrapcheck
+	}
+	if n.effectiveDriverName() == v1alpha1.FileCSIDriver {
+		return n.nodeGetFilesystemVolumeStats(ctx, req.GetVolumeId(), volumePath)
 	}
 
 	// Select the stat function: use the injected override when present
@@ -193,4 +200,110 @@ func (n *NodeServer) NodeGetVolumeStats(
 			},
 		},
 	}, nil
+}
+
+func (n *NodeServer) nodeGetFilesystemVolumeStats(
+	ctx context.Context, volumeID, volumePath string,
+) (*csi.NodeGetVolumeStatsResponse, error) {
+	// The durable publish record — not a staging mount — is the identity
+	// source: stats are answered only for a target this node actually
+	// published, from the immutable adoption identity recorded with it.
+	// The volume lock spans the record read, the mount verification and
+	// the gateway call, so a concurrent unpublish cannot remove the target
+	// between verification and the reported bound.
+	unlock := n.volumeLocks.lock(volumeID)
+	defer unlock()
+	state, err := n.readStageState(volumeID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"NodeGetVolumeStats: read publish state for %q: %v", volumeID, err)
+	}
+	if state == nil || state.File == nil {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"NodeGetVolumeStats: volume %q has no persisted filesystem identity/quota metadata",
+			volumeID)
+	}
+	rejectErr := rejectStagedFileRecord("NodeGetVolumeStats", volumeID, state)
+	if rejectErr != nil {
+		return nil, rejectErr
+	}
+	err = n.verifyFileStatsTarget(volumeID, volumePath, state)
+	if err != nil {
+		return nil, err
+	}
+	if n.fileStatsFn == nil {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"NodeGetVolumeStats: volume %q: adopted filesystem identity/quota gateway is not configured",
+			volumeID)
+	}
+	stats, err := n.fileStatsFn(ctx, volumePath, state.File)
+	if err != nil {
+		errorCode := status.Code(err)
+		if errorCode == codes.Unknown {
+			errorCode = codes.Internal
+		}
+		return nil, status.Errorf(errorCode,
+			"NodeGetVolumeStats: inspect adopted filesystem %q: %v", volumeID, err)
+	}
+	err = validateFileStatsBound(stats, state.File.CapacityBytes)
+	if err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
+// verifyFileStatsTarget requires volumePath to be a recorded target that
+// still carries this volume's publish mount: a stale directory or a foreign
+// mount never reports the admitted quota.
+func (n *NodeServer) verifyFileStatsTarget(volumeID, volumePath string, state *nodeStageState) error {
+	idx := findFilePublishTarget(state.File.Targets, volumePath)
+	if idx < 0 {
+		return status.Errorf(codes.FailedPrecondition,
+			"NodeGetVolumeStats: volume %q is not published at %q", volumeID, volumePath)
+	}
+	if n.mounter == nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"NodeGetVolumeStats: volume %q: no mounter to verify the publish mount", volumeID)
+	}
+	mounted, err := n.mounter.MountEntryExists(volumePath)
+	if err != nil {
+		return status.Errorf(codes.Internal,
+			"NodeGetVolumeStats: check if %q is mounted: %v", volumePath, err)
+	}
+	if !mounted {
+		return status.Errorf(codes.FailedPrecondition,
+			"NodeGetVolumeStats: volume %q has no publish mount at %q", volumeID, volumePath)
+	}
+	err = n.verifyFileRecordedMount(state, volumePath, state.File.Targets[idx].ReadOnly)
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"NodeGetVolumeStats: mount at %q is not volume %q's publish: %v", volumePath, volumeID, err)
+	}
+	return nil
+}
+
+// validateFileStatsBound requires the gateway answer to report exactly the
+// admitted byte bound.
+func validateFileStatsBound(stats *csi.NodeGetVolumeStatsResponse, capacityBytes int64) error {
+	if stats == nil {
+		return status.Errorf(codes.Internal,
+			"%s", "NodeGetVolumeStats: adopted filesystem stats gateway returned nil response")
+	}
+	hasBytes := false
+	for _, usage := range stats.GetUsage() {
+		if usage.GetUnit() != csi.VolumeUsage_BYTES {
+			continue
+		}
+		hasBytes = true
+		if usage.GetTotal() != capacityBytes {
+			return status.Errorf(codes.FailedPrecondition,
+				"NodeGetVolumeStats: adopted filesystem bound changed from %d to %d bytes",
+				capacityBytes, usage.GetTotal())
+		}
+	}
+	if !hasBytes {
+		return status.Errorf(codes.FailedPrecondition,
+			"%s", "NodeGetVolumeStats: adopted filesystem stats omitted exact byte bound")
+	}
+	return nil
 }

@@ -71,8 +71,8 @@ const testModeThin = "thin"
 // ─────────────────────────────────────────────────────────────────────────────.
 
 // mockAgentClient is a test double for agentv1.AgentServiceClient.
-// It records calls to CreateVolume and ExportVolume, and returns pre-configured
-// responses or errors.
+// It records calls to the volume and filesystem-adoption RPCs, and returns
+// pre-configured responses or errors.
 type mockAgentClient struct {
 	// Responses for CreateVolume (Step 1).
 	createVolumeResp *agentv1.CreateVolumeResponse
@@ -81,6 +81,11 @@ type mockAgentClient struct {
 	// Responses for ImportVolume (the import-zvol annotation path).
 	importVolumeResp *agentv1.ImportVolumeResponse
 	importVolumeErr  error
+
+	// Responses for InspectImport (filesystem adoption path).
+	inspectImportResp  *agentv1.InspectImportResponse
+	inspectImportErr   error
+	inspectImportCalls int
 
 	// Responses for ExportVolume (Step 2).
 	exportVolumeResp *agentv1.ExportVolumeResponse
@@ -112,8 +117,9 @@ type mockAgentClient struct {
 	lastDenyInitiator  *agentv1.DenyInitiatorRequest
 
 	// Responses for SetLocalAttach; every request is recorded in order.
-	setLocalAttachErr   error
-	setLocalAttachCalls []*agentv1.SetLocalAttachRequest
+	setLocalAttachDevicePath string
+	setLocalAttachErr        error
+	setLocalAttachCalls      []*agentv1.SetLocalAttachRequest
 
 	// Call counters — verified by tests.
 	createVolumeCalls   int
@@ -138,6 +144,8 @@ type mockAgentClient struct {
 	lastExportVolumeReq *agentv1.ExportVolumeRequest
 	// lastImportVolumeReq captures the most recent ImportVolume request.
 	lastImportVolumeReq *agentv1.ImportVolumeRequest
+	// lastInspectImportReq captures the most recent InspectImport request.
+	lastInspectImportReq *agentv1.InspectImportRequest
 	// lastGetCapacityReq captures the most recent GetCapacity request.
 	lastGetCapacityReq *agentv1.GetCapacityRequest
 }
@@ -184,6 +192,24 @@ func (m *mockAgentClient) ImportVolume(
 		DevicePath:    "/dev/zvol/" + req.GetVolumeId(),
 		CapacityBytes: req.GetCapacityBytes(),
 	}, nil
+}
+
+// InspectImport returns the configured read-only filesystem inspection
+// response and records the request for adoption contract assertions.
+func (m *mockAgentClient) InspectImport(
+	_ context.Context,
+	req *agentv1.InspectImportRequest,
+	_ ...grpc.CallOption,
+) (*agentv1.InspectImportResponse, error) {
+	m.inspectImportCalls++
+	m.lastInspectImportReq = req
+	if m.inspectImportErr != nil {
+		return nil, m.inspectImportErr
+	}
+	if m.inspectImportResp != nil {
+		return m.inspectImportResp, nil
+	}
+	return &agentv1.InspectImportResponse{}, nil
 }
 
 func (m *mockAgentClient) ExportVolume(
@@ -349,7 +375,14 @@ func (m *mockAgentClient) SetLocalAttach(
 	if !req.GetLocal() {
 		return &agentv1.SetLocalAttachResponse{}, nil
 	}
-	return &agentv1.SetLocalAttachResponse{DevicePath: "/dev/zvol/" + req.GetVolumeId()}, nil
+	devicePath := "/dev/zvol/" + req.GetVolumeId()
+	if req.GetFilesystemAdoption() != nil {
+		devicePath = m.setLocalAttachDevicePath
+		if devicePath == "" {
+			devicePath = "/var/lib/pillar-csi/exports/test-owned-proxy"
+		}
+	}
+	return &agentv1.SetLocalAttachResponse{DevicePath: devicePath}, nil
 }
 func (*mockAgentClient) SendVolume(
 	_ context.Context,
