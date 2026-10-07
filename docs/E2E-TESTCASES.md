@@ -5589,9 +5589,12 @@ PR CI는 이 lane을 단일 호출이 아닌 6개 shard로 실행한다. shard �
 `/var/lib/pillar-csi/e71-sources`이며, `/host`는 agent/node의 read-only 경로 prefix이다.
 owned proxy root `/var/lib/pillar-csi/agent/datasets`는 agent와 file node에서 같은
 절대 경로로 보인다. source 보존을 확인한 뒤에만 테스트가 자신의 fixture를 제거한다.
-AfterAll의 owned agent/store 삭제 대기가 실패하면 기존 1분·96KiB 진단 한도 안에서
-test가 소유한 Agent/store 식별자와 condition, 이를 참조하는 PVS·PV·StorageClass,
-node label 중 필요한 필드만 best-effort로 기록한다. network PVC가 3분 안에
+Ordered 컨테이너 cleanup의 owned agent/store 삭제 대기가 실패하면 기존 1분·96KiB 진단
+한도 안에서 test가 소유한 Agent/store 식별자와 condition, 이를 참조하는
+PVS·PV·StorageClass, node label 중 필요한 필드만 best-effort로 기록한다. 전체
+fixture cleanup은 BeforeAll에서 fixture 생성 직후 `DeferCleanup`으로 등록하므로,
+각 It이 등록한 의존 fixture cleanup이 먼저 실행된 뒤 상위 fixture를 정리한다.
+network PVC가 3분 안에
 Bound되지 않으면 원래 wait 오류를 유지한 채 별도 1분 context에서 명령별 32KiB로
 PVC describe/event, PillarStorageClass condition, PillarStore capacity/condition,
 PVS, claim UID가 포함된 controller/agent log를 기록한다.

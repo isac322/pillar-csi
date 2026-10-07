@@ -251,6 +251,37 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		ctx, cancel = e71Context()
 		DeferCleanup(cancel)
 		f = NewFilesystemAdoptionFixture("E71.1")
+		DeferCleanup(func() {
+			if f != nil {
+				cleanup, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+				defer cancel()
+				err := f.Cleanup(cleanup)
+				if err != nil {
+					// Bounded teardown facts for the failing cleanup: the PVS,
+					// VolumeAttachments, file-node publish records and mounts on the
+					// storage node and workers, and agent/controller logs. Optional
+					// PV metadata failures are recorded, never asserted.
+					var handle, target string
+					if f.PVName != "" {
+						metadataCtx, metadataCancel := context.WithTimeout(context.Background(), time.Minute)
+						for _, field := range []struct {
+							Into *string
+							Path string
+						}{{&handle, "{.spec.csi.volumeHandle}"}, {&target, "{.spec.csi.volumeAttributes.target_id}"}} {
+							value, readErr := f.Kubectl(metadataCtx, "", "get", "pv", f.PVName, "--ignore-not-found=true", "-o", "jsonpath="+field.Path)
+							if readErr != nil {
+								fmt.Fprintf(GinkgoWriter, "E71 diagnostic read of pv %s %s failed: %v\n", f.PVName, field.Path, readErr)
+								continue
+							}
+							*field.Into = strings.TrimSpace(value)
+						}
+						metadataCancel()
+					}
+					fmt.Fprintf(GinkgoWriter, "E71 ordered fixture cleanup of %s failed: %v\n%s\n", f.PVName, err, f.teardownDiagnostics(handle, target, append(append([]string{}, workers...), f.StorageNode)...)())
+				}
+				Expect(err).To(Succeed())
+			}
+		})
 		Expect(f.PrepareZFS(ctx, e71Quota)).To(Succeed())
 		Expect(f.ApplyObjects(ctx, true)).To(Succeed())
 		Expect(f.AdoptPVC(ctx, e71ZFSAnnotation, "ReadWriteOnce", e71Quota)).To(Succeed())
@@ -260,37 +291,6 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		Expect(err).NotTo(HaveOccurred())
 		workers = e71Workers(ctx, f)
 		Expect(workers).To(HaveLen(2))
-	})
-	AfterAll(func() {
-		if f != nil {
-			cleanup, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
-			defer cancel()
-			err := f.Cleanup(cleanup)
-			if err != nil {
-				// Bounded teardown facts for the failing cleanup: the PVS,
-				// VolumeAttachments, file-node publish records and mounts on the
-				// storage node and workers, and agent/controller logs. Optional
-				// PV metadata failures are recorded, never asserted.
-				var handle, target string
-				if f.PVName != "" {
-					metadataCtx, metadataCancel := context.WithTimeout(context.Background(), time.Minute)
-					for _, field := range []struct {
-						Into *string
-						Path string
-					}{{&handle, "{.spec.csi.volumeHandle}"}, {&target, "{.spec.csi.volumeAttributes.target_id}"}} {
-						value, readErr := f.Kubectl(metadataCtx, "", "get", "pv", f.PVName, "--ignore-not-found=true", "-o", "jsonpath="+field.Path)
-						if readErr != nil {
-							fmt.Fprintf(GinkgoWriter, "E71 diagnostic read of pv %s %s failed: %v\n", f.PVName, field.Path, readErr)
-							continue
-						}
-						*field.Into = strings.TrimSpace(value)
-					}
-					metadataCancel()
-				}
-				fmt.Fprintf(GinkgoWriter, "E71 AfterAll cleanup of %s failed: %v\n%s\n", f.PVName, err, f.teardownDiagnostics(handle, target, append(append([]string{}, workers...), f.StorageNode)...)())
-			}
-			Expect(err).To(Succeed())
-		}
 	})
 
 	It("[TC-E71.1] adopts an existing ZFS filesystem without formatting and preserves data, GUID, mountpoint, properties, and tree", func() {
