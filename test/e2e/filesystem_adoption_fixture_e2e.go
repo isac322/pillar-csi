@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,9 +23,9 @@ import (
 
 const filesystemAdoptionBytes int64 = 64 << 20
 
-// Native sources and Kubernetes resources are separately owned. Cleanup does
-// not remove a source until the CSI lifecycle is gone and its contents have
-// been observed independently through the storage node.
+// FilesystemAdoptionFixture owns native sources and Kubernetes resources
+// separately. Cleanup does not remove a source until the CSI lifecycle is gone
+// and its contents have been observed independently through the storage node.
 type FilesystemAdoptionFixture struct {
 	TCID, Namespace, StorageNode, AgentName, StoreName, ProtocolName   string
 	LocalPSCName, RemotePSCName, LocalStorageClass, RemoteStorageClass string
@@ -145,7 +146,12 @@ for fs in xfs ext4; do
 // e71-* directories created by PrepareFilesystemAdoptionNativeSources.
 func CleanupFilesystemAdoptionNativeSources(ctx context.Context, storageNode, sourceRoot string) error {
 	f := NewFilesystemAdoptionFixture("native-bootstrap-cleanup")
-	if _, err := f.Kubectl(ctx, "", "-n", "kube-system", "get", "pod", "e71-native-source-tools", "-o", "name"); err != nil {
+	pod, err := f.Kubectl(ctx, "", "-n", "kube-system", "get", "pod", "e71-native-source-tools", "--ignore-not-found=true", "-o", "name")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(pod) == "" {
+		// No tools pod means no native sources were prepared; nothing to detach.
 		return nil
 	}
 	f.StorageNode = storageNode
@@ -177,7 +183,7 @@ fi`, shellQuote(sourceRoot), fsType, fsType)
 			return err
 		}
 	}
-	_, err := f.Kubectl(ctx, "", "-n", "kube-system", "delete", "pod", "e71-native-source-tools", "--ignore-not-found=true", "--wait=true", "--timeout=2m")
+	_, err = f.Kubectl(ctx, "", "-n", "kube-system", "delete", "pod", "e71-native-source-tools", "--ignore-not-found=true", "--wait=true", "--timeout=2m")
 	return err
 }
 
@@ -756,15 +762,18 @@ func (f *FilesystemAdoptionFixture) expectFilePublicationDrained(ctx context.Con
 }
 
 // teardownDiagnostics returns a lazy, bounded collector of the teardown facts
-// a bare PV finalizer timeout hides. A critical-state budget records, first,
-// short jsonpath facts of the known PVS, VolumeAttachment, PV, PVC and pods,
-// then per node (active publications, the storage node, then the rest) the
-// real file-node publish directory and record, matching mounts, kubelet
+// a bare PV finalizer or PillarAgent delete timeout hides. A critical-state
+// budget records, first, short jsonpath facts of the known PVS,
+// VolumeAttachment, PV and PVC, then the fixture PillarAgent's deletion state
+// with the PillarStores, PillarStorageClasses, PillarVolumeStates, PVs and
+// storage-node label its finalizer release depends on, then pods, then per
+// node (active publications, the storage node, then the rest) the real
+// file-node publish directory and record, matching mounts, kubelet
 // volumesInUse/volumesAttached, and kubelet journal lines naming the volume.
 // A separate log budget holds events and file-node, controller/sidecar and
-// agent log lines naming the volume, so no log volume can displace the state
-// facts. handle and target are the PV's CSI volumeHandle and export target;
-// either may be empty when unknown.
+// agent log lines naming the volume, its agent or its store, so no log volume
+// can displace the state facts. handle and target are the PV's CSI
+// volumeHandle and export target; either may be empty when unknown.
 func (f *FilesystemAdoptionFixture) teardownDiagnostics(handle, target string, nodes ...string) func() string {
 	return func() string {
 		diagnosticCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -811,17 +820,19 @@ func (f *FilesystemAdoptionFixture) teardownDiagnostics(handle, target string, n
 			output, diagnosticErr := f.NodeExec(diagnosticCtx, node, args...)
 			record(&critical, fmt.Sprintf("\n\nnode %s: %s:\n", node, strings.Join(args, " ")), output, diagnosticErr)
 		}
-		// Identifiers of this volume; empty ones are dropped because an empty
-		// fixed-string pattern matches every line.
+		// Identifiers of this volume, its agent and its store; empty ones are
+		// dropped because an empty fixed-string pattern matches every line.
+		// The agent and store names keep controller deletion lines visible
+		// after the PV itself is gone.
 		var identifiers []string
-		for _, identifier := range []string{f.PVName, handle, target} {
+		for _, identifier := range []string{f.PVName, f.AgentName, f.StoreName, handle, target} {
 			if identifier != "" {
 				identifiers = append(identifiers, identifier)
 			}
 		}
-		// captureLog keeps only container log lines naming this volume (the
-		// last 100 lines when no identifier is known), so RPC dumps of other
-		// volumes do not consume the log budget.
+		// captureLog keeps only container log lines naming one of those
+		// identifiers (the last 100 lines when none is known), so RPC dumps of
+		// other volumes do not consume the log budget.
 		captureLog := func(pod, container string) {
 			args := []string{"-n", resolveHelmNamespace(), "logs", pod, "-c", container, "--tail=2000"}
 			output, diagnosticErr := f.Kubectl(diagnosticCtx, "", args...)
@@ -860,6 +871,99 @@ func (f *FilesystemAdoptionFixture) teardownDiagnostics(handle, target string, n
 		}
 		if f.PVCName != "" {
 			capture(&critical, "-n", f.Namespace, "get", "pvc", f.PVCName, "--ignore-not-found", "-o", `jsonpath=phase={.status.phase} volumeName={.spec.volumeName} deletionTimestamp={.metadata.deletionTimestamp} finalizers={.metadata.finalizers}`)
+		}
+		// PillarAgent deletion state. The controller releases the agent
+		// finalizer only after no PillarStore (spec.agentRef), PillarVolumeState
+		// (spec.agentRef) or pillar-csi PV (volumeHandle "<agent>/...") names
+		// the agent and the storage-node label step on its nodeRef succeeds,
+		// so these facts separate remaining blockers from a label or finalizer
+		// update failure. Only names, references, conditions, deletion state,
+		// label presence and volume identity are printed. An absent object
+		// (matched=0), an empty reference set (printed with its count) and a
+		// failed or undecodable read stay distinct. Nothing is recorded
+		// without a fixture agent name.
+		if f.AgentName != "" {
+			listObjects := func(args ...string) ([]teardownObject, string, bool) {
+				header := fmt.Sprintf("\n\nkubectl %s (observed %s):\n", strings.Join(args, " "), time.Now().UTC().Format(time.RFC3339))
+				output, diagnosticErr := f.Kubectl(diagnosticCtx, "", args...)
+				if diagnosticErr != nil {
+					record(&critical, header, "", diagnosticErr)
+					return nil, header, false
+				}
+				var list struct {
+					Items []teardownObject `json:"items"`
+				}
+				if decodeErr := json.Unmarshal([]byte(output), &list); decodeErr != nil {
+					record(&critical, header, "", fmt.Errorf("decode %d bytes of list output: %w", len(output), decodeErr))
+					return nil, header, false
+				}
+				return list.Items, header, true
+			}
+			report := func(kind, rule, header string, items []teardownObject, match func(teardownObject) bool) []teardownObject {
+				var matched []teardownObject
+				var facts []string
+				for _, item := range items {
+					if match(item) {
+						matched = append(matched, item)
+						facts = append(facts, item.facts(kind))
+					}
+				}
+				// The rule and counts live in the header, which record keeps
+				// whole, so a tail-clipped body cannot drop them.
+				header = strings.TrimSuffix(header, ":\n") + fmt.Sprintf(" %s matching %s: matched=%d of %d:\n", kind, rule, len(matched), len(items))
+				record(&critical, header, strings.Join(facts, "\n"), nil)
+				return matched
+			}
+			node, nodeSource := f.StorageNode, "fixture storage node"
+			if agents, header, ok := listObjects("get", "pillaragent", "-o", "json"); ok {
+				target := report("pillaragent", "metadata.name="+f.AgentName, header, agents, func(o teardownObject) bool {
+					return o.Metadata.Name == f.AgentName
+				})
+				if len(target) == 1 && target[0].Spec.NodeRef != nil {
+					node, nodeSource = target[0].Spec.NodeRef.Name, "agent spec.nodeRef"
+				}
+				if node != "" {
+					report("pillaragent", "spec.nodeRef.name="+node+" ("+nodeSource+") other than "+f.AgentName, header, agents, func(o teardownObject) bool {
+						return o.Metadata.Name != f.AgentName && o.Spec.NodeRef != nil && o.Spec.NodeRef.Name == node
+					})
+				}
+			}
+			if node != "" {
+				if nodes, header, ok := listObjects("get", "nodes", "--field-selector", "metadata.name="+node, "-o", "json"); ok {
+					report("node", "metadata.name="+node+" ("+nodeSource+")", header, nodes, func(teardownObject) bool { return true })
+				}
+			}
+			storeNames := map[string]bool{}
+			if f.StoreName != "" {
+				storeNames[f.StoreName] = true
+			}
+			if stores, header, ok := listObjects("get", "pillarstore", "-o", "json"); ok {
+				for _, store := range report("pillarstore", "spec.agentRef="+f.AgentName+" or metadata.name="+f.StoreName, header, stores, func(o teardownObject) bool {
+					return o.Spec.AgentRef == f.AgentName || (f.StoreName != "" && o.Metadata.Name == f.StoreName)
+				}) {
+					storeNames[store.Metadata.Name] = true
+				}
+			}
+			var storeList []string
+			for name := range storeNames {
+				storeList = append(storeList, name)
+			}
+			sort.Strings(storeList)
+			if classes, header, ok := listObjects("get", "pillarstorageclass", "-o", "json"); ok {
+				report("pillarstorageclass", "spec.storeRef in ["+strings.Join(storeList, ", ")+"]", header, classes, func(o teardownObject) bool {
+					return storeNames[o.Spec.StoreRef]
+				})
+			}
+			if states, header, ok := listObjects("get", "pillarvolumestate", "-o", "json"); ok {
+				report("pillarvolumestate", "spec.agentRef="+f.AgentName, header, states, func(o teardownObject) bool {
+					return o.Spec.AgentRef == f.AgentName
+				})
+			}
+			if pvs, header, ok := listObjects("get", "pv", "-o", "json"); ok {
+				report("pv", "pillar-csi driver and volumeHandle agent segment="+f.AgentName, header, pvs, func(o teardownObject) bool {
+					return o.pillarVolumeAgent() == f.AgentName
+				})
+			}
 		}
 		capture(&critical, "-n", f.Namespace, "get", "pods", "-o", "wide")
 		// Nodes in decision order: active publications, then the storage
@@ -920,6 +1024,102 @@ func (f *FilesystemAdoptionFixture) teardownDiagnostics(handle, target string, n
 			critical.omitted, critical.text.String(), logs.omitted, logs.text.String())
 	}
 }
+
+// teardownStorageNodeLabel mirrors the controller's storage-node label, which
+// PillarAgent deletion removes from its nodeRef before releasing the finalizer.
+const teardownStorageNodeLabel = "pillar-csi.bhyoo.com/agent-node"
+
+// teardownObject is the projection teardown diagnostics print of a pillar-csi
+// CR, PV or Node: names, references, conditions, deletion state, the
+// storage-node label and CSI volume identity. Every other field is dropped.
+type teardownObject struct {
+	Metadata struct {
+		Name              string            `json:"name"`
+		ResourceVersion   string            `json:"resourceVersion"`
+		DeletionTimestamp string            `json:"deletionTimestamp"`
+		Finalizers        []string          `json:"finalizers"`
+		Labels            map[string]string `json:"labels"`
+	} `json:"metadata"`
+	Spec struct {
+		NodeRef *struct {
+			Name string `json:"name"`
+		} `json:"nodeRef"`
+		AgentRef    string `json:"agentRef"`
+		StoreRef    string `json:"storeRef"`
+		ProtocolRef string `json:"protocolRef"`
+		ClaimRef    *struct {
+			Namespace string `json:"namespace"`
+			Name      string `json:"name"`
+		} `json:"claimRef"`
+		CSI *struct {
+			Driver       string `json:"driver"`
+			VolumeHandle string `json:"volumeHandle"`
+		} `json:"csi"`
+	} `json:"spec"`
+	Status struct {
+		Phase      string `json:"phase"`
+		Deleting   bool   `json:"deleting"`
+		Conditions []struct {
+			Type               string `json:"type"`
+			Status             string `json:"status"`
+			Reason             string `json:"reason"`
+			Message            string `json:"message"`
+			ObservedGeneration int64  `json:"observedGeneration"`
+			LastTransitionTime string `json:"lastTransitionTime"`
+		} `json:"conditions"`
+	} `json:"status"`
+}
+
+// pillarVolumeAgent returns the agent segment of a pillar-csi PV's
+// "<agent>/<protocol>/<backend>/<volume-id>" handle, matching the controller's
+// volumeRefFromPV, or "" for any other object.
+func (o teardownObject) pillarVolumeAgent() string {
+	if o.Spec.CSI == nil || (o.Spec.CSI.Driver != "pillar-csi.bhyoo.com" && o.Spec.CSI.Driver != "files.pillar-csi.bhyoo.com") {
+		return ""
+	}
+	parts := strings.SplitN(o.Spec.CSI.VolumeHandle, "/", 4)
+	if len(parts) != 4 {
+		return ""
+	}
+	return parts[0]
+}
+
+// facts renders the projection of o as kind/name followed by its deletion
+// state, the references kind carries and, except for nodes, its conditions.
+func (o teardownObject) facts(kind string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s/%s resourceVersion=%s deletionTimestamp=%s finalizers=%v", kind, o.Metadata.Name, o.Metadata.ResourceVersion, o.Metadata.DeletionTimestamp, o.Metadata.Finalizers)
+	claimRef := ""
+	if o.Spec.ClaimRef != nil {
+		claimRef = o.Spec.ClaimRef.Namespace + "/" + o.Spec.ClaimRef.Name
+	}
+	switch kind {
+	case "pillaragent":
+		nodeRef := ""
+		if o.Spec.NodeRef != nil {
+			nodeRef = o.Spec.NodeRef.Name
+		}
+		fmt.Fprintf(&b, " nodeRef=%s", nodeRef)
+	case "node":
+		value, present := o.Metadata.Labels[teardownStorageNodeLabel]
+		fmt.Fprintf(&b, " label %s present=%t value=%q", teardownStorageNodeLabel, present, value)
+		return b.String()
+	case "pillarstore":
+		fmt.Fprintf(&b, " agentRef=%s", o.Spec.AgentRef)
+	case "pillarstorageclass":
+		fmt.Fprintf(&b, " storeRef=%s protocolRef=%s", o.Spec.StoreRef, o.Spec.ProtocolRef)
+	case "pillarvolumestate":
+		fmt.Fprintf(&b, " agentRef=%s phase=%s deleting=%t claimRef=%s", o.Spec.AgentRef, o.Status.Phase, o.Status.Deleting, claimRef)
+	case "pv":
+		fmt.Fprintf(&b, " phase=%s driver=%s volumeHandle=%s claimRef=%s", o.Status.Phase, o.Spec.CSI.Driver, o.Spec.CSI.VolumeHandle, claimRef)
+	}
+	fmt.Fprintf(&b, " conditions=%d", len(o.Status.Conditions))
+	for _, c := range o.Status.Conditions {
+		fmt.Fprintf(&b, "\n  condition type=%s status=%s reason=%s observedGeneration=%d lastTransitionTime=%s message=%q", c.Type, c.Status, c.Reason, c.ObservedGeneration, c.LastTransitionTime, c.Message)
+	}
+	return b.String()
+}
+
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 
 var _ = time.Second

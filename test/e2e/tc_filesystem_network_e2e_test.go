@@ -396,7 +396,50 @@ func filesystemNetworkOldBlockControl(ctx context.Context, n *filesystemNetworkF
 		manifest = strings.Replace(manifest, "64Mi", "512Mi", 1)
 	}
 	n.apply(ctx, manifest)
-	n.Must(ctx, "-n", n.Namespace, "wait", "--for=jsonpath={.status.phase}=Bound", "pvc/"+claim, "--timeout=3m")
+	waitOutput, waitErr := n.Kubectl(ctx, "", "-n", n.Namespace, "wait", "--for=jsonpath={.status.phase}=Bound", "pvc/"+claim, "--timeout=3m")
+	if waitErr != nil {
+		diagnosticCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		var diagnostics strings.Builder
+		const maxDiagnosticBytes = 32 * 1024
+		record := func(args []string, output string, diagnosticErr error) {
+			if len(output) > maxDiagnosticBytes {
+				output = "[earlier output truncated]\n" + output[len(output)-maxDiagnosticBytes:]
+			}
+			fmt.Fprintf(&diagnostics, "\n\nkubectl %s:\n%s", strings.Join(args, " "), output)
+			if diagnosticErr != nil {
+				fmt.Fprintf(&diagnostics, "\nDiagnostic command failed: %v", diagnosticErr)
+			}
+		}
+		capture := func(args ...string) (string, error) {
+			output, diagnosticErr := n.Kubectl(diagnosticCtx, "", args...)
+			record(args, output, diagnosticErr)
+			return output, diagnosticErr
+		}
+		conditions := `{range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{"\n"}{end}`
+		capture("-n", n.Namespace, "describe", "pvc", claim)
+		capture("-n", n.Namespace, "get", "events", "--field-selector=involvedObject.kind=PersistentVolumeClaim,involvedObject.name="+claim, "-o", "wide")
+		capture("get", "pillarstorageclass", name, "-o", "jsonpath="+conditions)
+		capture("get", "pillarstore", name, "-o", `jsonpath=capacity={.status.capacity}{"\n"}`+conditions)
+		uid, uidErr := capture("-n", n.Namespace, "get", "pvc", claim, "-o", "jsonpath={.metadata.uid}")
+		if uid = strings.TrimSpace(uid); uidErr == nil && uid != "" {
+			capture("get", "pillarvolumestate", "pvc-"+uid, "--ignore-not-found", "-o", `jsonpath=volumeID={.spec.volumeID} agentVolumeID={.spec.agentVolumeID} phase={.status.phase} partialFailure={.status.partialFailure}{"\n"}`+conditions)
+			// Logs are filtered to the claim UID (the CSI volume name is
+			// pvc-<uid>), so unrelated volumes and payloads stay out.
+			for _, selector := range []string{"app.kubernetes.io/component=controller", "app.kubernetes.io/component=agent"} {
+				args := []string{"-n", resolveHelmNamespace(), "logs", "-l", selector, "--all-containers=true", "--prefix=true", "--timestamps=true", "--tail=2000", "--max-log-requests=8"}
+				output, logErr := n.Kubectl(diagnosticCtx, "", args...)
+				var matched []string
+				for _, line := range strings.Split(output, "\n") {
+					if strings.Contains(line, uid) {
+						matched = append(matched, line)
+					}
+				}
+				record(append(args, "| lines containing "+uid), strings.Join(matched, "\n"), logErr)
+			}
+		}
+		Fail(fmt.Sprintf("PVC %s/%s did not become Bound: %v\nWait output:\n%s%s", n.Namespace, claim, waitErr, waitOutput, diagnostics.String()))
+	}
 	pv = n.Must(ctx, "-n", n.Namespace, "get", "pvc", claim, "-o", "jsonpath={.spec.volumeName}")
 	Expect(n.Must(ctx, "get", "pv", pv, "-o", "jsonpath={.spec.csi.driver}")).To(Equal(pillarv1.DefaultCSIDriver))
 	root := "seed-" + suffix

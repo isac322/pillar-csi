@@ -5329,7 +5329,7 @@ NFS userspace helper는 agent/node 이미지에서만 제공한다. Kind worker�
 | 항목 | 사양 | 비고 |
 |------|------|------|
 | Kind | control-plane + 2 worker | writer/reader/revoked 세 identity 분리 |
-| ZFS | 실제 zpool + `parentDataset` | loop-backed pool, `volumeType: dataset` |
+| ZFS | 실제 zpool + `parentDataset` | loop-backed sparse pool image, `volumeType: dataset`; 기본 provisioner의 dedicated NFS lane(`E2E_NFS_E2E`)에서만 2GiB이며, default profile의 ZFS 512MiB·LVM 512MiB와 주입된 provisioner 설정은 변경하지 않는다 |
 | NFS | kernel `nfsd` + bundled `rpc.mountd`/`exportfs` | fixed TCP 2049, NFSv4.2 |
 | CSI | Helm internal-agent deployment | agent binds storage-node InternalIP |
 | 실행 | `E2E_NFS_E2E=true E2E_HELM_BOOTSTRAP=true E2E_LABEL_FILTER=nfs` | conditional Skip 없음 |
@@ -5589,6 +5589,12 @@ PR CI는 이 lane을 단일 호출이 아닌 6개 shard로 실행한다. shard �
 `/var/lib/pillar-csi/e71-sources`이며, `/host`는 agent/node의 read-only 경로 prefix이다.
 owned proxy root `/var/lib/pillar-csi/agent/datasets`는 agent와 file node에서 같은
 절대 경로로 보인다. source 보존을 확인한 뒤에만 테스트가 자신의 fixture를 제거한다.
+AfterAll의 owned agent/store 삭제 대기가 실패하면 기존 1분·96KiB 진단 한도 안에서
+test가 소유한 Agent/store 식별자와 condition, 이를 참조하는 PVS·PV·StorageClass,
+node label 중 필요한 필드만 best-effort로 기록한다. network PVC가 3분 안에
+Bound되지 않으면 원래 wait 오류를 유지한 채 별도 1분 context에서 명령별 32KiB로
+PVC describe/event, PillarStorageClass condition, PillarStore capacity/condition,
+PVS, claim UID가 포함된 controller/agent log를 기록한다.
 
 ### E71.1 Native 채택·quota·소유권·수명주기
 
