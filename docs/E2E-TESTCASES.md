@@ -5594,7 +5594,10 @@ Ordered 컨테이너 cleanup의 owned agent/store 삭제 대기가 실패하면 
 PVS·PV·StorageClass, node label 중 필요한 필드만 best-effort로 기록한다. 전체
 fixture cleanup은 BeforeAll에서 fixture 생성 직후 `DeferCleanup`으로 등록하므로,
 각 It이 등록한 의존 fixture cleanup이 먼저 실행된 뒤 상위 fixture를 정리한다.
-network PVC가 3분 안에
+fixture cleanup은 소유 PV를 먼저 Delete reclaim으로 patch하고 claim을 제거한 뒤,
+직접 PV delete 없이 CSI 주도의 PV·PVS 삭제를 기다린다. E71.11과 E71.13은 거부된
+consumer의 VolumeAttachment가 사라진 뒤에 drift를 복원하며, identity drift의
+publication intent도 복원 전에 drain한다. network PVC가 3분 안에
 Bound되지 않으면 원래 wait 오류를 유지한 채 별도 1분 context에서 명령별 32KiB로
 PVC describe/event, PillarStorageClass condition, PillarStore capacity/condition,
 PVS, claim UID가 포함된 controller/agent log를 기록한다.

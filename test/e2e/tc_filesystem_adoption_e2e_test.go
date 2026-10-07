@@ -532,9 +532,13 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		Expect(drifted.NativeID).To(Equal(stable.NativeID))
 		Expect(drifted.TreeHash).To(Equal(stable.TreeHash))
 		e71Delete(ctx, f, "pod", pod)
+		// Restore only once the refused consumer's VolumeAttachment is gone:
+		// while it remains, the external-attacher keeps retrying the refused
+		// publish, and an earlier restore would let a retried publish pin the
+		// original source.
+		Eventually(func() string { return e71Attachment(ctx, f, ".metadata.name") }, 2*time.Minute, 2*time.Second).Should(BeEmpty())
 		Expect(cleanup()).To(Succeed())
 		restored = true
-		Eventually(func() string { return e71Attachment(ctx, f, ".metadata.name") }, 2*time.Minute, 2*time.Second).Should(BeEmpty())
 		after, err := f.Snapshot(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(after.NativeID).To(Equal(stable.NativeID))
@@ -656,13 +660,18 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		Expect(after.UID).To(Equal(held.UID))
 		Expect(after.Spec).To(Equal(held.Spec))
 		e71Delete(ctx, f, "pod", pod)
-		Expect(cleanup()).To(Succeed())
-		restored = true
+		// The refused consumer's attach retries until its VolumeAttachment is
+		// withdrawn, and a refused local attach may keep its reserved
+		// publication intent until then. Hold the drift until both are gone;
+		// restoring earlier would let a retried publish pin the original
+		// source.
 		Eventually(func() string { return e71Attachment(ctx, f, ".metadata.name") }, 2*time.Minute, 2*time.Second).Should(BeEmpty(), diagnostics)
 		Eventually(func() []pillarv1.VolumePublication {
 			s, _ := e71VolumeState(ctx, f)
 			return s.Status.PublishedNodes
 		}, 2*time.Minute, 2*time.Second).Should(BeEmpty(), diagnostics)
+		Expect(cleanup()).To(Succeed())
+		restored = true
 		s, err := f.Snapshot(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(s.NativeID).To(Equal(before.NativeID))

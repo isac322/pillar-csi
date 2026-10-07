@@ -593,21 +593,30 @@ func (f *FilesystemAdoptionFixture) Cleanup(ctx context.Context) error {
 		return fmt.Errorf("refusing source cleanup without preservation snapshot: %w", err)
 	}
 	if f.PVName == "" {
-		f.PVName, _ = f.Kubectl(ctx, "", "-n", f.Namespace, "get", "pvc", f.PVCName, "--ignore-not-found=true", "-o", "jsonpath={.spec.volumeName}")
+		f.PVName, err = f.Kubectl(ctx, "", "-n", f.Namespace, "get", "pvc", f.PVCName, "--ignore-not-found=true", "-o", "jsonpath={.spec.volumeName}")
+		if err != nil {
+			return err
+		}
 	}
 	if _, err = f.Kubectl(ctx, "", "-n", f.Namespace, "delete", "pods", "--all", "--ignore-not-found=true", "--wait=true", "--timeout=3m"); err != nil {
 		return err
+	}
+	if f.PVName != "" {
+		// Switch the fixture-owned PV to Delete while its claim is still
+		// bound, the same order TC-E71.10 exercises: once the claim is
+		// removed the provisioner reclaims the Released PV through
+		// DeleteVolume, so the PV and pillarvolumestate disappear only via
+		// the CSI lifecycle. A Retain-origin PV may have no provisioner
+		// deletion finalizer, so deleting it directly can bypass
+		// DeleteVolume and orphan the PVS.
+		if _, err = f.Kubectl(ctx, "", "patch", "pv", f.PVName, "--type=merge", "-p", `{"spec":{"persistentVolumeReclaimPolicy":"Delete"}}`); err != nil && !strings.Contains(err.Error(), "NotFound") {
+			return err
+		}
 	}
 	if _, err = f.Kubectl(ctx, "", "-n", f.Namespace, "delete", "pvc", "--all", "--ignore-not-found=true", "--wait=true", "--timeout=3m"); err != nil {
 		return err
 	}
 	if f.PVName != "" {
-		if _, err = f.Kubectl(ctx, "", "patch", "pv", f.PVName, "--type=merge", "-p", `{"spec":{"persistentVolumeReclaimPolicy":"Delete"}}`); err != nil && !strings.Contains(err.Error(), "NotFound") {
-			return err
-		}
-		if _, err = f.Kubectl(ctx, "", "delete", "pv", f.PVName, "--ignore-not-found=true", "--wait=true", "--timeout=3m"); err != nil {
-			return err
-		}
 		for _, kind := range []string{"pv", "pillarvolumestate"} {
 			if _, err = f.Kubectl(ctx, "", "wait", "--for=delete", kind+"/"+f.PVName, "--timeout=3m"); err != nil && !strings.Contains(err.Error(), "NotFound") {
 				return err
