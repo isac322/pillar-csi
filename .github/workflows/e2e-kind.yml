@@ -338,7 +338,7 @@ jobs:
       - name: Upload e2e run log and reports
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: e2e-kind-reports-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

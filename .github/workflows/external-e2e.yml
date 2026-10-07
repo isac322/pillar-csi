@@ -179,7 +179,7 @@ jobs:
       # unmeasured (missing).  A hard job timeout may skip this step.
       - name: Upload External Storage e2e report
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: external-e2e-report-${{ github.run_id }}-${{ github.run_attempt }}${{ inputs.report_suffix != '' && format('-{0}', inputs.report_suffix) || '' }}
           path: ${{ runner.temp }}/external-e2e-reports
