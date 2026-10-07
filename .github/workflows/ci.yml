@@ -580,7 +580,7 @@ jobs:
             > "${RUNNER_TEMP}/runtime-images.json"
 
       - name: Upload exact-checkout runtime images
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v6
         with:
           name: pillar-csi-runtime-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
