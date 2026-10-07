@@ -5597,7 +5597,9 @@ fixture cleanup은 BeforeAll에서 fixture 생성 직후 `DeferCleanup`으로 �
 fixture cleanup은 소유 PV를 먼저 Delete reclaim으로 patch하고 claim을 제거한 뒤,
 직접 PV delete 없이 CSI 주도의 PV·PVS 삭제를 기다린다. E71.11과 E71.13은 거부된
 consumer의 VolumeAttachment가 사라진 뒤에 drift를 복원하며, identity drift의
-publication intent도 복원 전에 drain한다. network PVC가 3분 안에
+publication intent도 복원 전에 drain한다. 거부된 consumer의 Pod가 사라진 뒤 PV·노드·드라이버와
+UID를 확인한 미부착 VolumeAttachment만 정상 Delete로 retire한다. finalizer와 CSI unpublish
+경로 및 기존 timeout을 유지한다. network PVC가 3분 안에
 Bound되지 않으면 원래 wait 오류를 유지한 채 별도 1분 context에서 명령별 32KiB로
 PVC describe/event, PillarStorageClass condition, PillarStore capacity/condition,
 PVS, claim UID가 포함된 controller/agent log를 기록한다.

@@ -15,7 +15,10 @@ import (
 	agentbackend "github.com/isac322/pillar-csi/internal/agent/backend"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	storagev1 "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 const (
@@ -167,6 +170,68 @@ func e71OverflowErrno(ctx context.Context, f *FilesystemAdoptionFixture, pod, pa
 // e71Attachment reads one field of the VolumeAttachment for the fixture PV.
 func e71Attachment(ctx context.Context, f *FilesystemAdoptionFixture, field string) string {
 	return f.Must(ctx, "get", "volumeattachment", "-o", `jsonpath={.items[?(@.spec.source.persistentVolumeName=="`+f.PVName+`")]`+field+`}`)
+}
+
+// e71FileDriver is the CSI driver of the files PillarStorageClass route.
+const e71FileDriver = "files.pillar-csi.bhyoo.com"
+
+// e71RefusedAttachment selects the VolumeAttachment a retired refused
+// consumer left for pv: the only one naming pv, on node, through the file
+// driver, and never attached. It returns that item's index in items, -1 with
+// a nil error when none exists, and -1 with an error for any other shape, so
+// the caller withdraws nothing it does not own.
+func e71RefusedAttachment(items []storagev1.VolumeAttachment, pv, node string) (int, error) {
+	index := -1
+	for i := range items {
+		if src := items[i].Spec.Source.PersistentVolumeName; src != nil && *src == pv {
+			if index >= 0 {
+				return -1, fmt.Errorf("want at most one VolumeAttachment for PV %s, got more", pv)
+			}
+			index = i
+		}
+	}
+	if index < 0 {
+		return -1, nil
+	}
+	va := &items[index]
+	switch {
+	case va.Name == "" || va.UID == "":
+		return -1, fmt.Errorf("VolumeAttachment for PV %s has no name or UID", pv)
+	case va.Spec.Attacher != e71FileDriver:
+		return -1, fmt.Errorf("VolumeAttachment %s attacher %q, want %q", va.Name, va.Spec.Attacher, e71FileDriver)
+	case va.Spec.NodeName != node:
+		return -1, fmt.Errorf("VolumeAttachment %s node %q, want %q", va.Name, va.Spec.NodeName, node)
+	case va.Status.Attached:
+		return -1, fmt.Errorf("VolumeAttachment %s is attached; only a refused attachment may be withdrawn", va.Name)
+	}
+	return index, nil
+}
+
+// e71RetireRefusedAttachment withdraws the refused consumer's
+// VolumeAttachment once pod is gone, as the attach-detach controller would.
+// The normal Delete is pinned to the read UID and keeps every finalizer:
+// the external-attacher still runs ControllerUnpublishVolume and removes
+// its finalizer, and the caller's existing wait bounds that completion.
+func e71RetireRefusedAttachment(ctx context.Context, f *FilesystemAdoptionFixture, pod string) {
+	out, err := f.Kubectl(ctx, "", "-n", f.Namespace, "get", "pod", pod, "--ignore-not-found=true", "-o", "name")
+	Expect(err).NotTo(HaveOccurred(), out)
+	Expect(out).To(BeEmpty(), "pod %s must be gone before its VolumeAttachment is withdrawn", pod)
+	client, err := kubernetes.NewForConfig(SuiteKubeRestConfig())
+	Expect(err).NotTo(HaveOccurred())
+	list, err := client.StorageV1().VolumeAttachments().List(ctx, metav1.ListOptions{})
+	Expect(err).NotTo(HaveOccurred())
+	index, err := e71RefusedAttachment(list.Items, f.PVName, f.StorageNode)
+	Expect(err).NotTo(HaveOccurred())
+	if index < 0 {
+		return
+	}
+	va := &list.Items[index]
+	uid := va.UID
+	err = client.StorageV1().VolumeAttachments().Delete(ctx, va.Name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
+	if apierrors.IsNotFound(err) {
+		return
+	}
+	Expect(err).NotTo(HaveOccurred(), "withdraw VolumeAttachment %s (uid %s)", va.Name, uid)
 }
 
 // e71Reservations lists every PillarVolumeReservation in the cluster.
@@ -532,6 +597,7 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		Expect(drifted.NativeID).To(Equal(stable.NativeID))
 		Expect(drifted.TreeHash).To(Equal(stable.TreeHash))
 		e71Delete(ctx, f, "pod", pod)
+		e71RetireRefusedAttachment(ctx, f, pod)
 		// Restore only once the refused consumer's VolumeAttachment is gone:
 		// while it remains, the external-attacher keeps retrying the refused
 		// publish, and an earlier restore would let a retried publish pin the
@@ -660,6 +726,7 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		Expect(after.UID).To(Equal(held.UID))
 		Expect(after.Spec).To(Equal(held.Spec))
 		e71Delete(ctx, f, "pod", pod)
+		e71RetireRefusedAttachment(ctx, f, pod)
 		// The refused consumer's attach retries until its VolumeAttachment is
 		// withdrawn, and a refused local attach may keep its reserved
 		// publication intent until then. Hold the drift until both are gone;
