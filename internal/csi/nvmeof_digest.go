@@ -53,10 +53,10 @@ import (
 	v1alpha1 "github.com/isac322/pillar-csi/api/v1alpha1"
 )
 
-// The publish path reads the PersistentVolume, its StorageClass and the
-// PillarStorageClass / PillarProtocol the class names.
-// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
-// +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarstorageclasses;pillarprotocols,verbs=get;list;watch
+// The publish path reads (uncached) the PersistentVolume, its StorageClass
+// and the PillarStorageClass / PillarProtocol the class names.
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get
+// +kubebuilder:rbac:groups=pillar-csi.bhyoo.com,resources=pillarstorageclasses;pillarprotocols,verbs=get
 
 // nvmeofDigestPublishContext returns the PublishContext entries carrying the
 // digest settings of the PillarProtocol that volume pvName (CSI handle
@@ -111,12 +111,19 @@ func nvmeofDigestContext(cfg *v1alpha1.NVMeOFTCPConfig) map[string]string {
 // [PillarStorageClass ->] PillarProtocol for volume pvName.  A missing link
 // returns a nil protocol and the reason; any other read error is returned as
 // an Internal status.
+//
+// Every link is read from the API server, not the informer cache: the
+// attacher stores the publish response on the VolumeAttachment and never
+// publishes an attached volume again, so a cache that has not yet seen a
+// protocol edit would leave the attachment without the digest for its
+// whole lifetime.
 func (s *ControllerServer) publishedProtocol(
 	ctx context.Context,
 	pvName, volumeID string,
 ) (*v1alpha1.PillarProtocol, string, error) {
+	reader := s.uncachedReader()
 	pv := &corev1.PersistentVolume{}
-	found, err := getOptional(ctx, s.uncachedReader(), pvName, pv, "PersistentVolume")
+	found, err := getOptional(ctx, reader, pvName, pv, "PersistentVolume")
 	if !found || err != nil {
 		return nil, fmt.Sprintf("PersistentVolume %q not found", pvName), err
 	}
@@ -128,7 +135,7 @@ func (s *ControllerServer) publishedProtocol(
 		return nil, fmt.Sprintf("PersistentVolume %q names no StorageClass", pvName), nil
 	}
 	sc := &storagev1.StorageClass{}
-	found, err = getOptional(ctx, s.k8sClient, scName, sc, "StorageClass")
+	found, err = getOptional(ctx, reader, scName, sc, "StorageClass")
 	if !found || err != nil {
 		return nil, fmt.Sprintf("StorageClass %q not found", scName), err
 	}
@@ -140,7 +147,7 @@ func (s *ControllerServer) publishedProtocol(
 	protocolName := sc.Parameters[paramProtocolRef]
 	if bindingName := sc.Parameters[paramBinding]; bindingName != "" {
 		binding := &v1alpha1.PillarStorageClass{}
-		found, err = getOptional(ctx, s.k8sClient, bindingName, binding, "PillarStorageClass")
+		found, err = getOptional(ctx, reader, bindingName, binding, "PillarStorageClass")
 		if !found || err != nil {
 			return nil, fmt.Sprintf("PillarStorageClass %q (StorageClass %q) not found", bindingName, scName), err
 		}
@@ -150,7 +157,7 @@ func (s *ControllerServer) publishedProtocol(
 		return nil, fmt.Sprintf("StorageClass %q names no PillarProtocol", scName), nil
 	}
 	protocol := &v1alpha1.PillarProtocol{}
-	found, err = getOptional(ctx, s.k8sClient, protocolName, protocol, "PillarProtocol")
+	found, err = getOptional(ctx, reader, protocolName, protocol, "PillarProtocol")
 	if !found || err != nil {
 		return nil, fmt.Sprintf("PillarProtocol %q not found", protocolName), err
 	}

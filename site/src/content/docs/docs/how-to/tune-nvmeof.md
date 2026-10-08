@@ -105,13 +105,15 @@ The digests are not recorded with the volume. The controller reads them from the
 
 If the controller cannot find the protocol (the PersistentVolume, StorageClass, `PillarStorageClass` or `PillarProtocol` is gone), it publishes the volume without digests and logs why. A transient API error fails the publish so Kubernetes retries it.
 
-To see whether a connection uses the digests, look at the `pillar_csi.nvme.hdr_digest` and `pillar_csi.nvme.data_digest` attributes of the `pillar_csi.node.nvmeof_connect` span, or at the publish context of the volume's VolumeAttachment:
+The publish context of the volume's VolumeAttachment shows which digests were *requested* for the attachment:
 
 ```sh
 kubectl get volumeattachment -o jsonpath='{range .items[?(@.spec.source.persistentVolumeName=="<pv-name>")]}{.status.attachmentMetadata}{"\n"}{end}'
 ```
 
-The publish context carries `pillar-csi.bhyoo.com/nvmeof-hdr-digest: "true"` and `pillar-csi.bhyoo.com/nvmeof-data-digest: "true"` for the digests that are on. A digest error shows up in the worker's kernel log as `header digest error` or `data digest error`, and the kernel resets the connection.
+It carries `pillar-csi.bhyoo.com/nvmeof-hdr-digest: "true"` and `pillar-csi.bhyoo.com/nvmeof-data-digest: "true"` for the digests that were requested. A request is not proof that the connection uses the digests. The `pillar_csi.node.nvmeof_connect` span records the request as `pillar_csi.nvme.hdr_digest` and `pillar_csi.nvme.data_digest`. The request was applied only when the same span has `pillar_csi.nvme.already_connected=false` and no error, which means the node opened a fresh connection with these options. With `already_connected=true` the node reused an existing connection, and that connection's digest settings are unknown. To be sure, unstage the volume (move or stop its workload) so the next stage opens a fresh connection.
+
+A digest error shows up in the worker's kernel log as `header digest error` or `data digest error`, and the kernel resets the connection.
 
 ## Override per binding or per volume
 

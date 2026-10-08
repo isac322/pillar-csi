@@ -243,7 +243,7 @@ func TestControllerPublishVolume_NVMeoFDigestsFollowLiveProtocol(t *testing.T) {
 // failingStorageClassReader fails every StorageClass read with a transient
 // API error.
 type failingStorageClassReader struct {
-	ctrlclient.Client
+	ctrlclient.Reader
 }
 
 var errStorageClassUnavailable = errors.New("apiserver unavailable")
@@ -254,7 +254,50 @@ func (c failingStorageClassReader) Get(
 	if _, ok := obj.(*storagev1.StorageClass); ok {
 		return errStorageClassUnavailable
 	}
-	return c.Client.Get(ctx, key, obj, opts...)
+	return c.Reader.Get(ctx, key, obj, opts...)
+}
+
+// authoritativeProtocolReader stands in for the API server reader: it
+// returns protocol for its name, while the cached client still holds an
+// older copy, and delegates every other read.
+type authoritativeProtocolReader struct {
+	ctrlclient.Reader
+	protocol *v1alpha1.PillarProtocol
+}
+
+func (r authoritativeProtocolReader) Get(
+	ctx context.Context, key ctrlclient.ObjectKey, obj ctrlclient.Object, opts ...ctrlclient.GetOption,
+) error {
+	if p, ok := obj.(*v1alpha1.PillarProtocol); ok && key.Name == r.protocol.Name {
+		r.protocol.DeepCopyInto(p)
+		return nil
+	}
+	return r.Reader.Get(ctx, key, obj, opts...)
+}
+
+// TestControllerPublishVolume_NVMeoFDigestsBypassCache verifies the digests
+// are read from the API server, not the informer cache: the attacher never
+// re-publishes an attached volume, so a publish answered from a cache that
+// has not seen a protocol edit yet would leave the attachment without the
+// digest for its whole lifetime.
+func TestControllerPublishVolume_NVMeoFDigestsBypassCache(t *testing.T) {
+	t.Parallel()
+	volumeID := basePublishRequest().GetVolumeId()
+	env := newDigestPublishEnv(t,
+		append(generatedDigestClass(), digestProtocolObj(false, false), digestPV(volumeID, digestClass))...)
+	env.srv.apiReader = authoritativeProtocolReader{Reader: env.srv.k8sClient, protocol: digestProtocolObj(true, true)}
+
+	resp, err := env.srv.ControllerPublishVolume(context.Background(), basePublishRequest())
+	if err != nil {
+		t.Fatalf("ControllerPublishVolume: %v", err)
+	}
+	want := map[string]string{
+		PublishContextKeyNVMeOFHdrDigest:  "true",
+		PublishContextKeyNVMeOFDataDigest: "true",
+	}
+	if got := digestKeys(resp.GetPublishContext()); !maps.Equal(got, want) {
+		t.Errorf("digest PublishContext = %v, want the API server's %v (not the stale cache)", got, want)
+	}
 }
 
 // TestControllerPublishVolume_NVMeoFDigestReadError verifies that a transient
@@ -265,7 +308,7 @@ func TestControllerPublishVolume_NVMeoFDigestReadError(t *testing.T) {
 	volumeID := basePublishRequest().GetVolumeId()
 	env := newDigestPublishEnv(t,
 		append(generatedDigestClass(), digestProtocolObj(true, true), digestPV(volumeID, digestClass))...)
-	env.srv.k8sClient = failingStorageClassReader{Client: env.srv.k8sClient}
+	env.srv.apiReader = failingStorageClassReader{Reader: env.srv.k8sClient}
 
 	_, err := env.srv.ControllerPublishVolume(context.Background(), basePublishRequest())
 	requireGRPCCode(t, err, codes.Internal)

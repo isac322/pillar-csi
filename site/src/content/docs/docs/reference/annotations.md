@@ -141,8 +141,8 @@ The controller writes these into `PersistentVolume.spec.csi.volumeAttributes` at
 | `pillar-csi.bhyoo.com/attach-mode` | `local` |
 | `pillar-csi.bhyoo.com/local-node` | name of the storage node the publish is for; `NodeStageVolume` on any other node fails with `FAILED_PRECONDITION` |
 | `pillar-csi.bhyoo.com/local-device-path` | path of the backend zvol or logical volume on that node, as reported by the agent |
-| `pillar-csi.bhyoo.com/nvmeof-hdr-digest` | `"true"` when the volume's current `PillarProtocol` sets `nvmeofTcp.hdrDigest`; the node connects with `hdr_digest`. See [Header and data digests](/docs/how-to/tune-nvmeof/#header-and-data-digests) |
-| `pillar-csi.bhyoo.com/nvmeof-data-digest` | `"true"` when the volume's current `PillarProtocol` sets `nvmeofTcp.dataDigest`; the node connects with `data_digest` |
+| `pillar-csi.bhyoo.com/nvmeof-hdr-digest` | `"true"` when the volume's `PillarProtocol` set `nvmeofTcp.hdrDigest` at publish time; a fresh connection opened by the node then uses `hdr_digest` (a connection already open is reused as is). See [Header and data digests](/docs/how-to/tune-nvmeof/#header-and-data-digests) |
+| `pillar-csi.bhyoo.com/nvmeof-data-digest` | `"true"` when the volume's `PillarProtocol` set `nvmeofTcp.dataDigest` at publish time; a fresh connection then uses `data_digest` |
 
 ### Topology
 
