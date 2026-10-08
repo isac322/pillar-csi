@@ -68,6 +68,8 @@ const (
 	KeyPodNamespace          = attribute.Key("pillar_csi.pod.namespace")
 	KeyNVMeAlreadyConnected  = attribute.Key("pillar_csi.nvme.already_connected")
 	KeyNVMeDyingWaitDuration = attribute.Key("pillar_csi.nvme.dying_wait_duration")
+	KeyNVMeHdrDigest         = attribute.Key("pillar_csi.nvme.hdr_digest")
+	KeyNVMeDataDigest        = attribute.Key("pillar_csi.nvme.data_digest")
 	KeyPollAttempts          = attribute.Key("pillar_csi.poll.attempts")
 )
 

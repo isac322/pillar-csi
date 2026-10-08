@@ -474,6 +474,13 @@ func TestConnect_FabricsOptions(t *testing.T) {
 			opts: NVMeoFConnectOptions{CtrlLossTmo: i32(600), QueueSize: i32(64)},
 			want: base + ",ctrl_loss_tmo=600,queue_size=64",
 		},
+		{
+			name: "both digests",
+			opts: NVMeoFConnectOptions{CtrlLossTmo: i32(600), HdrDigest: true, DataDigest: true},
+			want: base + ",ctrl_loss_tmo=600,hdr_digest,data_digest",
+		},
+		{name: "header digest only", opts: NVMeoFConnectOptions{HdrDigest: true}, want: base + ",hdr_digest"},
+		{name: "data digest only", opts: NVMeoFConnectOptions{DataDigest: true}, want: base + ",data_digest"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -505,7 +512,7 @@ func TestParseNVMeoFConnectOptions(t *testing.T) {
 		paramNVMeOFCtrlLossTmo:    "-1",
 		paramNVMeOFReconnectDelay: "5",
 		paramNVMeOFMaxQueueSize:   "256",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -519,7 +526,7 @@ func TestParseNVMeoFConnectOptions(t *testing.T) {
 		t.Errorf("QueueSize = %v, want 256", got.QueueSize)
 	}
 
-	unset, err := ParseNVMeoFConnectOptions(map[string]string{paramNVMeOFCtrlLossTmo: ""})
+	unset, err := ParseNVMeoFConnectOptions(map[string]string{paramNVMeOFCtrlLossTmo: ""}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -528,7 +535,7 @@ func TestParseNVMeoFConnectOptions(t *testing.T) {
 	}
 
 	for _, bad := range []string{"ten", "1.5", "4294967296"} {
-		_, err := ParseNVMeoFConnectOptions(map[string]string{paramNVMeOFReconnectDelay: bad})
+		_, err := ParseNVMeoFConnectOptions(map[string]string{paramNVMeOFReconnectDelay: bad}, nil)
 		if err == nil || !strings.Contains(err.Error(), paramNVMeOFReconnectDelay) {
 			t.Errorf("value %q: expected error naming %s, got %v", bad, paramNVMeOFReconnectDelay, err)
 		}
@@ -540,15 +547,52 @@ func TestParseNVMeoFConnectOptions(t *testing.T) {
 // so such a value must fail here, before a PV is provisioned with it.
 func TestParseNVMeoFConnectOptions_QueueSizeRange(t *testing.T) {
 	for _, q := range []string{"16", "1024"} {
-		opts, err := ParseNVMeoFConnectOptions(map[string]string{paramNVMeOFMaxQueueSize: q})
+		opts, err := ParseNVMeoFConnectOptions(map[string]string{paramNVMeOFMaxQueueSize: q}, nil)
 		if err != nil || opts.QueueSize == nil {
 			t.Errorf("queue size %s: want accepted, got %+v, %v", q, opts, err)
 		}
 	}
 	for _, bad := range []string{"15", "1025", "0", "-1", "big"} {
-		_, err := ParseNVMeoFConnectOptions(map[string]string{paramNVMeOFMaxQueueSize: bad})
+		_, err := ParseNVMeoFConnectOptions(map[string]string{paramNVMeOFMaxQueueSize: bad}, nil)
 		if err == nil || !strings.Contains(err.Error(), paramNVMeOFMaxQueueSize) {
 			t.Errorf("queue size %q: expected error naming %s, got %v", bad, paramNVMeOFMaxQueueSize, err)
+		}
+	}
+}
+
+// TestParseNVMeoFConnectOptions_Digests verifies the digest flags come from
+// the PublishContext only: "true" enables each independently, an absent key
+// leaves it off, a VolumeContext key is ignored (the digests follow the live
+// PillarProtocol, never the immutable provisioning record), and any other
+// value is an error so a requested digest is never silently dropped.
+func TestParseNVMeoFConnectOptions_Digests(t *testing.T) {
+	t.Parallel()
+	on := map[string]string{
+		PublishContextKeyNVMeOFHdrDigest:  "true",
+		PublishContextKeyNVMeOFDataDigest: "true",
+	}
+	cases := []struct {
+		name                  string
+		volCtx, publishCtx    map[string]string
+		wantHdr, wantDataDgst bool
+	}{
+		{name: "both", publishCtx: on, wantHdr: true, wantDataDgst: true},
+		{name: "header only", publishCtx: map[string]string{PublishContextKeyNVMeOFHdrDigest: "true"}, wantHdr: true},
+		{name: "data only", publishCtx: map[string]string{PublishContextKeyNVMeOFDataDigest: "true"}, wantDataDgst: true},
+		{name: "absent"},
+		{name: "VolumeContext keys ignored", volCtx: on},
+	}
+	for _, tc := range cases {
+		got, err := ParseNVMeoFConnectOptions(tc.volCtx, tc.publishCtx)
+		if err != nil || got.HdrDigest != tc.wantHdr || got.DataDigest != tc.wantDataDgst {
+			t.Errorf("%s: got hdr=%v data=%v err=%v, want hdr=%v data=%v",
+				tc.name, got.HdrDigest, got.DataDigest, err, tc.wantHdr, tc.wantDataDgst)
+		}
+	}
+	for _, bad := range []string{"", "false", "True", "1"} {
+		_, err := ParseNVMeoFConnectOptions(nil, map[string]string{PublishContextKeyNVMeOFDataDigest: bad})
+		if err == nil || !strings.Contains(err.Error(), PublishContextKeyNVMeOFDataDigest) {
+			t.Errorf("value %q: expected error naming %s, got %v", bad, PublishContextKeyNVMeOFDataDigest, err)
 		}
 	}
 }

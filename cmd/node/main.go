@@ -234,9 +234,19 @@ func stateDirWritable(stateDir string) bool {
 //
 //	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>,
 //	    hostnqn=<c.hostNQN>,hostid=<c.hostID>[,ctrl_loss_tmo=N][,reconnect_delay=N][,queue_size=N]
+//	    [,hdr_digest][,data_digest]
 //
 // ctrl_loss_tmo / reconnect_delay / queue_size are appended only when the
-// VolumeContext carries them; otherwise the kernel defaults apply.
+// VolumeContext carries them; otherwise the kernel defaults apply.  The
+// hdr_digest / data_digest flags are appended only when the PublishContext
+// requests them.
+//
+// An already connected controller is reused as is, with the options it was
+// created with.  The kernel exposes no controller attribute reporting its
+// digests, so it cannot be checked against connectOpts, and it is never
+// torn down to apply them: its namespace may still back a mount whose I/O
+// would fail.  The requested digests apply from the next connect after the
+// volume is unstaged; the span records both the request and the reuse.
 //
 // Both identity fields are mandatory:
 //
@@ -284,7 +294,10 @@ func (c *fabricsConnector) nvmeConnect(
 		attrs = append(attrs, semconv.ServerPort(port))
 	}
 	ctx, span := telemetry.Tracer().Start(ctx, telemetry.SpanNodeNVMeoFConnect,
-		trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attrs...))
+		trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attrs...),
+		trace.WithAttributes(
+			telemetry.KeyNVMeHdrDigest.Bool(connectOpts.HdrDigest),
+			telemetry.KeyNVMeDataDigest.Bool(connectOpts.DataDigest)))
 	defer func() {
 		telemetry.SetSpanError(span, err, "")
 		span.End()
@@ -793,7 +806,7 @@ func (c *fabricsConnector) Attach(ctx context.Context, params csisvc.AttachParam
 	trAddr := params.Address
 	trSvcID := params.Port
 
-	connectOpts, optsErr := csisvc.ParseNVMeoFConnectOptions(params.Extra)
+	connectOpts, optsErr := csisvc.ParseNVMeoFConnectOptions(params.Extra, params.PublishContext)
 	if optsErr != nil {
 		return nil, fmt.Errorf("fabricsConnector Attach: %w", optsErr)
 	}

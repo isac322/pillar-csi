@@ -2281,7 +2281,7 @@ func (s *ControllerServer) ControllerPublishVolume(
 	return s.finishPublish(ctx, target.local, target.pvName, target.agentAddr,
 		publishReq.volumeID, target.agentVolID, target.agentProtocolType,
 		publishReq.nodeID, target.initiatorID, target.pvs, fence, target.chap,
-		publication, newPublication)
+		publication, newPublication, target.digestContext)
 }
 
 type publishVolumeRequest struct {
@@ -2332,6 +2332,9 @@ type publishVolumeTarget struct {
 	local             bool
 	initiatorID       string
 	chap              *agentv1.IscsiChap
+	// digestContext carries the NVMe/TCP digest flags of the volume's
+	// current PillarProtocol for a protocol publish (nil otherwise).
+	digestContext map[string]string
 }
 
 func (s *ControllerServer) resolvePublishTarget(
@@ -2382,6 +2385,15 @@ func (s *ControllerServer) resolvePublishTarget(
 	if err != nil {
 		return publishVolumeTarget{}, err
 	}
+	// The digests are read before any publish side effect so a failed read
+	// leaves nothing to compensate.  A local attach bypasses the network.
+	var digestContext map[string]string
+	if !local && protocolType == ProtocolNVMeoFTCP {
+		digestContext, err = s.nvmeofDigestPublishContext(ctx, pvName, publishReq.volumeID)
+		if err != nil {
+			return publishVolumeTarget{}, err
+		}
+	}
 	return publishVolumeTarget{
 		pvName:            pvName,
 		pvs:               pvs,
@@ -2392,6 +2404,7 @@ func (s *ControllerServer) resolvePublishTarget(
 		local:             local,
 		initiatorID:       initiatorID,
 		chap:              chap,
+		digestContext:     digestContext,
 	}, nil
 }
 
@@ -2460,7 +2473,8 @@ func validateStoredPublishCapabilities(
 // status.localAttachNode is set) and grant the initiator with the volume's
 // CHAP credentials (chap, nil for none). A failed grant compensates only a
 // publication newly appended by this attempt; an idempotent retry keeps the
-// existing record fail-closed.
+// existing record fail-closed.  A protocol publish returns digestContext
+// (the NVMe/TCP digest flags) in its PublishContext.
 func (s *ControllerServer) finishPublish(
 	ctx context.Context,
 	local bool,
@@ -2472,6 +2486,7 @@ func (s *ControllerServer) finishPublish(
 	chap *agentv1.IscsiChap,
 	publication v1alpha1.VolumePublication,
 	newPublication bool,
+	digestContext map[string]string,
 ) (*csi.ControllerPublishVolumeResponse, error) {
 	if local {
 		return s.finishLocalPublish(ctx, agentAddr, volumeID, agentVolID, protocolType, nodeID, fence, pvs)
@@ -2489,7 +2504,10 @@ func (s *ControllerServer) finishPublish(
 	// Durable records order exclusivity; the state machine only mirrors that
 	// at least one node is published, including across controller restarts.
 	s.sm.ForceState(volumeID, StateControllerPublished)
-	publishContext := map[string]string{}
+	publishContext := maps.Clone(digestContext)
+	if publishContext == nil {
+		publishContext = map[string]string{}
+	}
 	err = addFilesystemPublishContext(pvs, publishContext, "", agentAddr)
 	if err != nil {
 		return nil, err

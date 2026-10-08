@@ -32,6 +32,18 @@ func TestDecodeOverrides_Rejections(t *testing.T) {
 			wantErr: "pillar-csi.bhyoo.com/protocol: nvmeofTcp.port is structural and cannot be set per volume",
 		},
 		{
+			name:    "protocol structural hdrDigest",
+			decode:  protocolOverride,
+			raw:     "nvmeofTcp: {hdrDigest: true}",
+			wantErr: "pillar-csi.bhyoo.com/protocol: nvmeofTcp.hdrDigest is structural and cannot be set per volume",
+		},
+		{
+			name:    "protocol structural dataDigest",
+			decode:  protocolOverride,
+			raw:     "nvmeofTcp: {dataDigest: true}",
+			wantErr: "pillar-csi.bhyoo.com/protocol: nvmeofTcp.dataDigest is structural and cannot be set per volume",
+		},
+		{
 			name:    "iscsi structural acl",
 			decode:  protocolOverride,
 			raw:     "iscsi: {acl: true}",

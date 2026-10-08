@@ -132,6 +132,27 @@ type NVMeOFTCPConfig struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	ReconnectDelay *int32 `json:"reconnectDelay,omitempty"`
+
+	// hdrDigest makes the initiator request the NVMe/TCP header digest: a
+	// CRC32C over every PDU header, so a header corrupted in flight fails
+	// with a digest error instead of being acted on.  The target needs no
+	// configuration; it enables the digest the initiator requests.
+	//
+	// Unlike the tunables above it is not recorded per volume: the
+	// controller reads it from this PillarProtocol whenever it publishes a
+	// volume to a node, so a change applies to every volume of the
+	// protocol, including volumes provisioned before the change, from
+	// their next attach.  A volume already connected on a node keeps the
+	// digest settings of its existing connection until it is unstaged.
+	// +optional
+	HdrDigest bool `json:"hdrDigest,omitempty"`
+
+	// dataDigest makes the initiator request the NVMe/TCP data digest: a
+	// CRC32C over every PDU data payload, so data corrupted in flight
+	// fails with a digest error instead of reaching the disk or the
+	// application.  It applies like hdrDigest.
+	// +optional
+	DataDigest bool `json:"dataDigest,omitempty"`
 }
 
 // NFSConfig holds NFS-specific protocol parameters.

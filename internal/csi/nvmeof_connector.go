@@ -33,7 +33,7 @@ import (
 // A nil field is omitted from the connect string so the kernel default
 // applies (ctrl_loss_tmo=600, reconnect_delay=10, queue_size=128 on Linux).
 // Explicit values, including 0 and -1 for the timeouts, are passed through
-// verbatim.
+// verbatim.  The digest flags default to off, the kernel default.
 type NVMeoFConnectOptions struct {
 	// CtrlLossTmo maps to the ctrl_loss_tmo fabrics option (seconds).
 	CtrlLossTmo *int32
@@ -42,7 +42,23 @@ type NVMeoFConnectOptions struct {
 	// QueueSize maps to the queue_size fabrics option: the I/O queue depth
 	// of every queue of the controller.
 	QueueSize *int32
+	// HdrDigest maps to the hdr_digest fabrics flag: the host requests the
+	// NVMe/TCP header digest (CRC32C) in its ICReq.
+	HdrDigest bool
+	// DataDigest maps to the data_digest fabrics flag: the host requests
+	// the NVMe/TCP data digest (CRC32C) in its ICReq.
+	DataDigest bool
 }
+
+// PublishContext keys ControllerPublishVolume sets from the volume's current
+// PillarProtocol (nvmeofTcp.hdrDigest / dataDigest).  They travel in the
+// PublishContext, not the immutable VolumeContext, so a protocol change
+// reaches volumes provisioned before it at their next publish.  The only
+// value is "true"; an absent key leaves the digest off.
+const (
+	PublishContextKeyNVMeOFHdrDigest  = "pillar-csi.bhyoo.com/nvmeof-hdr-digest"
+	PublishContextKeyNVMeOFDataDigest = "pillar-csi.bhyoo.com/nvmeof-data-digest"
+)
 
 // Linux accepts a fabrics queue_size only within [NVMF_MIN_QUEUE_SIZE,
 // NVMF_MAX_QUEUE_SIZE] (drivers/nvme/host/fabrics.h) and fails the whole
@@ -53,12 +69,15 @@ const (
 )
 
 // ParseNVMeoFConnectOptions extracts the NVMe-oF fabrics tuning parameters
-// that CreateVolume copied into the VolumeContext.  Absent or empty keys leave
-// the option unset; a present value that is not a base-10 int32 is an error
-// so a misconfigured timeout is never silently replaced by the kernel default.
-// A queue size outside the kernel's accepted range is an error too, because
-// the kernel would reject the connect.
-func ParseNVMeoFConnectOptions(volCtx map[string]string) (NVMeoFConnectOptions, error) {
+// that CreateVolume copied into the VolumeContext and the digest flags that
+// ControllerPublishVolume put into the PublishContext.  Absent or empty keys
+// leave the option unset; a present value that is not a base-10 int32 is an
+// error so a misconfigured timeout is never silently replaced by the kernel
+// default.  A queue size outside the kernel's accepted range is an error too,
+// because the kernel would reject the connect.  A digest key with any value
+// other than "true" is an error, so a requested digest is never silently
+// dropped.
+func ParseNVMeoFConnectOptions(volCtx, publishCtx map[string]string) (NVMeoFConnectOptions, error) {
 	var opts NVMeoFConnectOptions
 	for _, f := range []struct {
 		key string
@@ -83,6 +102,23 @@ func ParseNVMeoFConnectOptions(volCtx map[string]string) (NVMeoFConnectOptions, 
 		return NVMeoFConnectOptions{}, fmt.Errorf("parse %s=%d: queue size must be within [%d, %d]",
 			paramNVMeOFMaxQueueSize, *q, minNVMeoFQueueSize, maxNVMeoFQueueSize)
 	}
+	for _, f := range []struct {
+		key string
+		dst *bool
+	}{
+		{PublishContextKeyNVMeOFHdrDigest, &opts.HdrDigest},
+		{PublishContextKeyNVMeOFDataDigest, &opts.DataDigest},
+	} {
+		raw, ok := publishCtx[f.key]
+		if !ok {
+			continue
+		}
+		if raw != paramValueTrue {
+			return NVMeoFConnectOptions{}, fmt.Errorf("parse publish context %s=%q: must be %q",
+				f.key, raw, paramValueTrue)
+		}
+		*f.dst = true
+	}
 	return opts, nil
 }
 
@@ -96,6 +132,12 @@ func (o NVMeoFConnectOptions) AppendTo(connectOpts string) string {
 	}
 	if o.QueueSize != nil {
 		connectOpts += ",queue_size=" + strconv.Itoa(int(*o.QueueSize))
+	}
+	if o.HdrDigest {
+		connectOpts += ",hdr_digest"
+	}
+	if o.DataDigest {
+		connectOpts += ",data_digest"
 	}
 	return connectOpts
 }
@@ -153,10 +195,16 @@ var _ Connector = (*NVMeoFConnector)(nil)
 //
 // On a new connection it opens /dev/nvme-fabrics and writes:
 //
-//	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>[,ctrl_loss_tmo=N][,reconnect_delay=N][,queue_size=N]
+//	transport=tcp,traddr=<trAddr>,trsvcid=<trSvcID>,nqn=<subsysNQN>[,ctrl_loss_tmo=N][,reconnect_delay=N]
+//	    [,queue_size=N][,hdr_digest][,data_digest]
 //
 // connectOpts only affect a new connection; an existing controller keeps the
-// options it was created with.
+// options it was created with.  That includes the digests: the kernel
+// exposes no controller attribute that reports them, so a controller cannot
+// be checked against connectOpts, and it is never torn down to apply them
+// because its namespace may still back a mount whose I/O would fail.  The
+// requested digests apply from the next connect after the volume is
+// unstaged.
 //
 // Before a new connection it waits (bounded) for any controller of the same
 // NQN that the kernel is still deleting (see WaitForDyingControllers).

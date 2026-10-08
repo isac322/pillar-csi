@@ -43,6 +43,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -71,6 +72,11 @@ func newCSIControllerErrEnv(t *testing.T, agnt *csiMockAgent) *csiControllerTest
 	}
 	if err := storagev1.AddToScheme(scheme); err != nil {
 		t.Fatalf("storagev1.AddToScheme: %v", err)
+	}
+	// ControllerPublishVolume reads the volume's PersistentVolume to find
+	// its PillarProtocol (NVMe/TCP digests), as the production scheme allows.
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("corev1.AddToScheme: %v", err)
 	}
 
 	target := &v1alpha1.PillarAgent{

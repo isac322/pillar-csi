@@ -148,6 +148,8 @@ func newNVMeoFTCPHandlerWithConnector(c *NVMeoFConnector) *NVMeoFTCPHandler {
 //     tuning (see ParseNVMeoFConnectOptions); absent keys keep the kernel
 //     defaults.  Also the max data transfer size (see
 //     ParseNVMeoFMaxDataTransferSize).  Both are validated before connecting.
+//   - PublishContext — optional hdr_digest / data_digest flags (see
+//     PublishContextKeyNVMeOFHdrDigest); absent keys leave digests off.
 func (h *NVMeoFTCPHandler) Attach(ctx context.Context, params AttachParams) (*AttachResult, error) {
 	subsysNQN := params.ConnectionID
 	trAddr := params.Address
@@ -163,7 +165,7 @@ func (h *NVMeoFTCPHandler) Attach(ctx context.Context, params AttachParams) (*At
 		return nil, fmt.Errorf("nvmeof-tcp Attach: Port is required")
 	}
 
-	connectOpts, err := ParseNVMeoFConnectOptions(params.Extra)
+	connectOpts, err := ParseNVMeoFConnectOptions(params.Extra, params.PublishContext)
 	if err != nil {
 		return nil, fmt.Errorf("nvmeof-tcp Attach: %w", err)
 	}
