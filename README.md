@@ -170,7 +170,7 @@ agent:
 
 ```sh
 helm install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
-  --version 0.5.3 \
+  --version 0.5.4 \
   --namespace pillar-csi --create-namespace \
   -f values.yaml
 ```
@@ -329,13 +329,21 @@ Upgrading from 0.5.2 to 0.5.3 is a `helm upgrade` with no CRD or values changes;
 
 - A bug fix: on a staged filesystem in kernel shutdown, `stat(2)` on the mount point fails with EIO while the mount stays listed, and the 0.5.2 publish repair checked the mount with `stat` first — so every kubelet retry failed with `IsLikelyNotMountPoint ... input/output error` and the pod stayed ContainerCreating until the volume was detached ([#175](https://github.com/isac322/pillar-csi/issues/175)). The node plugin now decides whether a path is mounted from the kernel mount table, so the dead staged mount is repaired in place as soon as no pod bind pins it; read-only, NFS and raw block mounts that skip the write probe are checked with a non-writing probe and are still never reported healthy while dead.
 
+Upgrading from 0.5.3 to 0.5.4 is a `helm upgrade`. The `PillarProtocol` CRD gains `spec.protocol.nvmeofTcp.hdrDigest` and `dataDigest`, so with `installCRDs: true` (the default) the chart applies the changed CRDs; if you set `installCRDs: false` and manage CRDs through GitOps, apply the 0.5.4 CRDs (server-side apply) before or with the chart. What 0.5.4 adds:
+
+- Optional NVMe/TCP header and data digests: setting `hdrDigest: true` or `dataDigest: true` on a `PillarProtocol` makes new NVMe/TCP connections negotiate the kernel CRC32C digests, so corruption on the transport path fails the connection instead of silently writing bad bytes ([#180](https://github.com/isac322/pillar-csi/issues/180), [Tune NVMe-oF](https://pillar-csi.bhyoo.com/docs/how-to/tune-nvmeof/)). The flag reaches existing volumes only through a fresh `ControllerPublishVolume` — a VolumeAttachment that already exists keeps its old PublishContext, so re-attach the volume (drain, reschedule, or scale to 0 and back) after turning it on. An already-connected controller is reused unchanged, so the digests apply from the next connect after unstage.
+- Adoption of existing directories and ZFS filesystems under the opt-in `files.pillar-csi.bhyoo.com` CSI identity ([#167](https://github.com/isac322/pillar-csi/pull/167)); see "Existing filesystem adoption" below.
+- Adoption of existing LVM logical volumes and metadata-loss recovery ([#178](https://github.com/isac322/pillar-csi/pull/178)); see [Adopt an existing LVM logical volume](https://pillar-csi.bhyoo.com/docs/how-to/import-lv/).
+
+Chart values changes: the `fileDriver.*` section is new (filesystem adoption stays off unless `fileDriver.enabled: true`), and `mtls.controllerClient.fileNode` names a dedicated file-node mTLS client secret used only when the file driver is enabled. No existing value changed meaning.
+
 ### Local attach on the storage node
 
 By default a pod scheduled on the storage node reaches a block volume over an NVMe-oF/TCP or iSCSI loopback like any other consumer. Set `localAttach: true` on a `PillarStorageClass` (or `pillar-csi.bhyoo.com/local-attach: "true"` on a hand-written StorageClass) to let such pods use a block backend zvol or LV directly; legacy NFS volumes on the default CSI identity reject `localAttach` and always use their NFS network mount, including on the storage node. Pods on other nodes keep using the network protocol. While a block volume is attached locally, the network export is disabled for remote initiators, and a publish to another node fails with `FailedPrecondition` until the storage node has released the device. The storage node needs the `dm_mod` kernel module. See [Attach volumes locally on the storage node](https://pillar-csi.bhyoo.com/docs/how-to/local-attach/) and [Fencing and consistency](https://pillar-csi.bhyoo.com/docs/explanation/fencing-and-consistency/).
 
-## Existing filesystem adoption (branch-only, opt-in)
+## Existing filesystem adoption (opt-in)
 
-> **Unreleased branch feature.** Existing directory and ZFS filesystem adoption is available only from this branch. It is not part of the 0.5.0 release, and it is disabled unless you enable the file CSI identity. The existing `pillar-csi.bhyoo.com` identity and its block and dynamic NFS behavior remain unchanged.
+> Existing directory and ZFS filesystem adoption ships in 0.5.4 and later. It is disabled unless you enable the file CSI identity. The existing `pillar-csi.bhyoo.com` identity and its block and dynamic NFS behavior remain unchanged.
 
 The file identity is `files.pillar-csi.bhyoo.com`. It adopts an existing directory or ZFS filesystem in place. The file driver never creates a source filesystem, formats it, changes its properties or ownership, or expands its quota.
 
@@ -355,10 +363,11 @@ agent:
         hostRoot: /srv/pillar
 ```
 
-Install a chart built from this branch:
+Install chart 0.5.4 or later:
 
 ```sh
-helm upgrade --install pillar-csi <branch-built-chart> \
+helm upgrade --install pillar-csi oci://ghcr.io/isac322/charts/pillar-csi \
+  --version 0.5.4 \
   --namespace pillar-csi --create-namespace \
   -f values-files.yaml
 ```
@@ -615,7 +624,7 @@ Security notes:
 - [Install with Helm](https://pillar-csi.bhyoo.com/docs/how-to/install-helm/)
 - [Prepare a ZFS node](https://pillar-csi.bhyoo.com/docs/how-to/prepare-zfs-node/) and [prepare an LVM node](https://pillar-csi.bhyoo.com/docs/how-to/prepare-lvm-node/)
 - [Volume overrides](https://pillar-csi.bhyoo.com/docs/how-to/volume-overrides/) and [PVC annotations](https://pillar-csi.bhyoo.com/docs/reference/annotations/)
-- [Import a zvol](https://pillar-csi.bhyoo.com/docs/how-to/import-zvol/) and [adopt an existing LVM logical volume](https://pillar-csi.bhyoo.com/docs/how-to/import-lv/) (LV adoption is not in a release yet)
+- [Import a zvol](https://pillar-csi.bhyoo.com/docs/how-to/import-zvol/) and [adopt an existing LVM logical volume](https://pillar-csi.bhyoo.com/docs/how-to/import-lv/)
 - [Tune NVMe-oF](https://pillar-csi.bhyoo.com/docs/how-to/tune-nvmeof/) and [configure iSCSI](https://pillar-csi.bhyoo.com/docs/how-to/configure-iscsi/)
 - [Expand a volume](https://pillar-csi.bhyoo.com/docs/how-to/expand-volume/) and [node maintenance](https://pillar-csi.bhyoo.com/docs/how-to/node-maintenance/)
 - [CRD reference](https://pillar-csi.bhyoo.com/docs/reference/crd/) and [Helm values](https://pillar-csi.bhyoo.com/docs/reference/helm-values/)
