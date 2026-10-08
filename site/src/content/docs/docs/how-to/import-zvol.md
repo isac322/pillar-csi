@@ -11,7 +11,7 @@ This works for zvols created by democratic-csi (`zfs-generic-iscsi`, `zfs-generi
 
 ## Existing filesystem adoption is a separate feature
 
-This guide documents zvol adoption only. Existing directory and ZFS filesystem adoption is a separate, branch-only and unreleased feature that uses the opt-in `files.pillar-csi.bhyoo.com` CSI identity, `pillar-csi.bhyoo.com/import-directory`, or `pillar-csi.bhyoo.com/import-zfs-dataset`. See [Existing filesystem adoption in the project README](https://github.com/isac322/pillar-csi#existing-filesystem-adoption-branch-only-opt-in) for the chart values, `PillarStore` and `PillarStorageClass` examples, exact quota prerequisite, topology, NFS/RWX mode and manual `Retain` rebinding.
+This guide documents zvol adoption only. Existing directory and ZFS filesystem adoption is a separate, opt-in feature that uses the `files.pillar-csi.bhyoo.com` CSI identity, `pillar-csi.bhyoo.com/import-directory`, or `pillar-csi.bhyoo.com/import-zfs-dataset`. See [Existing filesystem adoption in the project README](https://github.com/isac322/pillar-csi#existing-filesystem-adoption-opt-in) for the chart values, `PillarStore` and `PillarStorageClass` examples, exact quota prerequisite, topology, NFS/RWX mode and manual `Retain` rebinding.
 
 Filesystem adoption preserves the original directory or dataset when its CSI lifecycle is deleted. That rule does not apply to the zvol flow on this page: with `reclaimPolicy: Delete`, deleting an imported zvol still destroys it, as described below.
 

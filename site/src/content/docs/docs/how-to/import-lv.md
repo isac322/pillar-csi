@@ -9,7 +9,7 @@ If data already lives in an LVM logical volume (LV) on a pillar-csi storage node
 
 An adopted LV is either preserved or managed. Preserved is the default: pillar-csi never deletes, resizes, formats or checks the LV. Managed turns the LV into an ordinary pillar-csi volume, which `DeleteVolume` destroys.
 
-LV adoption is not in a tagged release yet. It needs controller, node and agent images built from a revision that includes it. Do not create an `import-lv` claim against older images: they do not implement the annotation or the agent RPCs this page uses.
+LV adoption ships in 0.5.4. It needs controller, node and agent images at 0.5.4 or newer. Do not create an `import-lv` claim against older images: they do not implement the annotation or the agent RPCs this page uses.
 
 For ZFS zvols, see [Import a zvol from another CSI driver](/docs/how-to/import-zvol/). The two annotations cannot be combined on one claim.
 

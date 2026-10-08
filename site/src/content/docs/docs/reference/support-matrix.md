@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-This page describes the current pillar-csi release. Rows marked unreleased describe work that no release contains yet. The CSI driver name is `pillar-csi.bhyoo.com`.
+This page describes the current pillar-csi release. The CSI driver name is `pillar-csi.bhyoo.com`.
 
 ## Backends and protocols
 
@@ -126,7 +126,7 @@ The node image build fails if its `mkfs` would create a filesystem that Linux 5.
 
 Volume expansion runs online for `pillar-csi.bhyoo.com` volumes. For block protocols, the agent grows the zvol or logical volume and the node grows the filesystem with `resize2fs` or `xfs_growfs`. For NFS, the agent grows the server-side dataset quota; the mounted client filesystem sees the new capacity without a node-side resize and `NodeExpansionRequired` is false. A generated StorageClass allows expansion unless `spec.storageClass.allowVolumeExpansion` is set to `false`.
 
-The branch-only file identity `files.pillar-csi.bhyoo.com` advertises `GET_VOLUME_STATS` as its only node capability. Its node never stages a volume: the kubelet calls `NodePublishVolume` once per pod target and the node mounts that target directly, binding the owned proxy of the source for a local volume or mounting the owned-host NFS export for a multi-node volume. `NodeStageVolume`, `NodeUnstageVolume` and `NodeExpandVolume` return `Unimplemented`, and volume expansion is refused.
+The opt-in file identity `files.pillar-csi.bhyoo.com` advertises `GET_VOLUME_STATS` as its only node capability. Its node never stages a volume: the kubelet calls `NodePublishVolume` once per pod target and the node mounts that target directly, binding the owned proxy of the source for a local volume or mounting the owned-host NFS export for a multi-node volume. `NodeStageVolume`, `NodeUnstageVolume` and `NodeExpandVolume` return `Unimplemented`, and volume expansion is refused.
 
 ## Kubernetes features
 
@@ -144,17 +144,17 @@ The branch-only file identity `files.pillar-csi.bhyoo.com` advertises `GET_VOLUM
 
 ## Adopting existing volumes
 
-A PVC annotation can adopt a volume that already exists on a storage node instead of creating one. See [Annotations](/docs/reference/annotations/) for the keys. LVM adoption and metadata-loss recovery are implemented on the current source revision but are not in a release yet: 0.5.3 and earlier do not contain them, and they need controller, agent and node images built from a source tree that includes them. "Partial" means the listed path is implemented with the limits shown; it does not mean every LVM layout or an automatic takeover is supported.
+A PVC annotation can adopt a volume that already exists on a storage node instead of creating one. See [Annotations](/docs/reference/annotations/) for the keys. LVM adoption and metadata-loss recovery ship in 0.5.4; 0.5.3 and earlier do not contain them, so controller, agent and node images must be 0.5.4 or newer. "Partial" means the listed path is implemented with the limits shown; it does not mean every LVM layout or an automatic takeover is supported.
 
 | Capability | Support | Limits |
 | --- | --- | --- |
 | Import a ZFS zvol (`import-zvol`) | Full | The zvol becomes an ordinary pillar-csi volume. With `reclaimPolicy: Delete`, deleting the PVC destroys it. Handing a zvol back intact is not supported. See [Import a zvol](/docs/how-to/import-zvol/). |
-| Adopt an LVM LV, `PreserveOriginal` (default) | Partial, unreleased | Active linear LVs, or thin LVs of the store's configured thin pool. `DeleteVolume` releases the LV and keeps it and its pool; expansion is refused; the node mounts the existing filesystem without `mkfs`, `fsck`, automatic repair or resize. Read-write mounts still allow journal replay and workload writes, so the bytes do not stay identical. |
-| Adopt an LVM LV, `Managed` (explicit) | Partial, unreleased | Same source checks. The LV then behaves like a volume pillar-csi created: `Delete` reclaim destroys it and expansion may grow it. |
-| Inspect an LV through the agent `InspectVolume` RPC | Partial, unreleased | Read-only report of identity, layout, filesystem signature, exclusive-open state, consumers and exports. An unknown filesystem probe is reported as unknown, not blank. An empty consumer list does not rule out a mount the agent cannot see, which is why the exclusive-open check is reported separately. The RPC is not a separate permission: a client certificate the agent trusts can call every agent RPC. |
+| Adopt an LVM LV, `PreserveOriginal` (default) | Partial | Active linear LVs, or thin LVs of the store's configured thin pool. `DeleteVolume` releases the LV and keeps it and its pool; expansion is refused; the node mounts the existing filesystem without `mkfs`, `fsck`, automatic repair or resize. Read-write mounts still allow journal replay and workload writes, so the bytes do not stay identical. |
+| Adopt an LVM LV, `Managed` (explicit) | Partial | Same source checks. The LV then behaves like a volume pillar-csi created: `Delete` reclaim destroys it and expansion may grow it. |
+| Inspect an LV through the agent `InspectVolume` RPC | Partial | Read-only report of identity, layout, filesystem signature, exclusive-open state, consumers and exports. An unknown filesystem probe is reported as unknown, not blank. An empty consumer list does not rule out a mount the agent cannot see, which is why the exclusive-open check is reported separately. The RPC is not a separate permission: a client certificate the agent trusts can call every agent RPC. |
 | Rebind a retained adopted volume to a new PVC | Partial, manual | The same PV, `volumeHandle` and `PillarVolumeState` are bound to a replacement claim; no new `CreateVolume` runs. The operator steps are in [Rebind a retained volume](/docs/how-to/import-lv/#rebind-a-retained-volume). |
-| Recover an adopted LV after its PV or `PillarVolumeState` is lost | Partial, unreleased | Requires an agent-signed observation, an operator-signed authorization, persistent agent state, exact old/new lifecycle and LV identity, and verified owner-stop evidence. Recovery records are non-serving and non-reapable until the transfer commits; missing or uncertain evidence refuses the transfer. See [Recover after metadata loss](/docs/how-to/import-lv/#recover-after-metadata-loss). |
-| Adopt an existing directory or ZFS filesystem (`import-directory`, `import-zfs-dataset`) | Partial, branch-only, unreleased | Opt-in `files.pillar-csi.bhyoo.com` identity only. The source must already carry an exact finite quota equal to the request; deleting the volume keeps the original directory or dataset, and expansion is refused. See [Existing filesystem adoption annotations](/docs/reference/annotations/#existing-filesystem-adoption-annotations). |
+| Recover an adopted LV after its PV or `PillarVolumeState` is lost | Partial | Requires an agent-signed observation, an operator-signed authorization, persistent agent state, exact old/new lifecycle and LV identity, and verified owner-stop evidence. Recovery records are non-serving and non-reapable until the transfer commits; missing or uncertain evidence refuses the transfer. See [Recover after metadata loss](/docs/how-to/import-lv/#recover-after-metadata-loss). |
+| Adopt an existing directory or ZFS filesystem (`import-directory`, `import-zfs-dataset`) | Partial, opt-in | Opt-in `files.pillar-csi.bhyoo.com` identity only. The source must already carry an exact finite quota equal to the request; deleting the volume keeps the original directory or dataset, and expansion is refused. See [Existing filesystem adoption annotations](/docs/reference/annotations/#existing-filesystem-adoption-annotations). |
 | Adopt snapshots, thin snapshot origins, thin pools, mirrors, RAID or inactive LVs | Unsupported | Import never activates or converts an LV. |
 
 The pinned LV identity lives in the agent's persistent state under `/var/lib/pillar-csi/agent`, so LV adoption needs that hostPath to survive agent and node restarts. Mounting an adopted filesystem without formatting is implemented only for Linux nodes; on other platforms the stage fails with an error and never falls back to formatting. See [Adopt an existing LVM logical volume](/docs/how-to/import-lv/) for the workflow and [What is not supported](/docs/how-to/import-lv/#what-is-not-supported) for the remaining limits.

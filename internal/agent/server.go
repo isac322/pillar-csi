@@ -43,7 +43,7 @@ import (
 )
 
 // agentVersion is the semver version string embedded in discovery responses.
-const agentVersion = "0.5.3"
+const agentVersion = "0.5.4"
 
 // defaultDrainStateDir is the production directory for the .drained marker.
 const defaultDrainStateDir = "/var/lib/pillar-csi/agent"

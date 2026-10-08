@@ -40,7 +40,7 @@ The first `CreateVolume` pins the adopted LV's names, UUIDs and policy in the `P
 
 ### Existing filesystem adoption annotations
 
-The file CSI identity is branch-only and unreleased. Set `fileDriver.enabled: true` in the chart and set `PillarStorageClass.spec.csiDriver: files.pillar-csi.bhyoo.com`; the default `pillar-csi.bhyoo.com` identity does not route filesystem-adoption claims. The file driver is disabled by default and does not dynamically create a directory or ZFS filesystem.
+The file CSI identity is opt-in. Set `fileDriver.enabled: true` in the chart and set `PillarStorageClass.spec.csiDriver: files.pillar-csi.bhyoo.com`; the default `pillar-csi.bhyoo.com` identity does not route filesystem-adoption claims. The file driver is disabled by default and does not dynamically create a directory or ZFS filesystem.
 
 | Key | Value | Requirements |
 |---|---|---|
