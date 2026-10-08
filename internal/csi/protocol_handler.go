@@ -94,6 +94,12 @@ type AttachParams struct {
 	//   - SMB subdirectory:   Extra["smb.subdir"] = "data"
 	Extra map[string]string
 
+	// PublishContext is NodeStageVolumeRequest.publish_context: settings
+	// ControllerPublishVolume read from the live configuration at publish
+	// time (e.g. the NVMe/TCP digest flags, see
+	// PublishContextKeyNVMeOFHdrDigest).  May be nil.
+	PublishContext map[string]string
+
 	// Secrets is NodeStageVolumeRequest.secrets (e.g. the iSCSI CHAP
 	// credentials).  Never log it.
 	Secrets map[string]string

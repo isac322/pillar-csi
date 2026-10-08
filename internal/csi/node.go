@@ -204,7 +204,7 @@ var _ ProtocolHandler = (*connectorProtocolHandlerAdapter)(nil)
 // It calls conn.Connect then polls conn.GetDevicePath until the device appears
 // or the deadline is exceeded.
 func (a *connectorProtocolHandlerAdapter) Attach(ctx context.Context, params AttachParams) (*AttachResult, error) {
-	connectOpts, optsErr := ParseNVMeoFConnectOptions(params.Extra)
+	connectOpts, optsErr := ParseNVMeoFConnectOptions(params.Extra, params.PublishContext)
 	if optsErr != nil {
 		return nil, fmt.Errorf("connect: %w", optsErr)
 	}
@@ -1288,13 +1288,14 @@ func (n *NodeServer) NodeStageVolume( //nolint:gocognit,gocyclo,funlen // multi-
 			"NodeStageVolume: NFS volumes do not support block access")
 	}
 	attachParams := AttachParams{
-		ProtocolType: protocolType,
-		ConnectionID: targetID,
-		Address:      address,
-		Port:         port,
-		VolumeRef:    volCtx[vcVolumeRef],
-		Extra:        volCtx,
-		Secrets:      req.GetSecrets(),
+		ProtocolType:   protocolType,
+		ConnectionID:   targetID,
+		Address:        address,
+		Port:           port,
+		VolumeRef:      volCtx[vcVolumeRef],
+		Extra:          volCtx,
+		PublishContext: req.GetPublishContext(),
+		Secrets:        req.GetSecrets(),
 	}
 
 	var handler ProtocolHandler

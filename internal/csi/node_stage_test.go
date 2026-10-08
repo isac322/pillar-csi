@@ -71,12 +71,13 @@ type connectCall struct {
 	subsysNQN string
 	trAddr    string
 	trSvcID   string
+	opts      NVMeoFConnectOptions
 }
 
 func (m *mockConnector) Connect(
-	_ context.Context, subsysNQN, trAddr, trSvcID string, _ NVMeoFConnectOptions,
+	_ context.Context, subsysNQN, trAddr, trSvcID string, opts NVMeoFConnectOptions,
 ) error {
-	m.connectCalls = append(m.connectCalls, connectCall{subsysNQN, trAddr, trSvcID})
+	m.connectCalls = append(m.connectCalls, connectCall{subsysNQN, trAddr, trSvcID, opts})
 	return m.connectErr
 }
 
@@ -565,6 +566,79 @@ func TestNodeStageVolume_MalformedNVMeoFTuning_NoConnect(t *testing.T) {
 	}
 	if len(env.connector.connectCalls) != 0 {
 		t.Fatalf("Connect must not be called for malformed tuning, got %d calls", len(env.connector.connectCalls))
+	}
+	if mounted, _ := env.mounter.MountEntryExists(stagingPath); mounted { //nolint:errcheck // mock never errors
+		t.Fatal("staging path must not be mounted after rejected NodeStageVolume")
+	}
+}
+
+// stageWithPublishContext stages an NVMe-oF volume carrying a VolumeContext
+// ctrl-loss-tmo of 600 and publishCtx, and returns the env, the staging path
+// and the NodeStageVolume error.
+func stageWithPublishContext(t *testing.T, publishCtx map[string]string) (*nodeTestEnv, string, error) {
+	t.Helper()
+	env := newNodeTestEnv(t)
+	stagingPath := t.TempDir()
+	volCtx := mountVolumeContext("nqn.2026-01.com.bhyoo.pillar-csi:tank.pvc-digest", "192.0.2.1")
+	volCtx[paramNVMeOFCtrlLossTmo] = "600"
+	_, err := env.srv.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "tank/pvc-digest",
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  mountCap("ext4"),
+		VolumeContext:     volCtx,
+		PublishContext:    publishCtx,
+	})
+	return env, stagingPath, err
+}
+
+// TestNodeStageVolume_NVMeoFDigestsFromPublishContext verifies that the
+// digest flags ControllerPublishVolume put into the PublishContext reach the
+// fabrics connect together with the VolumeContext tuning, and that their
+// absence leaves the digests off.
+func TestNodeStageVolume_NVMeoFDigestsFromPublishContext(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		publishCtx map[string]string
+		want       bool
+	}{
+		{name: "both digests", publishCtx: map[string]string{
+			PublishContextKeyNVMeOFHdrDigest:  "true",
+			PublishContextKeyNVMeOFDataDigest: "true",
+		}, want: true},
+		{name: "absent leaves digests off"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env, _, err := stageWithPublishContext(t, tc.publishCtx)
+			if err != nil {
+				t.Fatalf("NodeStageVolume: %v", err)
+			}
+			if len(env.connector.connectCalls) != 1 {
+				t.Fatalf("Connect called %d times, want 1", len(env.connector.connectCalls))
+			}
+			opts := env.connector.connectCalls[0].opts
+			if opts.HdrDigest != tc.want || opts.DataDigest != tc.want {
+				t.Errorf("connect digests = hdr %v data %v, want %v", opts.HdrDigest, opts.DataDigest, tc.want)
+			}
+			if opts.CtrlLossTmo == nil || *opts.CtrlLossTmo != 600 {
+				t.Errorf("VolumeContext tuning lost: CtrlLossTmo = %v, want 600", opts.CtrlLossTmo)
+			}
+		})
+	}
+}
+
+// TestNodeStageVolume_MalformedNVMeoFDigest_NoConnect verifies that a
+// malformed digest value in the PublishContext fails staging before any
+// connect or mount instead of silently connecting without the digest.
+func TestNodeStageVolume_MalformedNVMeoFDigest_NoConnect(t *testing.T) {
+	t.Parallel()
+	env, stagingPath, err := stageWithPublishContext(t, map[string]string{PublishContextKeyNVMeOFHdrDigest: "yes"})
+	if err == nil {
+		t.Fatal("expected NodeStageVolume to fail for a malformed digest value")
+	}
+	if len(env.connector.connectCalls) != 0 {
+		t.Fatalf("Connect must not be called for a malformed digest, got %d calls", len(env.connector.connectCalls))
 	}
 	if mounted, _ := env.mounter.MountEntryExists(stagingPath); mounted { //nolint:errcheck // mock never errors
 		t.Fatal("staging path must not be mounted after rejected NodeStageVolume")

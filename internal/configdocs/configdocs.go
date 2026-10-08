@@ -151,6 +151,10 @@ var protocolMembers = map[string]memberSpec{
 			"maxDataTransferSize": {kind: fieldTunable, validate: maxDataTransferSize},
 			"ctrlLossTmo":         {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
 			"reconnectDelay":      {kind: fieldTunable, validate: intRange(0, math.MaxInt32)},
+			// The digests are read from the live PillarProtocol at every
+			// publish, never recorded per volume, so no override can set them.
+			"hdrDigest":  {kind: fieldStructural, validate: boolValue},
+			"dataDigest": {kind: fieldStructural, validate: boolValue},
 		},
 	},
 	memberNFS: {

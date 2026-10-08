@@ -134,13 +134,15 @@ The controller writes these into `PersistentVolume.spec.csi.volumeAttributes` at
 
 ### Publish context
 
-`ControllerPublishVolume` returns these keys only for a [local attach](/docs/how-to/local-attach/). A publish over the network protocol returns an empty publish context. Kubernetes stores the map on the `VolumeAttachment` and passes it to the node plugin.
+`ControllerPublishVolume` returns these keys for a [local attach](/docs/how-to/local-attach/), and the NVMe/TCP digest keys for an NVMe/TCP publish over the network whose `PillarProtocol` enables them. Otherwise a publish over the network protocol returns an empty publish context. Kubernetes stores the map on the `VolumeAttachment` and passes it to the node plugin.
 
 | Key | Value |
 |---|---|
 | `pillar-csi.bhyoo.com/attach-mode` | `local` |
 | `pillar-csi.bhyoo.com/local-node` | name of the storage node the publish is for; `NodeStageVolume` on any other node fails with `FAILED_PRECONDITION` |
 | `pillar-csi.bhyoo.com/local-device-path` | path of the backend zvol or logical volume on that node, as reported by the agent |
+| `pillar-csi.bhyoo.com/nvmeof-hdr-digest` | `"true"` when the volume's current `PillarProtocol` sets `nvmeofTcp.hdrDigest`; the node connects with `hdr_digest`. See [Header and data digests](/docs/how-to/tune-nvmeof/#header-and-data-digests) |
+| `pillar-csi.bhyoo.com/nvmeof-data-digest` | `"true"` when the volume's current `PillarProtocol` sets `nvmeofTcp.dataDigest`; the node connects with `data_digest` |
 
 ### Topology
 

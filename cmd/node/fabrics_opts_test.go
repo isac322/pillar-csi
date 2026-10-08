@@ -210,17 +210,44 @@ func TestFabricsConnectorNvmeConnect_WaitsForDyingController(t *testing.T) {
 	})
 }
 
+// TestFabricsConnectorNvmeConnect_LiveControllerKeepsDigests pins the
+// documented digest behavior for an existing connection: the kernel exposes
+// no attribute reporting a controller's digests, and a live controller may
+// still back a mount, so a requested digest never tears it down or issues a
+// second connect; the digest applies from the next connect after unstage.
+func TestFabricsConnectorNvmeConnect_LiveControllerKeepsDigests(t *testing.T) {
+	const nqn = "nqn.2026-01.io.pillar-csi:pvc-digest"
+	c, fabricsDev := newTestFabricsConnector(t, nqn, map[string]string{"nvme0": "live"})
+	err := c.nvmeConnect(context.Background(), nqn, "10.0.0.7", "4420",
+		csisvc.NVMeoFConnectOptions{HdrDigest: true, DataDigest: true})
+	if err != nil {
+		t.Fatalf("nvmeConnect: %v", err)
+	}
+	content, err := os.ReadFile(fabricsDev) //nolint:gosec
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(content) != 0 {
+		t.Fatalf("a live controller must be reused as is, got fabrics write %q", content)
+	}
+	ctrl := filepath.Join(c.sysfsRoot, "class", "nvme-subsystem", "nvme-subsys0", "nvme0")
+	if _, err := os.Stat(ctrl); err != nil {
+		t.Fatalf("live controller must not be deleted: %v", err)
+	}
+}
+
 // TestFabricsConnectorAttach_ForwardsReconnectTuning verifies the production
-// node appends VolumeContext ctrl_loss_tmo / reconnect_delay / queue_size to
-// the connect string, and omits them when absent so kernel defaults stay in
-// force.
+// node appends VolumeContext ctrl_loss_tmo / reconnect_delay / queue_size and
+// PublishContext hdr_digest / data_digest to the connect string, and omits
+// them when absent so kernel defaults stay in force.
 func TestFabricsConnectorAttach_ForwardsReconnectTuning(t *testing.T) {
 	const nqn = "nqn.2026-01.io.pillar-csi:pvc-test"
 	base := "transport=tcp,traddr=10.0.0.7,trsvcid=4420,nqn=" + nqn + ",hostnqn=h,hostid=i"
 	cases := []struct {
-		name  string
-		extra map[string]string
-		want  string
+		name       string
+		extra      map[string]string
+		publishCtx map[string]string
+		want       string
 	}{
 		{name: "absent keeps kernel defaults", extra: map[string]string{}, want: base},
 		{
@@ -237,6 +264,21 @@ func TestFabricsConnectorAttach_ForwardsReconnectTuning(t *testing.T) {
 				"pillar-csi.bhyoo.com/nvmeof-max-queue-size": "64",
 			},
 			want: base + ",queue_size=64",
+		},
+		{
+			name:  "digests from publish context",
+			extra: map[string]string{"pillar-csi.bhyoo.com/nvmeof-ctrl-loss-tmo": "600"},
+			publishCtx: map[string]string{
+				csisvc.PublishContextKeyNVMeOFHdrDigest:  "true",
+				csisvc.PublishContextKeyNVMeOFDataDigest: "true",
+			},
+			want: base + ",ctrl_loss_tmo=600,hdr_digest,data_digest",
+		},
+		{
+			name:       "data digest only",
+			extra:      map[string]string{},
+			publishCtx: map[string]string{csisvc.PublishContextKeyNVMeOFDataDigest: "true"},
+			want:       base + ",data_digest",
 		},
 	}
 	for _, tc := range cases {
@@ -256,11 +298,12 @@ func TestFabricsConnectorAttach_ForwardsReconnectTuning(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 			_, _ = c.Attach(ctx, csisvc.AttachParams{ //nolint:errcheck // device never appears; only the write matters
-				ProtocolType: csisvc.ProtocolNVMeoFTCP,
-				ConnectionID: nqn,
-				Address:      "10.0.0.7",
-				Port:         "4420",
-				Extra:        tc.extra,
+				ProtocolType:   csisvc.ProtocolNVMeoFTCP,
+				ConnectionID:   nqn,
+				Address:        "10.0.0.7",
+				Port:           "4420",
+				Extra:          tc.extra,
+				PublishContext: tc.publishCtx,
 			})
 			content, err := os.ReadFile(fabricsDev) //nolint:gosec
 			if err != nil {

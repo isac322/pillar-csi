@@ -316,7 +316,8 @@ func resolveProtocolFilesystem(
 // maxDataTransferSize no layer sets resolves to
 // v1alpha1.DefaultMaxDataTransferSize, so the target advertises (and the
 // node enforces) the default limit and the recorded value stays fixed for
-// the volume's lifetime.
+// the volume's lifetime.  The NVMe/TCP digests are cleared: they are not
+// per-volume settings.
 func resolveProtocol(class *classLayer, pvc pvcDocs) (v1alpha1.ProtocolSpec, error) {
 	protocol := *class.protocol.Spec.Protocol.DeepCopy()
 	for _, layer := range []struct {
@@ -331,9 +332,15 @@ func resolveProtocol(class *classLayer, pvc pvcDocs) (v1alpha1.ProtocolSpec, err
 			return v1alpha1.ProtocolSpec{}, invalidConfig("%v", err)
 		}
 	}
-	if n := protocol.NVMeOFTCP; n != nil && n.MaxDataTransferSize == nil {
-		v := v1alpha1.DefaultMaxDataTransferSize
-		n.MaxDataTransferSize = &v
+	if n := protocol.NVMeOFTCP; n != nil {
+		if n.MaxDataTransferSize == nil {
+			v := v1alpha1.DefaultMaxDataTransferSize
+			n.MaxDataTransferSize = &v
+		}
+		// The digests are read from the live PillarProtocol at every
+		// publish (see nvmeofDigestPublishContext), never from the record,
+		// so they are kept out of it.
+		n.HdrDigest, n.DataDigest = false, false
 	}
 	return protocol, nil
 }

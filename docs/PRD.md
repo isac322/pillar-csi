@@ -245,6 +245,14 @@ spec:
       # 따라서 값을 바꿔도 StorageClass 재생성은 필요 없고, 이후 생성되는 볼륨부터 적용된다 (기존 볼륨에는 소급 적용되지 않는다).
       ctrlLossTmo: 600                 # 초. target 유실 시 최대 대기 시간
       reconnectDelay: 10               # 초. 재연결 시도 간격
+      # NVMe/TCP header/data digest(CRC32C). host가 ICReq로 요청하면 nvmet-tcp가 그대로 켜므로 target 설정은 없다.
+      # 볼륨에 기록하지 않는다(VolumeContext·spec.resolved에 없음): ControllerPublishVolume이 PV → StorageClass →
+      # (PillarStorageClass.protocolRef |) PillarProtocol 을 따라 현재 값을 읽어 PublishContext로 넘기고,
+      # NodeStage가 connect 문자열에 hdr_digest/data_digest를 붙인다. 따라서 기존 볼륨도 다음 attach
+      # (새 VolumeAttachment)부터 적용된다. 이미 연결된 controller는 그대로 재사용한다(커널이 digest 상태를
+      # sysfs로 노출하지 않고, 사용 중일 수 있는 연결을 끊지 않는다). 구조 필드라 오버라이드할 수 없다.
+      hdrDigest: false
+      dataDigest: false
 status:
   storageClassCount: 2                      # 이 Protocol을 참조하는 PillarStorageClass 수
   activeAgents: [rock5bp]             # 이 Protocol이 사용 중인 Target 목록
