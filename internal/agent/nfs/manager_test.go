@@ -732,3 +732,89 @@ func TestAdoptedRemovalCrashCannotResumeAdmission(t *testing.T) {
 		t.Fatalf("removed adopted export resumed before convergence: start=%#v rows=%#v", r.startRows, r.rows)
 	}
 }
+
+func ledgerHas(m *Manager, volumeID string) bool {
+	return slices.ContainsFunc(m.state.Ledger, func(e Export) bool { return e.VolumeID == volumeID })
+}
+
+// Regression for the daily E2E failure: rebuildLedger drops an export while
+// it is unavailable. When it validates again during a converge triggered by
+// an unrelated Put, desiredEntries must restore write-ahead ownership before
+// grantDesired admits it, or verifyAdmissions treats the granted rows as
+// foreign and fails the shared runtime closed.
+func TestRecoveredExportIsOwnedBeforeUnrelatedConverge(t *testing.T) {
+	t.Parallel()
+	r := &memoryRuntime{invalid: map[string]error{}}
+	m := testManager(t, r, t.TempDir())
+	recovered := testExport(t, m)
+	recovered.VolumeID = "pool/recovered"
+	recovered.Clients = []string{"192.0.2.21"}
+	first := testExport(t, m)
+	first.VolumeID = "pool/first"
+	second := testExport(t, m)
+	second.VolumeID = "pool/second"
+	if err := m.Put(t.Context(), recovered, true, true); err != nil {
+		t.Fatal(err)
+	}
+	r.invalid[recovered.VolumeID] = errors.New("dataset is not mounted")
+	if err := m.Put(t.Context(), first, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if ledgerHas(m, recovered.VolumeID) {
+		t.Fatal("unavailable export remained owned")
+	}
+	delete(r.invalid, recovered.VolumeID)
+	if err := m.Put(t.Context(), second, true, true); err != nil {
+		t.Fatalf("unrelated export after recovery: %v", err)
+	}
+	if err := m.Health(); err != nil {
+		t.Fatalf("health after recovery: %v", err)
+	}
+	if !slices.Contains(admitted(r), "192.0.2.21") || !ledgerHas(m, recovered.VolumeID) {
+		t.Fatalf("recovered export not owned/admitted: rows=%v", admitted(r))
+	}
+}
+
+// Same ledger gap through the adopted activation guard: while rejected, the
+// adopted export is neither owned nor admitted; once the guard passes again,
+// an unrelated converge re-owns and re-admits it.
+func TestRecoveredAdoptedExportIsOwnedBeforeUnrelatedConverge(t *testing.T) {
+	t.Parallel()
+	r := &memoryRuntime{invalid: map[string]error{}}
+	m := testManager(t, r, t.TempDir())
+	reject := false
+	m.config.BeforeActivate = func(_ context.Context, e Export) error {
+		if reject && e.VolumeID == "pool/adopted" {
+			return errors.New("native identity drift")
+		}
+		return nil
+	}
+	adopted := testExport(t, m)
+	adopted.VolumeID = "pool/adopted"
+	adopted.Clients = []string{"192.0.2.21"}
+	adopted.SourceKey = "filesystem/native-key"
+	adopted.FenceUID = "uid-1"
+	other := testExport(t, m)
+	other.VolumeID = "pool/other"
+	if err := m.Put(t.Context(), adopted, true, true); err != nil {
+		t.Fatal(err)
+	}
+	reject = true
+	if err := m.Put(t.Context(), other, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(admitted(r), "192.0.2.21") || ledgerHas(m, adopted.VolumeID) {
+		t.Fatal("unsafe adopted export still owned/admitted")
+	}
+	reject = false
+	other.Clients = []string{"192.0.2.22"}
+	if err := m.Put(t.Context(), other, true, true); err != nil {
+		t.Fatalf("unrelated export after adopted recovery: %v", err)
+	}
+	if err := m.Health(); err != nil {
+		t.Fatalf("health after adopted recovery: %v", err)
+	}
+	if !slices.Contains(admitted(r), "192.0.2.21") || !ledgerHas(m, adopted.VolumeID) {
+		t.Fatalf("adopted export did not recover ownership/admission: rows=%v", admitted(r))
+	}
+}

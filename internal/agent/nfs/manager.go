@@ -677,41 +677,82 @@ func (m *Manager) beforeActivate(ctx context.Context, e Export) error {
 
 func (m *Manager) desiredEntries(ctx context.Context) (map[[2]string]entry, error) {
 	wanted := make(map[[2]string]entry)
+	previous := m.exportErrors
 	m.exportErrors = make(map[string]error)
 	for id := range m.state.Desired {
 		e := m.state.Desired[id]
 		if id == rootVolumeID || !e.Active {
 			continue
 		}
-		err := m.runtime.validateExport(e)
-		if err == nil {
-			err = m.beforeActivate(ctx, e)
-		}
-		if err != nil {
-			//nolint:errcheck // AsType's bool is checked; preserve the original error and its wrapping.
-			if _, ok := errors.AsType[*runtimeValidationError](err); ok {
-				return nil, err
-			}
-			m.exportErrors[id] = fmt.Errorf("NFS volume %q unavailable: %w", id, err)
-			continue
-		}
-		for _, client := range e.clients() {
-			wanted[[2]string{e.Path, client}] = entry{e.Path, client, e.options()}
-		}
-	}
-	// The pseudoroot admits only clients of exports validated in this pass.
-	m.updateRoot()
-	root := m.state.Desired[rootVolumeID]
-	if root.Active {
-		err := m.runtime.validateExport(root)
+		usable, err := m.validateActivation(ctx, e, previous)
 		if err != nil {
 			return nil, err
 		}
-		for _, client := range root.clients() {
-			wanted[[2]string{root.Path, client}] = entry{root.Path, client, root.options()}
+		if !usable {
+			continue
 		}
+		m.admitExport(e, previous, wanted)
+	}
+	err := m.rootEntries(wanted)
+	if err != nil {
+		return nil, err
 	}
 	return wanted, nil
+}
+
+// validateActivation checks one active export for this convergence pass. A
+// shared mount-table read failure is fatal; an isolated failure is recorded
+// in exportErrors and logged once per transition, and the export is skipped.
+func (m *Manager) validateActivation(ctx context.Context, e Export, previous map[string]error) (bool, error) {
+	err := m.runtime.validateExport(e)
+	if err == nil {
+		err = m.beforeActivate(ctx, e)
+	}
+	if err == nil {
+		return true, nil
+	}
+	//nolint:errcheck // AsType's bool is checked; preserve the original error and its wrapping.
+	if _, ok := errors.AsType[*runtimeValidationError](err); ok {
+		return false, err
+	}
+	m.exportErrors[e.VolumeID] = fmt.Errorf("NFS volume %q unavailable: %w", e.VolumeID, err)
+	if previous[e.VolumeID] == nil {
+		slog.Error("NFS export unavailable; excluded from convergence", "volume", e.VolumeID, "path", e.Path, "error", err)
+	}
+	return false, nil
+}
+
+// admitExport re-establishes write-ahead ownership for a validated export:
+// rebuildLedger drops exports while they are unavailable, so a recovered
+// export must re-enter the Ledger before the caller persists and
+// grantDesired admits it. Otherwise its rows are foreign to owns() and
+// verifyAdmissions fails closed.
+func (m *Manager) admitExport(e Export, previous map[string]error, wanted map[[2]string]entry) {
+	if previous[e.VolumeID] != nil {
+		slog.Info("NFS export recovered", "volume", e.VolumeID, "path", e.Path)
+	}
+	m.state.Ledger = append(m.state.Ledger, e)
+	for _, client := range e.clients() {
+		wanted[[2]string{e.Path, client}] = entry{e.Path, client, e.options()}
+	}
+}
+
+// rootEntries narrows the pseudoroot to clients of exports validated in this
+// pass and adds its wanted rows.
+func (m *Manager) rootEntries(wanted map[[2]string]entry) error {
+	m.updateRoot()
+	root := m.state.Desired[rootVolumeID]
+	if !root.Active {
+		return nil
+	}
+	err := m.runtime.validateExport(root)
+	if err != nil {
+		return err
+	}
+	for _, client := range root.clients() {
+		wanted[[2]string{root.Path, client}] = entry{root.Path, client, root.options()}
+	}
+	return nil
 }
 
 // A mount-table read failure is shared runtime failure, not a bad dataset.
