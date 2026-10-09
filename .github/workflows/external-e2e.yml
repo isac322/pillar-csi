@@ -121,7 +121,7 @@ jobs:
           key: external-e2e-${{ env.K8S_VERSION }}-${{ runner.os }}-${{ runner.arch }}
 
       - name: Install Kind ${{ env.KIND_VERSION }}
-        uses: helm/kind-action@v1.15.0
+        uses: helm/kind-action@v1.15.1
         with:
           install_only: true
           version: ${{ env.KIND_VERSION }}
