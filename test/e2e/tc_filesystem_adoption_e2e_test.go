@@ -172,6 +172,22 @@ func e71Attachment(ctx context.Context, f *FilesystemAdoptionFixture, field stri
 	return f.Must(ctx, "get", "volumeattachment", "-o", `jsonpath={.items[?(@.spec.source.persistentVolumeName=="`+f.PVName+`")]`+field+`}`)
 }
 
+// e71NodeAttachment reads one field of the VolumeAttachment for the fixture
+// PV on node, or "" when no such attachment exists or the field is unset.
+// client-go jsonpath supports a single ?() comparison per item, so the PV
+// filter stays in the query and the node is matched in Go; "<node>=<field>"
+// splits on the first "=", which node names never contain.
+func e71NodeAttachment(ctx context.Context, f *FilesystemAdoptionFixture, node, field string) string {
+	out := f.Must(ctx, "get", "volumeattachment", "-o", `jsonpath={range .items[?(@.spec.source.persistentVolumeName=="`+f.PVName+`")]}{.spec.nodeName}={`+field+`}{"\n"}{end}`)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		nodeName, value, found := strings.Cut(line, "=")
+		if found && nodeName == node {
+			return value
+		}
+	}
+	return ""
+}
+
 // e71FileDriver is the CSI driver of the files PillarStorageClass route.
 const e71FileDriver = "files.pillar-csi.bhyoo.com"
 
@@ -437,7 +453,26 @@ var _ = Describe("E71: native existing-filesystem adoption", Label("e71", "files
 		Eventually(func() string {
 			return f.Must(ctx, "-n", f.Namespace, "get", "pod", wrong, "-o", "jsonpath={.status.phase}")
 		}, 2*time.Minute, 2*time.Second).Should(Or(Equal("Pending"), Equal("Failed")))
+		// The driver's ControllerPublishVolume refusal lands on the refused
+		// node's VolumeAttachment as attachError; asserting it before pod
+		// deletion proves the refusal came from the driver itself.
+		Eventually(func() string {
+			return e71NodeAttachment(ctx, f, wrongNode, ".status.attachError.message")
+		}, 2*time.Minute, 2*time.Second).Should(And(
+			ContainSubstring("code = FailedPrecondition"),
+			ContainSubstring("local filesystem volume is accessible only on its storage node"),
+		))
 		e71Delete(ctx, f, "pod", wrong)
+		// Own the side effect: Kubernetes marks the refused attach Uncertain
+		// and assumes the volume mounted on wrongNode until the next kubelet
+		// node status report refreshes volumesInUse, so without an explicit
+		// drain here the lingering VolumeAttachment would consume TC-E71.8's
+		// all-node drain budget. The NFS-lane Kind config shortens
+		// nodeStatusReportFrequency to keep this inside the shared budget.
+		handle := f.Must(ctx, "get", "pv", f.PVName, "-o", "jsonpath={.spec.csi.volumeHandle}")
+		target := f.Must(ctx, "get", "pv", f.PVName, "-o", "jsonpath={.spec.csi.volumeAttributes.target_id}")
+		diagnostics := f.teardownDiagnostics(handle, target, append(append([]string{}, workers...), f.StorageNode)...)
+		Eventually(func() string { return f.fileVolumeAttachments(ctx, wrongNode) }, 2*time.Minute, 2*time.Second).Should(BeEmpty(), diagnostics)
 	})
 	It("[TC-E71.7] shares one native reservation for aliases and refuses a second owner across logical pools", func() {
 		// Two agent logical pools, e71-files-alias and e71-files, share one

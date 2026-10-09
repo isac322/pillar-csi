@@ -158,6 +158,29 @@ func (s *kindBootstrapState) encode() ([]byte, error) {
 	return payload, nil
 }
 
+// nfsKindClusterConfig is the Kind cluster configuration for the dedicated
+// NFS e2e lane (E2E_NFS_E2E=true). NFS zvol device nodes and udev symlinks
+// must share the host /dev view. The cluster-level kubeadmConfigPatches
+// applies to every node, control-plane and workers alike: it shortens the
+// kubelet nodeStatusReportFrequency (5m default, ±50% jitter) so a refused
+// attach, which Kubernetes treats as mounted on the refusing node until the
+// next node status report refreshes volumesInUse, drains well inside the
+// drain budgets TC-E71.6 relies on.
+const nfsKindClusterConfig = `kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+kubeadmConfigPatches:
+- |
+  kind: KubeletConfiguration
+  nodeStatusReportFrequency: 10s
+nodes:
+  - role: control-plane
+    extraMounts:
+      - hostPath: /dev
+        containerPath: /dev
+  - role: worker
+  - role: worker
+`
+
 func (s *kindBootstrapState) createCluster(ctx context.Context, runner commandRunner) (err error) {
 	if s == nil {
 		return errors.New("kind bootstrap state is nil")
@@ -194,8 +217,7 @@ func (s *kindBootstrapState) createCluster(ctx context.Context, runner commandRu
 		if err := os.MkdirAll(s.GeneratedDir, 0o755); err != nil {
 			return fmt.Errorf("create NFS Kind config directory: %w", err)
 		}
-		// NFS zvol device nodes and udev symlinks must share the host /dev view.
-		config := "kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes:\n  - role: control-plane\n    extraMounts:\n      - hostPath: /dev\n        containerPath: /dev\n  - role: worker\n  - role: worker\n"
+		config := nfsKindClusterConfig
 		if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 			return fmt.Errorf("write NFS Kind config: %w", err)
 		}
