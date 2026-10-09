@@ -32,8 +32,14 @@ const trackerName = "nfsdcld"
 const etabPath = "/var/lib/nfs/etab"
 const nfsTCPPort = "tcp 2049"
 
+// The agent image relocates exportfs out of /usr/sbin: OpenZFS libshare
+// invokes the hard-coded `/usr/sbin/exportfs -ra` whenever that path exists
+// (lib/libshare/os/linux/nfs.c), which rewrites our etab from the empty
+// /etc/exports. Keeping it absent makes libzfs skip NFS share commits; pillar
+// calls exportfs only via this absolute path, never PATH.
+//
 //nolint:misspell // Exact nfs-utils executable name, not the English word "exports".
-const exportUtility = "exportfs"
+const exportUtility = "/usr/libexec/pillar-csi/exportfs"
 const nfsdMagic = 0x6e667364
 const rpcPipefsMagic = 0x67596969
 

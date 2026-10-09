@@ -136,7 +136,7 @@ for fs in xfs ext4; do
   chmod 750 "$dir" "$dir/tree"
   chmod 640 "$dir/tree/preexisting"
  done
- sync
+ sync -f "$mount"
  done`
 	_, err = f.Kubectl(ctx, "", "-n", "kube-system", "exec", "e71-native-source-tools", "--", "/bin/busybox", "sh", "-ceu", script, "native-sources", sourceRoot)
 	return err
