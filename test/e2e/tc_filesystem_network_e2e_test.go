@@ -189,7 +189,9 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 		before, err := n.Snapshot(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		n.restart(ctx, "agent", n.StorageNode)
-		Eventually(func() map[string][]string { return nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), n.Proxy) }, 90*time.Second, 2*time.Second).Should(HaveLen(2))
+		Eventually(func() map[string][]string {
+			return nfsExportPolicies(nfsAgentExec(ctx, agentExportfsPath, "-v"), n.Proxy)
+		}, 90*time.Second, 2*time.Second).Should(HaveLen(2))
 		n.observeProxy(ctx)
 		n.observeRemoteMounts(ctx)
 		n.verifyExchange(ctx)
@@ -217,18 +219,22 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 		healthy.exchange(ctx)
 		healthy.observeProxy(ctx)
 		for _, drift := range []func(context.Context) (func() error, error){n.WithQuotaDrift, n.WithIdentityDrift} {
-			Expect(nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), n.Proxy)).To(HaveLen(2), "the unsafe export must be active before drift")
+			Expect(nfsExportPolicies(nfsAgentExec(ctx, agentExportfsPath, "-v"), n.Proxy)).To(HaveLen(2), "the unsafe export must be active before drift")
 			restore, err := drift(ctx)
 			Expect(err).NotTo(HaveOccurred(), n.exportDiagnostics())
 			func() {
 				defer func() { Expect(restore()).To(Succeed(), n.exportDiagnostics()) }()
 				n.restart(ctx, "agent", n.StorageNode)
-				Eventually(func() map[string][]string { return nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), n.Proxy) }, 90*time.Second, 2*time.Second).Should(BeEmpty(), n.exportDiagnostics())
-				Expect(nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), healthy.Proxy)).To(HaveLen(2), healthy.exportDiagnostics())
+				Eventually(func() map[string][]string {
+					return nfsExportPolicies(nfsAgentExec(ctx, agentExportfsPath, "-v"), n.Proxy)
+				}, 90*time.Second, 2*time.Second).Should(BeEmpty(), n.exportDiagnostics())
+				Expect(nfsExportPolicies(nfsAgentExec(ctx, agentExportfsPath, "-v"), healthy.Proxy)).To(HaveLen(2), healthy.exportDiagnostics())
 				healthy.exchange(ctx)
 			}()
 			n.restart(ctx, "agent", n.StorageNode)
-			Eventually(func() map[string][]string { return nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), n.Proxy) }, 90*time.Second, 2*time.Second).Should(HaveLen(2), n.exportDiagnostics())
+			Eventually(func() map[string][]string {
+				return nfsExportPolicies(nfsAgentExec(ctx, agentExportfsPath, "-v"), n.Proxy)
+			}, 90*time.Second, 2*time.Second).Should(HaveLen(2), n.exportDiagnostics())
 			n.verifyExchange(ctx)
 			n.observeProxy(ctx)
 		}
@@ -329,7 +335,7 @@ print('overlap-denied-disjoint-granted')`)).To(Equal("overlap-denied-disjoint-gr
 			Expect(err).NotTo(HaveOccurred())
 			AddReportEntry("packaged client "+node, out)
 		}
-		Expect(nfsAgentExec(ctx, "exportfs", "-v")).NotTo(ContainSubstring("command not found"))
+		Expect(nfsAgentExec(ctx, agentExportfsPath, "-v")).NotTo(ContainSubstring("command not found"))
 		n.ownerConsumers(ctx)
 		n.exchange(ctx)
 		n.observeRemoteMounts(ctx)

@@ -624,7 +624,7 @@ spec:
 		_, err := nfsKubectl(ctx, "", "-n", nfsNamespace, "exec", "rox-reader", "--", "sh", "-c", "printf denied > /data/denied")
 		Expect(err).To(HaveOccurred())
 		Expect(strings.ToLower(err.Error())).To(ContainSubstring("read-only"))
-		exports := nfsAgentExec(ctx, "exportfs", "-v")
+		exports := nfsAgentExec(ctx, agentExportfsPath, "-v")
 		roPolicies := nfsExportPolicies(exports, suiteNFSDatasetRoot+"/"+roDataset)
 		Expect(roPolicies).NotTo(BeEmpty())
 		for _, options := range roPolicies {
@@ -671,7 +671,7 @@ spec:
 			return n
 		}, 20*time.Second, time.Second).Should(BeNumerically(">", 1))
 		before := nfsPodExec(ctx, "writer", "wc -l < /data/held-handle")
-		beforePolicies := nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), suiteNFSDatasetRoot+"/"+dataset)
+		beforePolicies := nfsExportPolicies(nfsAgentExec(ctx, agentExportfsPath, "-v"), suiteNFSDatasetRoot+"/"+dataset)
 		Expect(beforePolicies).NotTo(BeEmpty())
 		agentPod := nfsComponentPod(ctx, "agent", backend)
 		oldUID := nfsMust(ctx, "-n", resolveHelmNamespace(), "get", "pod", agentPod, "-o", "jsonpath={.metadata.uid}")
@@ -684,7 +684,7 @@ spec:
 			return pods
 		}, 2*time.Minute, 2*time.Second).Should(And(Not(BeEmpty()), Not(Equal(oldUID))))
 		nfsMust(ctx, "-n", resolveHelmNamespace(), "rollout", "status", "daemonset/pillar-csi-agent", "--timeout=3m")
-		afterPolicies := nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), suiteNFSDatasetRoot+"/"+dataset)
+		afterPolicies := nfsExportPolicies(nfsAgentExec(ctx, agentExportfsPath, "-v"), suiteNFSDatasetRoot+"/"+dataset)
 		Expect(afterPolicies).To(Equal(beforePolicies), "restart must restore identical fsid, clients, and export policy")
 		Expect(nfsPodExec(ctx, "writer", "cat /data/survivor")).To(Equal("survivor-data"))
 		beforeN, err := strconv.Atoi(before)
@@ -741,7 +741,7 @@ spec:
 		}
 	})
 	It("[TC-E37.11] records exact export and publication state while mounted", func() {
-		exports := nfsAgentExec(ctx, "exportfs", "-v")
+		exports := nfsAgentExec(ctx, agentExportfsPath, "-v")
 		policies := nfsExportPolicies(exports, suiteNFSDatasetRoot+"/"+dataset)
 		Expect(nfsPublicationNodes(ctx, pv)).To(ConsistOf(workers[0]))
 		ip := nfsMust(ctx, "get", "node", workers[0], "-o", "jsonpath={.status.addresses[?(@.type==\"InternalIP\")].address}")
@@ -809,7 +809,7 @@ spec:
 		}
 		children := nfsAgentExec(ctx, "zfs", "list", "-H", "-o", "name", "-r", pool+"/"+parent)
 		Expect(children).To(Equal(pool + "/" + parent))
-		exports := nfsAgentExec(ctx, "exportfs", "-v")
+		exports := nfsAgentExec(ctx, agentExportfsPath, "-v")
 		Expect(exports).NotTo(ContainSubstring(suiteNFSDatasetRoot + "/" + dataset))
 		owner := nfsAgentExec(ctx, "/bin/busybox", "cat", "/var/lib/pillar-csi/agent/nfs/owner.json")
 		var state struct {

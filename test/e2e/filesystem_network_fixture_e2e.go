@@ -192,7 +192,7 @@ func (n *filesystemNetworkFixture) consumer(ctx context.Context, name, node stri
 			fmt.Fprintf(&diagnostics, "\nDiagnostic command failed: %v", agentErr)
 		}
 		if agentErr == nil && agentPodName != "" {
-			execArgs := []string{"-n", agentNamespace, "exec", agentPodName, "-c", "agent", "--", "/bin/busybox", "sh", "-ceu", "cat /var/lib/nfs/etab; exportfs -v"}
+			execArgs := []string{"-n", agentNamespace, "exec", agentPodName, "-c", "agent", "--", "/bin/busybox", "sh", "-ceu", "cat /var/lib/nfs/etab; " + agentExportfsPath + " -v"}
 			agentOutput, execErr := n.Kubectl(diagnosticCtx, "", execArgs...)
 			if len(agentOutput) > maxAgentDiagnosticBytes {
 				agentOutput = "[earlier output truncated]\n" + agentOutput[len(agentOutput)-maxAgentDiagnosticBytes:]
@@ -263,7 +263,7 @@ func (n *filesystemNetworkFixture) observeRemoteMounts(ctx context.Context) {
 }
 
 func (n *filesystemNetworkFixture) observeProxy(ctx context.Context) {
-	policies := nfsAgentExec(ctx, "exportfs", "-v")
+	policies := nfsAgentExec(ctx, agentExportfsPath, "-v")
 	// Resolve the exact physical export by its ACL and file content, not a path
 	// naming convention. The mount must be an owned bind under ExportRoot.
 	candidate := ""
@@ -440,7 +440,7 @@ func (n *filesystemNetworkFixture) exportDiagnostics() func() string {
 		record("agent pod on "+n.StorageNode, agent, err)
 		if err == nil && agent != "" {
 			for _, args := range [][]string{
-				{"exportfs", "-v"},
+				{agentExportfsPath, "-v"},
 				{"/bin/busybox", "sh", "-c", `for f in /proc/fs/nfsd/clients/*/info; do printf '== %s\n' "$f"; cat "$f"; done`},
 			} {
 				out, execErr := n.Kubectl(diagCtx, "", append([]string{"-n", resolveHelmNamespace(), "exec", agent, "-c", "agent", "--"}, args...)...)
@@ -460,7 +460,7 @@ func (n *filesystemNetworkFixture) exportDiagnostics() func() string {
 }
 
 func (n *filesystemNetworkFixture) assertWithdrawn(ctx context.Context) {
-	Expect(nfsExportPolicies(nfsAgentExec(ctx, "exportfs", "-v"), n.Proxy)).To(BeEmpty())
+	Expect(nfsExportPolicies(nfsAgentExec(ctx, agentExportfsPath, "-v"), n.Proxy)).To(BeEmpty())
 	_, err := n.HostExec(ctx, "findmnt", "-n", "-M", n.Proxy)
 	Expect(err).To(HaveOccurred())
 	mounts, err := n.HostExec(ctx, "cat", "/proc/1/mountinfo")

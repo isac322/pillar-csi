@@ -72,7 +72,8 @@ ENTRYPOINT ["/usr/bin/manager"]
 
 # ── Runtime: agent ────────────────────────────────────────────────────────────
 # Alpine + ZFS + LVM2 + nfs-utils userspace tools. The agent invokes zfs(8),
-# zpool(8), lvcreate(8), lvremove(8), exportfs(8), rpc.mountd(8) and nfsdcld(8).
+# zpool(8), lvcreate(8), lvremove(8), rpc.mountd(8) and nfsdcld(8), plus
+# exportfs(8) from its relocated /usr/libexec/pillar-csi path (see below).
 # NVMe-oF uses configfs directly; NFS uses the host kernel nfsd and a supervised
 # userspace NFSv4 client-recovery daemon with private persistent state.
 #
@@ -83,6 +84,17 @@ ENTRYPOINT ["/usr/bin/manager"]
 FROM alpine:3.24.2 AS agent
 RUN set -eux \
     && apk add --no-cache 'zfs~=2.4' lvm2 nfs-utils blkid \
+    # OpenZFS libshare runs the hard-coded `/usr/sbin/exportfs -ra` after every
+    # zfs create/mount/destroy whenever /usr/sbin/exportfs exists
+    # (lib/libshare/os/linux/nfs.c), rewriting /var/lib/nfs/etab from the empty
+    # /etc/exports and wiping pillar's export rows. Move exportfs out of that
+    # path so libzfs treats NFS sharing as unavailable (a no-op commit) while
+    # the agent keeps calling it via its absolute relocated path. The `test`
+    # is the build-time guard: this is the final agent layer, apk is removed
+    # below, and no later instruction reinstalls nfs-utils.
+    && install -d -m 0755 /usr/libexec/pillar-csi \
+    && mv /usr/sbin/exportfs /usr/libexec/pillar-csi/exportfs \
+    && test ! -e /usr/sbin/exportfs \
     # Configure LVM for container environments where udevd is not running.
     && sed -i 's/obtain_device_list_from_udev = 1/obtain_device_list_from_udev = 0/' /etc/lvm/lvm.conf \
     && sed -i 's/udev_sync = 1/udev_sync = 0/' /etc/lvm/lvm.conf \

@@ -21,6 +21,13 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+// agentExportfsPath is the agent image's relocated exportfs binary. The image
+// moves it out of /usr/sbin because OpenZFS libshare unconditionally runs the
+// hard-coded `/usr/sbin/exportfs -ra` when that path exists
+// (lib/libshare/os/linux/nfs.c), wiping /var/lib/nfs/etab. Exportfs is
+// therefore not on the agent container's PATH; invoke this absolute path.
+const agentExportfsPath = "/usr/libexec/pillar-csi/exportfs"
+
 func nfsMust(ctx context.Context, args ...string) string {
 	out, err := nfsKubectl(ctx, "", args...)
 	Expect(err).NotTo(HaveOccurred())
