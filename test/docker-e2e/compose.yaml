@@ -3,7 +3,6 @@ services:
     build:
       context: ../..
       dockerfile: test/docker-e2e/Dockerfile
-      network: host
     privileged: true
     cgroup: host
     environment:
