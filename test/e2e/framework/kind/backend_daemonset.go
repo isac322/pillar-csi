@@ -132,7 +132,7 @@ spec:
       # backend-installer runs once per pod start and installs zfsutils-linux
       # and lvm2 on the Kind node's filesystem via nsenter.
       - name: backend-installer
-        image: debian:bookworm-slim
+        image: debian:trixie-slim
         imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
@@ -156,7 +156,7 @@ spec:
             # /etc/os-release so this works on bookworm (kind <= v0.27.0) and
             # trixie+ (kind >= v0.32.0) without changes.
             if [ -d /etc/apt/sources.list.d ]; then
-              CODENAME=$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-bookworm}")
+              CODENAME=$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-trixie}")
               cat > /etc/apt/sources.list.d/e2e-contrib.list <<APTEOF
 deb http://deb.debian.org/debian ${CODENAME} main contrib
 deb http://deb.debian.org/debian ${CODENAME}-updates main contrib
@@ -190,7 +190,7 @@ APTEOF
       # readiness probe can be evaluated continuously.  The pod transitions
       # to Ready only when both ZFS and LVM pass their readiness checks.
       - name: backend-readiness
-        image: debian:bookworm-slim
+        image: debian:trixie-slim
         imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true

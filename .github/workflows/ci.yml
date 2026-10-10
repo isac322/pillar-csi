@@ -131,7 +131,7 @@ jobs:
       # addressed entries so changed sources still recompile.
       - name: Restore Go build and golangci-lint caches (read-only)
         if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master' }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             ${{ steps.goenv.outputs.gocache }}
@@ -140,7 +140,7 @@ jobs:
 
       - name: Restore and save Go build and golangci-lint caches (master)
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ${{ steps.goenv.outputs.gocache }}
@@ -180,14 +180,14 @@ jobs:
       # Go still revalidates changed sources against content hashes.
       - name: Restore Go build cache (read-only)
         if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master' }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ${{ steps.goenv.outputs.gocache }}
           key: test-gocache-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}
 
       - name: Restore and save Go build cache (master)
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: ${{ steps.goenv.outputs.gocache }}
           key: test-gocache-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum') }}
@@ -336,7 +336,7 @@ jobs:
       # Go uses ~/.cache/go-build on the ubuntu-latest runner.
       - name: Restore Go test build cache
         id: go-build-cache
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.cache/go-build
           key: e2e-bench-gocache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum') }}-${{ github.sha }}
@@ -580,7 +580,7 @@ jobs:
             > "${RUNNER_TEMP}/runtime-images.json"
 
       - name: Upload exact-checkout runtime images
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: pillar-csi-runtime-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

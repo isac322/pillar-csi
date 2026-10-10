@@ -165,7 +165,7 @@ spec:
       # All steps run via nsenter --mount=/proc/1/ns/mnt so they operate on
       # the Kind node's filesystem, not the pod's overlay filesystem.
       - name: fabric-installer
-        image: debian:bookworm-slim
+        image: debian:trixie-slim
         imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
@@ -254,7 +254,7 @@ spec:
       # readiness probe can be evaluated continuously.  The pod transitions to
       # Ready only when the NVMe-oF TCP target passes its readiness check.
       - name: fabric-readiness
-        image: debian:bookworm-slim
+        image: debian:trixie-slim
         imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true

@@ -149,7 +149,7 @@ func e71ApplyQuotaWriter(ctx context.Context, f *FilesystemAdoptionFixture, name
 	Expect(json.Unmarshal([]byte(f.PodManifest(name, f.PVCName, f.StorageNode, false, 1234, 2345)), &pod)).To(Succeed())
 	spec := pod["spec"].(map[string]any)
 	container := spec["containers"].([]any)[0].(map[string]any)
-	container["image"] = "python:3.12-alpine"
+	container["image"] = "python:3.14-alpine"
 	container["command"] = []string{"python3", "-c", "import time; time.sleep(3600)"}
 	container["volumeMounts"] = append(container["volumeMounts"].([]any), map[string]any{"name": "source", "mountPath": "/source"})
 	spec["volumes"] = append(spec["volumes"].([]any), map[string]any{"name": "source", "hostPath": map[string]any{"path": f.MountPoint, "type": "Directory"}})

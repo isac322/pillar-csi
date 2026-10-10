@@ -153,7 +153,7 @@ func (n *filesystemNetworkFixture) consumer(ctx context.Context, name, node stri
 	}
 	container := spec["containers"].([]any)[0].(map[string]any)
 	// Application image supplies fcntl/fsync; no host packages or mock locking.
-	container["image"] = "python:3.12-alpine"
+	container["image"] = "python:3.14-alpine"
 	container["command"] = []string{"python3", "-c", "import time; time.sleep(3600)"}
 	data, err := json.Marshal(pod)
 	Expect(err).NotTo(HaveOccurred())

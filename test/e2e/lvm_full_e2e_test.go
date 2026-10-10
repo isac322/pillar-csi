@@ -974,7 +974,7 @@ metadata:
 spec:
   containers:
   - name: app
-    image: busybox
+    image: busybox:1.38.0
     command: ["/bin/sh", "-c", "dd if=/dev/urandom of=/data/testfile bs=1M count=1 && md5sum /data/testfile && sleep 3600"]
     volumeMounts:
     - name: data
@@ -1099,7 +1099,7 @@ metadata:
 spec:
   containers:
   - name: app
-    image: busybox
+    image: busybox:1.38.0
     command: ["/bin/sh", "-c", "echo 'data integrity test' > /mnt/testfile && sleep 3600"]
     volumeMounts:
     - name: data

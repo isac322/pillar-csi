@@ -84,7 +84,7 @@ controller:
         # -- csi-provisioner image repository.
         repository: registry.k8s.io/sig-storage/csi-provisioner
         # -- csi-provisioner image tag.
-        tag: "v6.3.0"
+        tag: "v6.4.0"
         pullPolicy: ""
       # -- Resource requests/limits for the provisioner sidecar.
       resources:
@@ -121,7 +121,7 @@ controller:
         # -- csi-resizer image repository.
         repository: registry.k8s.io/sig-storage/csi-resizer
         # -- csi-resizer image tag.
-        tag: "v2.2.1"
+        tag: "v2.3.0"
         pullPolicy: ""
       # -- Resource requests/limits for the resizer sidecar.
       resources:

@@ -387,7 +387,7 @@ csi-provisioner image repository.
 
 ### <code>controller.<wbr>sidecars.<wbr>provisioner.<wbr>image.<wbr>tag</code>
 
-Type: `string`. Default: `"v6.3.0"`
+Type: `string`. Default: `"v6.4.0"`
 
 csi-provisioner image tag.
 
@@ -428,7 +428,7 @@ csi-resizer image repository.
 
 ### <code>controller.<wbr>sidecars.<wbr>resizer.<wbr>image.<wbr>tag</code>
 
-Type: `string`. Default: `"v2.2.1"`
+Type: `string`. Default: `"v2.3.0"`
 
 csi-resizer image tag.
 

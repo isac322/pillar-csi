@@ -213,7 +213,7 @@ spec:
     kubernetes.io/hostname: %s
   containers:
   - name: reader
-    image: busybox
+    image: busybox:1.38.0
     command: ["/bin/sh", "-c", "sleep 3600"]
     volumeMounts:
     - name: data

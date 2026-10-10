@@ -120,7 +120,7 @@ metadata:
 spec:
   containers:
   - name: app
-    image: busybox
+    image: busybox:1.38.0
     command: ["/bin/sh", "-c", "mkfs.ext4 /dev/xvda 2>/dev/null || true; sleep 3600"]
     volumeMounts:
     - name: data

@@ -407,7 +407,7 @@ type PodOptions struct {
 //   - namespace — Kubernetes namespace
 //   - pvcName   — PVC to mount (must exist in the same namespace)
 //   - mountPath — container mount path (e.g. "/data")
-//   - image     — container image (e.g. "busybox:1.36")
+//   - image     — container image (e.g. "busybox:1.38.0")
 //   - command   — container command (e.g. []string{"sh", "-c", "echo ok > /data/out"})
 //   - opts      — optional additional configuration (nil is safe)
 func (f *Factory) Pod(
