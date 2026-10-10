@@ -93,12 +93,12 @@ Kubernetes: `>=1.24.0-0`
 | controller.sidecars.provisioner.extraArgs | list | `[]` | Extra arguments for csi-provisioner. `--extra-create-metadata` is always passed: CreateVolume reads the PVC override annotations through it. |
 | controller.sidecars.provisioner.image.pullPolicy | string | `""` |  |
 | controller.sidecars.provisioner.image.repository | string | `"registry.k8s.io/sig-storage/csi-provisioner"` | csi-provisioner image repository. |
-| controller.sidecars.provisioner.image.tag | string | `"v6.3.0"` | csi-provisioner image tag. |
+| controller.sidecars.provisioner.image.tag | string | `"v6.4.0"` | csi-provisioner image tag. |
 | controller.sidecars.provisioner.resources | object | `{"limits":{"cpu":"100m","memory":"64Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Resource requests/limits for the provisioner sidecar. |
 | controller.sidecars.resizer.extraArgs | list | `[]` | Extra arguments for csi-resizer. |
 | controller.sidecars.resizer.image.pullPolicy | string | `""` |  |
 | controller.sidecars.resizer.image.repository | string | `"registry.k8s.io/sig-storage/csi-resizer"` | csi-resizer image repository. |
-| controller.sidecars.resizer.image.tag | string | `"v2.2.1"` | csi-resizer image tag. |
+| controller.sidecars.resizer.image.tag | string | `"v2.3.0"` | csi-resizer image tag. |
 | controller.sidecars.resizer.resources | object | `{"limits":{"cpu":"100m","memory":"64Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Resource requests/limits for the resizer sidecar. |
 | controller.tolerations | list | `[]` | Tolerations applied to the controller Pod. |
 | csiDriver.attachRequired | bool | `true` | Indicates this CSI driver requires an attach operation (ControllerPublishVolume). |

@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.27
+# syntax=docker/dockerfile:1.28
 
 # Unified multi-target Dockerfile for all pillar-csi components.
 #
@@ -20,7 +20,7 @@
 # See docker-bake.hcl for the build matrix and CI integration.
 
 # ── Builder stage ─────────────────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine3.24 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24 AS builder
 
 WORKDIR /workspace
 

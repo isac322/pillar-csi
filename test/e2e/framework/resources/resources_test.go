@@ -451,7 +451,7 @@ func TestStorageClass_HasTCLabels(t *testing.T) {
 
 func TestPod_BasicFields(t *testing.T) {
 	f := resources.New("E1.1")
-	pod := f.Pod("pod", "default", "my-pvc", "/data", "busybox:1.36",
+	pod := f.Pod("pod", "default", "my-pvc", "/data", "busybox:1.38.0",
 		[]string{"sh", "-c", "echo ok"}, nil)
 
 	if pod == nil {
@@ -467,8 +467,8 @@ func TestPod_BasicFields(t *testing.T) {
 		t.Fatalf("pod has %d containers, want 1", len(pod.Spec.Containers))
 	}
 	c := pod.Spec.Containers[0]
-	if c.Image != "busybox:1.36" {
-		t.Errorf("container image = %q, want busybox:1.36", c.Image)
+	if c.Image != "busybox:1.38.0" {
+		t.Errorf("container image = %q, want busybox:1.38.0", c.Image)
 	}
 	if len(c.VolumeMounts) != 1 || c.VolumeMounts[0].MountPath != "/data" {
 		t.Errorf("container mount path = %v, want /data", c.VolumeMounts)
@@ -477,7 +477,7 @@ func TestPod_BasicFields(t *testing.T) {
 
 func TestPod_PVCVolumeRef(t *testing.T) {
 	f := resources.New("E1.1")
-	pod := f.Pod("pod", "default", "my-pvc", "/data", "busybox:1.36",
+	pod := f.Pod("pod", "default", "my-pvc", "/data", "busybox:1.38.0",
 		[]string{"sh", "-c", "echo ok"}, nil)
 	if len(pod.Spec.Volumes) != 1 {
 		t.Fatalf("pod has %d volumes, want 1", len(pod.Spec.Volumes))
@@ -490,7 +490,7 @@ func TestPod_PVCVolumeRef(t *testing.T) {
 
 func TestPod_NodeName(t *testing.T) {
 	f := resources.New("E1.1")
-	pod := f.Pod("pod", "default", "pvc", "/mnt", "busybox:1.36",
+	pod := f.Pod("pod", "default", "pvc", "/mnt", "busybox:1.38.0",
 		nil, &resources.PodOptions{NodeName: "worker-0"})
 	if pod.Spec.NodeName != "worker-0" {
 		t.Errorf("pod.Spec.NodeName = %q, want worker-0", pod.Spec.NodeName)
@@ -499,7 +499,7 @@ func TestPod_NodeName(t *testing.T) {
 
 func TestPod_HasTCLabels(t *testing.T) {
 	f := resources.New("E1.1")
-	pod := f.Pod("pod", "default", "pvc", "/mnt", "busybox:1.36", nil, nil)
+	pod := f.Pod("pod", "default", "pvc", "/mnt", "busybox:1.38.0", nil, nil)
 	if pod.Labels[resources.LabelManagedBy] != "e2e-fixture" {
 		t.Errorf("Pod missing TC label")
 	}

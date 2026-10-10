@@ -3,7 +3,7 @@ package e2e
 // suite_backend_tools.go — AC4: ephemeral backend tool installation for Kind
 // container nodes.
 //
-// The standard Kind node image (kindest/node) ships with Debian bookworm but
+// The standard Kind node image (kindest/node) ships with Debian trixie but
 // does NOT include ZFS userspace utilities (zpool, zfs) or LVM tools
 // (pvcreate, vgcreate). These are required by the ZFS and LVM backend
 // provisioners (AC4).
@@ -24,7 +24,7 @@ package e2e
 //
 // # ZFS specifics
 //
-// zfsutils-linux is in the Debian bookworm "contrib" component, not "main".
+// zfsutils-linux is in the Debian "contrib" component, not "main".
 // This function enables the contrib component before updating the package list.
 //
 // # LVM specifics
@@ -90,7 +90,7 @@ func installKindContainerBackendTools(ctx context.Context, nodeContainer string,
 	// We write a new sources entry file rather than modifying the existing one
 	// to minimise the risk of corrupting the package index.
 	const contribSourcesScript = `set -e
-CODENAME=$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-bookworm}")
+CODENAME=$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-trixie}")
 cat > /etc/apt/sources.list.d/debian.sources <<APTEOF
 Types: deb
 URIs: http://deb.debian.org/debian

@@ -512,7 +512,7 @@ metadata:
 spec:
   containers:
   - name: writer
-    image: busybox
+    image: busybox:1.38.0
     command: ["/bin/sh", "-c", "echo hello > /data/test && sleep 3600"]
     volumeMounts:
     - name: data

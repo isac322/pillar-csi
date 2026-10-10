@@ -6,7 +6,7 @@ Report security problems privately as described in [SECURITY.md](SECURITY.md), n
 
 ## Development setup
 
-You need Go 1.27.1 (see [go.mod](go.mod)), `make`, and Docker for the end-to-end tests. The Makefile downloads its other tools (controller-gen, golangci-lint, buf, envtest, ginkgo) into `./bin` on first use. Run `make help` to list every target.
+You need Go 1.27.2 (see [go.mod](go.mod)), `make`, and Docker for the end-to-end tests. The Makefile downloads its other tools (controller-gen, golangci-lint, buf, envtest, ginkgo) into `./bin` on first use. Run `make help` to list every target.
 
 Dependency updates target the newest compatible stable releases under the existing module paths. Keep `github.com/google/cel-go` at v0.31.0 because v0.32.0 changes its module path to `cel.dev/cel-go`. Keep `k8s.io/kube-openapi` at commit `be32def86098` and `sigs.k8s.io/structured-merge-diff/v6` at v6.4.2: Kubernetes v0.37.1 uses SMD v6, while newer kube-openapi commits require SMD v7.
 
@@ -63,7 +63,7 @@ Docker suite tests run serially by default. `PILLAR_E2E_PARALLEL=true make test-
 
 Daily E2E enables this opt-in in each isolated topology job. Local Docker suite runs remain serial unless `PILLAR_E2E_PARALLEL=true` is set.
 
-Local `make test-docker-e2e` runs keep the nested Docker's pulled images, BuildKit cache (including the Go build cache mount), and the harness's Go module and build caches in Compose volumes, so a rerun rebuilds only what changed. Each run still starts and ends without Kind clusters, containers, networks, or E2E-owned host storage state. Base image tags such as `golang:1.27.1-alpine3.24` are not re-pulled while cached; run `make clean-docker-e2e-cache` to drop every cache and start from scratch. CI runners start with empty volumes.
+Local `make test-docker-e2e` runs keep the nested Docker's pulled images, BuildKit cache (including the Go build cache mount), and the harness's Go module and build caches in Compose volumes, so a rerun rebuilds only what changed. Each run still starts and ends without Kind clusters, containers, networks, or E2E-owned host storage state. Base image tags such as `golang:1.27.2-alpine3.24` are not re-pulled while cached; run `make clean-docker-e2e-cache` to drop every cache and start from scratch. CI runners start with empty volumes.
 
 External Storage E2E uses four workers when invoked by the CI and Daily callers; the reusable workflow defaults to two workers when called standalone. Local defaults remain one worker and 5 GiB. On a Linux host with the required storage modules, set `VG_SIZE=15G` when bootstrapping and `GINKGO_PROCS=2` when running `make test-external-e2e` to use the reusable-workflow settings locally. Parallel execution uses the matching Ginkgo binary from the upstream Kubernetes test bundle and keeps the same focus and skip filters.
 

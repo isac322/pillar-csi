@@ -26,3 +26,15 @@ updates:
     directory: /
     schedule:
       interval: daily
+
+  # Dockerfile base images (docker E2E harness)
+  - package-ecosystem: docker
+    directory: /test/docker-e2e
+    schedule:
+      interval: daily
+
+  # npm dependencies (docs site)
+  - package-ecosystem: npm
+    directory: /site
+    schedule:
+      interval: daily

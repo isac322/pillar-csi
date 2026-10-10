@@ -361,7 +361,7 @@ jobs:
 ```yaml
 e2e-inprocess:
   stage: test
-  image: golang:1.22-bookworm
+  image: golang:1.27.2-trixie
   script:
     - go test ./test/e2e/ -v -timeout 120s -count=1
   artifacts:
@@ -8112,7 +8112,7 @@ jobs:
 ```yaml
 e2e-mock-agent:
   stage: test
-  image: golang:1.22-bookworm
+  image: golang:1.27.2-trixie
   script:
     # 빌드 태그 없음 — mock agent 모드가 기본
     - go test ./test/e2e/ -v -timeout 180s -count=1

@@ -8,12 +8,12 @@
     "preview": "astro preview"
   },
   "dependencies": {
-    "@astrojs/markdown-remark": "^7.3.1",
-    "@astrojs/mdx": "^8.0.2",
+    "@astrojs/markdown-remark": "^7.3.2",
+    "@astrojs/mdx": "^8.0.3",
     "@astrojs/sitemap": "latest",
     "@fontsource-variable/archivo": "^5.3.0",
     "@fontsource/ibm-plex-mono": "latest",
-    "astro": "^7.3.5",
+    "astro": "^7.3.8",
     "hast-util-to-string": "latest",
     "pagefind": "^1.5.2",
     "rehype-autolink-headings": "latest",
