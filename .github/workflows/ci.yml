@@ -603,6 +603,8 @@ jobs:
   # and the Kind E2E suite block merge; the other CI jobs stay informational.
   # A needed job passes when it succeeded or was skipped as not applicable; a
   # failed or cancelled job, or a missing result, fails the gate.
+  # A cancelled run also fails it: cancelling while `changes` runs skips every
+  # `!cancelled()`-guarded job, so all needs would read "skipped".
   # `runtime-images` is listed because its failure only skips `e2e`, which
   # would otherwise pass as "skipped". `changes` is not listed: its failure
   # already fails closed by running every heavy job.
@@ -614,6 +616,13 @@ jobs:
     permissions: {}
     timeout-minutes: 5
     steps:
+      # cancelled() is only available in `if:`, so a guarded step carries it.
+      - name: Fail on a cancelled run
+        if: cancelled()
+        run: |
+          echo "::error::CI run was cancelled"
+          exit 1
+
       - name: Check job results
         env:
           LINT: ${{ needs.lint.result }}
