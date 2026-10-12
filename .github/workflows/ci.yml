@@ -16,12 +16,13 @@ jobs:
   # Detects code and image-contract changes so behavior validation and
   # multi-platform OCI packaging can use different lanes.
   #
-  # A workflow-level `paths-ignore` would not work here: Lint, Test, Build and
-  # E2E are required status checks, and a workflow that never starts leaves
-  # those checks pending, which blocks the pull request. A job skipped through
-  # `if:` reports "skipped", which satisfies a required check.
+  # A workflow-level `paths-ignore` would not work here: a workflow that never
+  # starts leaves its required status checks pending, which blocks the pull
+  # request. Heavy jobs are skipped through `if:` instead, and the `gate` job
+  # (`CI gate`) at the end of this file is the required check that aggregates
+  # the jobs which block merge.
   #
-  # The gate fails closed: a heavy job is skipped only when this job succeeded
+  # Detection fails closed: a heavy job is skipped only when this job succeeded
   # and reported no relevant change. If detection fails, every heavy job runs.
   # `!cancelled()` lets them start after a failed `changes` job, so jobs with
   # other prerequisites also check those results explicitly.
@@ -248,7 +249,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Run csi-sanity
-        # The required Test job retains the same untagged whole-repo vet.
+        # The Test job retains the same untagged whole-repo vet.
         # Tagged go test still vets the sanity package on this runner.
         run: make test-csi-sanity CSI_SANITY_SKIP_VET=true
 
@@ -292,7 +293,7 @@ jobs:
     with:
       runtime_image_artifact: ${{ needs['runtime-images'].outputs.runtime_image_artifact }}
       runtime_image_tag: ${{ needs['runtime-images'].outputs.runtime_image_tag }}
-      # The required Test job already runs vet through `make test`.
+      # The Test job already runs vet through `make test`.
       skip_vet: true
 
   external-e2e:
@@ -398,8 +399,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   build:
-    # Keep the existing job id/name because "Build (all platforms)" is a
-    # required branch-protection check. Both lanes compile all eight platforms
+    # Keep the existing job id/name "Build (all platforms)" so check history
+    # stays continuous. Both lanes compile all eight platforms
     # with the canonical Dockerfile/toolchain and shared BuildKit cache.
     name: Build (all platforms)
     runs-on: ubuntu-latest
@@ -491,7 +492,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Build the exact checkout once for the behavior-validation lanes. This job
-  # runs beside the required cross-platform compile/package job so E2E does not
+  # runs beside the cross-platform compile/package job so E2E does not
   # wait for the platform compile or packaging matrix it does not consume.
   runtime-images:
     name: Build exact-checkout runtime images
@@ -589,3 +590,75 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
+
+  # ── gate ───────────────────────────────────────────────────────────────────
+  # One always-present result for branch protection. Required checks cannot
+  # point at the individual jobs: when `e2e` is skipped (docs-only change, or
+  # runtime-images did not succeed) GitHub reports the reusable-workflow caller
+  # only as "E2E Tests (multi-node Kind)", so the nested
+  # "E2E Tests (multi-node Kind) / E2E Tests (multi-node Kind)" context never
+  # appears and the pull request stays blocked forever.
+  #
+  # `CI gate` carries today's merge policy: Lint, Test, Build (all platforms)
+  # and the Kind E2E suite block merge; the other CI jobs stay informational.
+  # `runtime-images` is listed because its failure only skips `e2e`.
+  #
+  # A needed job must succeed. "skipped" counts as passing only for the skips
+  # the job conditions above intend:
+  #   - `changes` succeeded and reported no code change (docs-only), or
+  #   - for `e2e`, the pushed head commit carries `[skip e2e]`/`[e2e skip]`
+  #     (the same expression as the `e2e` job condition).
+  # Any other skip means the job never ran, e.g. the run was cancelled before
+  # the heavy jobs started; it fails the gate. A step guarded by
+  # `if: cancelled()` cannot catch that, because a job that starts after the
+  # cancellation is not itself cancelled. A failed `changes` job makes every
+  # heavy job run, so it passes only when they all succeed.
+  gate:
+    name: CI gate
+    needs: [changes, lint, test, build, e2e, runtime-images]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    steps:
+      - name: Check job results
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          E2E_SKIP_MARKER: ${{ contains(github.event.head_commit.message, '[skip e2e]') || contains(github.event.head_commit.message, '[e2e skip]') }}
+          LINT: ${{ needs.lint.result }}
+          TEST: ${{ needs.test.result }}
+          BUILD: ${{ needs.build.result }}
+          E2E: ${{ needs.e2e.result }}
+          RUNTIME_IMAGES: ${{ needs['runtime-images'].result }}
+        run: |
+          set -euo pipefail
+          docs_only=false
+          if [[ "${CHANGES}" == success && "${CODE}" == false ]]; then
+            docs_only=true
+          fi
+          echo "Detect code changes: ${CHANGES:-<missing>} (code=${CODE:-<missing>}); docs-only skip allowed: ${docs_only}"
+          rc=0
+          check() {
+            local job=$1 result=$2 skip_ok=$3
+            echo "${job}: ${result:-<missing>}"
+            if [[ "${result}" == success ]] || [[ "${result}" == skipped && "${skip_ok}" == true ]]; then
+              return 0
+            fi
+            if [[ "${result}" == skipped ]]; then
+              echo "::error::${job}: skipped, but it had to run (code changed, change detection did not succeed, or the run was cancelled)"
+            else
+              echo "::error::${job}: ${result:-<missing>}"
+            fi
+            rc=1
+          }
+          check "Lint" "${LINT}" "${docs_only}"
+          check "Test" "${TEST}" "${docs_only}"
+          check "Build (all platforms)" "${BUILD}" "${docs_only}"
+          check "Build exact-checkout runtime images" "${RUNTIME_IMAGES}" "${docs_only}"
+          e2e_skip_ok="${docs_only}"
+          if [[ "${E2E_SKIP_MARKER}" == true ]]; then
+            e2e_skip_ok=true
+          fi
+          check "E2E Tests (multi-node Kind)" "${E2E}" "${e2e_skip_ok}"
+          exit "${rc}"
