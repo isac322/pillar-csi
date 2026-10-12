@@ -5,6 +5,13 @@
 - API group / CSI provisioner name: `pillar-csi.bhyoo.com`
 - CRD (전부 cluster-scoped): PillarAgent, PillarStore, PillarProtocol, PillarStorageClass, PillarVolumeState
 - 요구사항 기준 문서: `docs/PRD.md`
+- 프로토콜·백엔드 지원 범위가 바뀌면 같은 PR에서 지원 표를 모두 갱신한다: `README.md`의 `## Support matrix`, `site/src/content/docs/docs/reference/support-matrix.md`, `docs/PRD.md`의 프로토콜 표, `docs/E2E-TESTCASES.md`의 백엔드×프로토콜 표.
+- `site/`(랜딩·문서 웹)를 수정할 때는 `impeccable` 스킬을 쓰고, 그 프로젝트 컨텍스트인 `site/PRODUCT.md`(포지셔닝·메시지)와 `site/DESIGN.md`(비주얼 시스템)를 먼저 읽고 따른다. 랜딩은 이 문서들의 컨셉(Zero-install 등)에 맞게 개성 있고 간결하게 만든다.
+
+## 설계 원칙
+
+- 사용자가 노드에 직접 설치·설정하는 것은 커널 모듈뿐이다 (`docs/PRD.md` §2.6 Zero-Install 전략). 호스트 패키지나 외부 CLI(`iscsiadm`, `nvme-cli`, `nfs-utils` 등)에 기대는 구현은 하지 않는다. 외부 CLI가 꼭 필요해 보이면 pure-Go 구현, FFI, SDK, 커널 인터페이스 직접 조작 같은 대안을 먼저 조사하고, 그래도 필요하면 조사 결과와 함께 보고한다.
+- 기존 CRD 구조를 크게 바꾸지 않는 설계를 우선한다. 기능이 현재 CR과 개념적으로 맞지 않아 CRD 필드나 CR 추가·변경이 필요하면, 구현 전에 무엇이 맞지 않는지와 대안별 장단점을 보고하고 결정을 받는다.
 
 ## 생성 파일은 직접 수정하지 말 것
 
