@@ -6,8 +6,7 @@
 - CRD (전부 cluster-scoped): PillarAgent, PillarStore, PillarProtocol, PillarStorageClass, PillarVolumeState
 - 요구사항 기준 문서: `docs/PRD.md`
 - 프로토콜·백엔드 지원 범위가 바뀌면 같은 PR에서 지원 표를 모두 갱신한다: `README.md`의 `## Support matrix`, `site/src/content/docs/docs/reference/support-matrix.md`, `docs/PRD.md`의 프로토콜 표, `docs/E2E-TESTCASES.md`의 백엔드×프로토콜 표.
-- `site/`(랜딩·문서 웹) 수정은 `impeccable` 스킬로 한다.
-- 랜딩 페이지는 눈에 띄게 개성 있고, 프로젝트 컨셉(Zero-install 등)과 맞고, 간결해야 한다.
+- `site/`(랜딩·문서 웹)를 수정할 때는 `impeccable` 스킬을 쓰고, 그 프로젝트 컨텍스트인 `site/PRODUCT.md`(포지셔닝·메시지)와 `site/DESIGN.md`(비주얼 시스템)를 먼저 읽고 따른다. 랜딩은 이 문서들의 컨셉(Zero-install 등)에 맞게 개성 있고 간결하게 만든다.
 
 ## 설계 원칙
 
