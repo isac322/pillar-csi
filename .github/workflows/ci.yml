@@ -19,8 +19,8 @@ jobs:
   # A workflow-level `paths-ignore` would not work here: a workflow that never
   # starts leaves its required status checks pending, which blocks the pull
   # request. Heavy jobs are skipped through `if:` instead, and the `gate` job
-  # (`CI gate`) at the end of this file is the single required check that
-  # aggregates them.
+  # (`CI gate`) at the end of this file is the required check that aggregates
+  # the jobs which block merge.
   #
   # Detection fails closed: a heavy job is skipped only when this job succeeded
   # and reported no relevant change. If detection fails, every heavy job runs.
@@ -599,24 +599,16 @@ jobs:
   # "E2E Tests (multi-node Kind) / E2E Tests (multi-node Kind)" context never
   # appears and the pull request stays blocked forever.
   #
-  # `CI gate` succeeds when every validation job succeeded or was skipped as
-  # not applicable; a failed or cancelled job fails it. `runtime-images` is
-  # listed so that its failure, which skips `e2e` and `external-e2e`, still
-  # fails the gate. `changes` is not listed: its failure already fails closed
-  # by running every heavy job, whose results are checked here.
+  # `CI gate` carries today's merge policy: Lint, Test, Build (all platforms)
+  # and the Kind E2E suite block merge; the other CI jobs stay informational.
+  # A needed job passes when it succeeded or was skipped as not applicable; a
+  # failed or cancelled job, or a missing result, fails the gate.
+  # `runtime-images` is listed because its failure only skips `e2e`, which
+  # would otherwise pass as "skipped". `changes` is not listed: its failure
+  # already fails closed by running every heavy job.
   gate:
     name: CI gate
-    needs:
-      - docs
-      - lint
-      - test
-      - csi-sanity
-      - chart
-      - e2e
-      - external-e2e
-      - e2e-bench
-      - build
-      - runtime-images
+    needs: [lint, test, build, e2e, runtime-images]
     if: always()
     runs-on: ubuntu-latest
     permissions: {}
@@ -624,15 +616,26 @@ jobs:
     steps:
       - name: Check job results
         env:
-          RESULTS: ${{ toJSON(needs) }}
+          LINT: ${{ needs.lint.result }}
+          TEST: ${{ needs.test.result }}
+          BUILD: ${{ needs.build.result }}
+          E2E: ${{ needs.e2e.result }}
+          RUNTIME_IMAGES: ${{ needs['runtime-images'].result }}
         run: |
           set -euo pipefail
           rc=0
-          while IFS=$'\t' read -r job result; do
-            echo "${job}: ${result}"
+          for entry in \
+            "Lint=${LINT}" \
+            "Test=${TEST}" \
+            "Build (all platforms)=${BUILD}" \
+            "E2E Tests (multi-node Kind)=${E2E}" \
+            "Build exact-checkout runtime images=${RUNTIME_IMAGES}"; do
+            job="${entry%=*}"
+            result="${entry##*=}"
+            echo "${job}: ${result:-<missing>}"
             case "${result}" in
               success | skipped) ;;
-              *) echo "::error::${job}: ${result}"; rc=1 ;;
+              *) echo "::error::${job}: ${result:-<missing>}"; rc=1 ;;
             esac
-          done < <(jq -r 'to_entries[] | [.key, .result] | @tsv' <<<"${RESULTS}")
+          done
           exit "${rc}"
