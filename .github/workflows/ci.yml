@@ -601,30 +601,31 @@ jobs:
   #
   # `CI gate` carries today's merge policy: Lint, Test, Build (all platforms)
   # and the Kind E2E suite block merge; the other CI jobs stay informational.
-  # A needed job passes when it succeeded or was skipped as not applicable; a
-  # failed or cancelled job, or a missing result, fails the gate.
-  # A cancelled run also fails it: cancelling while `changes` runs skips every
-  # `!cancelled()`-guarded job, so all needs would read "skipped".
-  # `runtime-images` is listed because its failure only skips `e2e`, which
-  # would otherwise pass as "skipped". `changes` is not listed: its failure
-  # already fails closed by running every heavy job.
+  # `runtime-images` is listed because its failure only skips `e2e`.
+  #
+  # A needed job must succeed. "skipped" counts as passing only for the skips
+  # the job conditions above intend:
+  #   - `changes` succeeded and reported no code change (docs-only), or
+  #   - for `e2e`, the pushed head commit carries `[skip e2e]`/`[e2e skip]`
+  #     (the same expression as the `e2e` job condition).
+  # Any other skip means the job never ran, e.g. the run was cancelled before
+  # the heavy jobs started; it fails the gate. A step guarded by
+  # `if: cancelled()` cannot catch that, because a job that starts after the
+  # cancellation is not itself cancelled. A failed `changes` job makes every
+  # heavy job run, so it passes only when they all succeed.
   gate:
     name: CI gate
-    needs: [lint, test, build, e2e, runtime-images]
+    needs: [changes, lint, test, build, e2e, runtime-images]
     if: always()
     runs-on: ubuntu-latest
     permissions: {}
     timeout-minutes: 5
     steps:
-      # cancelled() is only available in `if:`, so a guarded step carries it.
-      - name: Fail on a cancelled run
-        if: cancelled()
-        run: |
-          echo "::error::CI run was cancelled"
-          exit 1
-
       - name: Check job results
         env:
+          CHANGES: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          E2E_SKIP_MARKER: ${{ contains(github.event.head_commit.message, '[skip e2e]') || contains(github.event.head_commit.message, '[e2e skip]') }}
           LINT: ${{ needs.lint.result }}
           TEST: ${{ needs.test.result }}
           BUILD: ${{ needs.build.result }}
@@ -632,19 +633,32 @@ jobs:
           RUNTIME_IMAGES: ${{ needs['runtime-images'].result }}
         run: |
           set -euo pipefail
+          docs_only=false
+          if [[ "${CHANGES}" == success && "${CODE}" == false ]]; then
+            docs_only=true
+          fi
+          echo "Detect code changes: ${CHANGES:-<missing>} (code=${CODE:-<missing>}); docs-only skip allowed: ${docs_only}"
           rc=0
-          for entry in \
-            "Lint=${LINT}" \
-            "Test=${TEST}" \
-            "Build (all platforms)=${BUILD}" \
-            "E2E Tests (multi-node Kind)=${E2E}" \
-            "Build exact-checkout runtime images=${RUNTIME_IMAGES}"; do
-            job="${entry%=*}"
-            result="${entry##*=}"
+          check() {
+            local job=$1 result=$2 skip_ok=$3
             echo "${job}: ${result:-<missing>}"
-            case "${result}" in
-              success | skipped) ;;
-              *) echo "::error::${job}: ${result:-<missing>}"; rc=1 ;;
-            esac
-          done
+            if [[ "${result}" == success ]] || [[ "${result}" == skipped && "${skip_ok}" == true ]]; then
+              return 0
+            fi
+            if [[ "${result}" == skipped ]]; then
+              echo "::error::${job}: skipped, but it had to run (code changed, change detection did not succeed, or the run was cancelled)"
+            else
+              echo "::error::${job}: ${result:-<missing>}"
+            fi
+            rc=1
+          }
+          check "Lint" "${LINT}" "${docs_only}"
+          check "Test" "${TEST}" "${docs_only}"
+          check "Build (all platforms)" "${BUILD}" "${docs_only}"
+          check "Build exact-checkout runtime images" "${RUNTIME_IMAGES}" "${docs_only}"
+          e2e_skip_ok="${docs_only}"
+          if [[ "${E2E_SKIP_MARKER}" == true ]]; then
+            e2e_skip_ok=true
+          fi
+          check "E2E Tests (multi-node Kind)" "${E2E}" "${e2e_skip_ok}"
           exit "${rc}"
