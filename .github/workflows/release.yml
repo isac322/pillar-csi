@@ -127,7 +127,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push images (push disabled in measure-only mode)
-        uses: docker/bake-action@v7.4.0
+        uses: docker/bake-action@v7.5.0
         with:
           files: docker-bake.hcl
           push: ${{ needs.detect.outputs.measure_only != 'true' }}
