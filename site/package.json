@@ -13,7 +13,7 @@
     "@astrojs/sitemap": "latest",
     "@fontsource-variable/archivo": "^5.3.0",
     "@fontsource/ibm-plex-mono": "latest",
-    "astro": "^7.3.8",
+    "astro": "^7.4.0",
     "hast-util-to-string": "latest",
     "pagefind": "^1.5.2",
     "rehype-autolink-headings": "latest",
