@@ -18,6 +18,17 @@ make test        # full unit and integration suite, including envtest
 make lint        # golangci-lint
 ```
 
+With Node.js and Docker available, build the devcontainer using the same pinned CLI and feature lockfile as CI:
+
+```sh
+npx --yes --package @devcontainers/cli@0.89.0 devcontainer build \
+  --workspace-folder . --frozen-lockfile --no-cache
+```
+
+This builds the Debian Trixie development image without starting its Docker-in-Docker container or running lifecycle hooks. Keep `.devcontainer/devcontainer-lock.json` checked in; the frozen build rejects feature resolution that would change it.
+
+The runtime images use Alpine 3.24 packages at that distribution's latest available versions. These may trail upstream releases; we do not source-build replacements to bypass the Alpine package ceiling.
+
 The API group and CSI provisioner name is `pillar-csi.bhyoo.com`. All CRDs are cluster-scoped: `PillarAgent`, `PillarStore`, `PillarProtocol`, `PillarStorageClass`, and the internal `PillarVolumeState`.
 
 ## Generated files
@@ -53,7 +64,9 @@ Check cleanup against the resource owned by the test. For TCP listeners, verify 
 
 Pull requests and pushes to `master` run the same CI workflow. Code changes run lint, unit and integration tests, CSI conformance, chart rendering, benchmarks, and both Kind and upstream External Storage E2E suites. Ordinary source PRs compile all eight platforms through the Dockerfile's builder stage, which declares `TARGETOS`/`TARGETARCH`/`TARGETVARIANT` after `COPY . .` so the architecture-independent `go mod download` step shares one vertex across platforms while the build args remain in scope for each architecture-specific compile. Image-contract changes, master pushes, and failed change detection run the full eight-platform OCI build. Documentation-only changes skip the code checks; `docs/E2E-TESTCASES.md` still counts as code. Failed change detection runs the checks rather than skipping them. Superseded pull-request runs are cancelled; master and daily runs are retained.
 
-The `CI gate` job runs on every pull request and is the CI workflow's required status check. It aggregates the jobs that block merge: Lint, Test, Build (all platforms), and the Kind E2E suite, plus the runtime-image build that E2E consumes. Each of them must succeed. A skipped job passes only when change detection succeeded and found a documentation-only change, or, for E2E, when a pushed commit message contains `[skip e2e]` or `[e2e skip]`. Any other skip, such as one caused by cancelling the run, fails the gate. The other CI jobs report results but do not block merge. To make a job blocking, add it to the gate's `needs` list and result check in `.github/workflows/ci.yml`.
+The `CI gate` job runs on every pull request and is the CI workflow's required status check. It aggregates the jobs that block merge: Lint, Test, Build (all platforms), the Kind E2E suite, the runtime-image build that E2E consumes, and the devcontainer build. Each required job must succeed. A skipped code job passes only when change detection succeeded and found a documentation-only change, or, for E2E, when a pushed commit message contains `[skip e2e]` or `[e2e skip]`. Any other skip, such as one caused by cancelling the run, fails the gate. The other CI jobs report results but do not block merge. To make a job blocking, add it to the gate's `needs` list and result check in `.github/workflows/ci.yml`.
+
+The devcontainer build runs only for `.devcontainer/**` or `.github/workflows/ci.yml` changes. It also runs if change detection fails or its devcontainer output is missing. The gate accepts a skipped devcontainer build only when detection succeeded and explicitly found no relevant change, so ordinary source PRs do not rebuild the devcontainer's Git feature. This uses the existing `CI gate` required check; no separate required status check is needed.
 
 TC coverage verification runs once through `make test`, and its report appears in the Test job summary. The daily workflow also runs the separate Docker multi-node data-path suite.
 

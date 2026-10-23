@@ -13,8 +13,8 @@ concurrency:
 
 jobs:
   # ── changes ────────────────────────────────────────────────────────────────
-  # Detects code and image-contract changes so behavior validation and
-  # multi-platform OCI packaging can use different lanes.
+  # Detects code, image-contract and devcontainer changes so behavior validation,
+  # multi-platform OCI packaging and devcontainer builds use different lanes.
   #
   # A workflow-level `paths-ignore` would not work here: a workflow that never
   # starts leaves its required status checks pending, which blocks the pull
@@ -34,6 +34,9 @@ jobs:
   # `image_contract` is limited to files that change the OCI/Docker packaging
   # contract. Source changes are covered by the exact-checkout runtime image
   # and cross-platform Go compile lane below.
+  #
+  # `devcontainer` is limited to .devcontainer/** and this workflow, so ordinary
+  # source changes do not repeat the devcontainer Git feature's source build.
   changes:
     name: Detect code changes
     runs-on: ubuntu-latest
@@ -43,6 +46,7 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code == 'true' || steps.filter.outputs.tcspec == 'true' }}
       image_contract: ${{ steps.filter.outputs.image_contract == 'true' }}
+      devcontainer: ${{ steps.filter.outputs.devcontainer }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -64,6 +68,37 @@ jobs:
               - 'docker-bake.hcl'
               - '.dockerignore'
               - 'hack/verify-mkfs-baseline.sh'
+            devcontainer:
+              - '.devcontainer/**'
+              - '.github/workflows/ci.yml'
+
+  # Build only: do not start a privileged Docker-in-Docker container or run its
+  # lifecycle hooks. Missing filter output, like failed detection, requires a build.
+  devcontainer:
+    name: Devcontainer build
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.devcontainer != 'false') }}
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26.12.1
+
+      - name: Build devcontainer with frozen features
+        run: >-
+          npx --yes --package @devcontainers/cli@0.89.0 devcontainer build
+          --workspace-folder .
+          --frozen-lockfile
+          --no-cache
 
   # ── docs ───────────────────────────────────────────────────────────────────
   # Generated reference docs must match api/v1alpha1 and the chart values, and
@@ -599,15 +634,18 @@ jobs:
   # "E2E Tests (multi-node Kind) / E2E Tests (multi-node Kind)" context never
   # appears and the pull request stays blocked forever.
   #
-  # `CI gate` carries today's merge policy: Lint, Test, Build (all platforms)
-  # and the Kind E2E suite block merge; the other CI jobs stay informational.
-  # `runtime-images` is listed because its failure only skips `e2e`.
+  # `CI gate` carries today's merge policy: Lint, Test, Build (all platforms),
+  # the Kind E2E suite and relevant devcontainer builds block merge; the other
+  # CI jobs stay informational. `runtime-images` is listed because its failure
+  # only skips `e2e`.
   #
   # A needed job must succeed. "skipped" counts as passing only for the skips
   # the job conditions above intend:
   #   - `changes` succeeded and reported no code change (docs-only), or
   #   - for `e2e`, the pushed head commit carries `[skip e2e]`/`[e2e skip]`
   #     (the same expression as the `e2e` job condition).
+  #   - for `devcontainer`, `changes` succeeded and explicitly reported no
+  #     devcontainer or CI workflow change.
   # Any other skip means the job never ran, e.g. the run was cancelled before
   # the heavy jobs started; it fails the gate. A step guarded by
   # `if: cancelled()` cannot catch that, because a job that starts after the
@@ -615,7 +653,7 @@ jobs:
   # heavy job run, so it passes only when they all succeed.
   gate:
     name: CI gate
-    needs: [changes, lint, test, build, e2e, runtime-images]
+    needs: [changes, lint, test, build, e2e, runtime-images, devcontainer]
     if: always()
     runs-on: ubuntu-latest
     permissions: {}
@@ -625,6 +663,8 @@ jobs:
         env:
           CHANGES: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
+          DEVCONTAINER_CHANGED: ${{ needs.changes.outputs.devcontainer }}
+          DEVCONTAINER: ${{ needs.devcontainer.result }}
           E2E_SKIP_MARKER: ${{ contains(github.event.head_commit.message, '[skip e2e]') || contains(github.event.head_commit.message, '[e2e skip]') }}
           LINT: ${{ needs.lint.result }}
           TEST: ${{ needs.test.result }}
@@ -638,6 +678,11 @@ jobs:
             docs_only=true
           fi
           echo "Detect code changes: ${CHANGES:-<missing>} (code=${CODE:-<missing>}); docs-only skip allowed: ${docs_only}"
+          devcontainer_skip_ok=false
+          if [[ "${CHANGES}" == success && "${DEVCONTAINER_CHANGED}" == false ]]; then
+            devcontainer_skip_ok=true
+          fi
+          echo "Devcontainer changed: ${DEVCONTAINER_CHANGED:-<missing>}; devcontainer skip allowed: ${devcontainer_skip_ok}"
           rc=0
           check() {
             local job=$1 result=$2 skip_ok=$3
@@ -646,7 +691,7 @@ jobs:
               return 0
             fi
             if [[ "${result}" == skipped ]]; then
-              echo "::error::${job}: skipped, but it had to run (code changed, change detection did not succeed, or the run was cancelled)"
+              echo "::error::${job}: skipped, but it had to run (relevant paths changed, change detection did not succeed, or the run was cancelled)"
             else
               echo "::error::${job}: ${result:-<missing>}"
             fi
@@ -661,4 +706,5 @@ jobs:
             e2e_skip_ok=true
           fi
           check "E2E Tests (multi-node Kind)" "${E2E}" "${e2e_skip_ok}"
+          check "Devcontainer build" "${DEVCONTAINER}" "${devcontainer_skip_ok}"
           exit "${rc}"
