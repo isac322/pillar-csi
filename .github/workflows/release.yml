@@ -127,7 +127,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push images (push disabled in measure-only mode)
-        uses: docker/bake-action@v7.4.0
+        uses: docker/bake-action@v7.5.0
         with:
           files: docker-bake.hcl
           push: ${{ needs.detect.outputs.measure_only != 'true' }}
@@ -168,7 +168,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v5.0.1
         with:
-          version: 4.3.0
+          version: 4.3.1
 
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -187,7 +187,7 @@ jobs:
       - name: Set up ORAS
         uses: oras-project/setup-oras@v2.0.2
         with:
-          version: 1.3.4
+          version: 1.3.5
 
       # Artifact Hub reads repository metadata (repositoryID, owners) from the
       # artifacthub.io tag of the chart repository.

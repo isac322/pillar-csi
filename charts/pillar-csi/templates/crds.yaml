@@ -6,7 +6,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     helm.sh/resource-policy: keep
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: pillaragents.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.bhyoo.com
@@ -287,7 +287,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     helm.sh/resource-policy: keep
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: pillarprotocols.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.bhyoo.com
@@ -691,7 +691,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     helm.sh/resource-policy: keep
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: pillarstorageclasses.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.bhyoo.com
@@ -1116,7 +1116,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     helm.sh/resource-policy: keep
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: pillarstores.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.bhyoo.com
@@ -1387,7 +1387,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     helm.sh/resource-policy: keep
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: pillarvolumereservations.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.bhyoo.com
@@ -1519,7 +1519,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     helm.sh/resource-policy: keep
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: pillarvolumestates.pillar-csi.bhyoo.com
 spec:
   group: pillar-csi.bhyoo.com

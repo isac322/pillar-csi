@@ -17,8 +17,8 @@ readonly -a sidecar_images=(
   "registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.18.0"
 )
 readonly -a build_base_images=(
-  "golang:1.27.2-alpine3.24"
-  "alpine:3.24.2"
+  "golang:1.27.3-alpine3.24"
+  "alpine:3.24.3"
   "gcr.io/distroless/static:nonroot"
 )
 readonly vg_name="pillar-e2e-vg"

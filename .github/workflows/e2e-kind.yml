@@ -127,7 +127,7 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v5.0.1
         with:
-          version: v4.3.0
+          version: v4.3.1
 
       # ── install ZFS, LVM, and NVMe kernel modules ────────────────────────
       # ZFS userspace tools (zpool, zfs, losetup) and LVM tools (pvcreate,
@@ -209,8 +209,8 @@ jobs:
       - name: Pre-pull base and third-party images
         run: |
           images=(
-            alpine:3.24.2
-            golang:1.27.2-alpine3.24
+            alpine:3.24.3
+            golang:1.27.3-alpine3.24
             busybox:1.38.0
             registry.k8s.io/sig-storage/csi-provisioner:v6.4.0
             registry.k8s.io/sig-storage/csi-attacher:v4.13.0

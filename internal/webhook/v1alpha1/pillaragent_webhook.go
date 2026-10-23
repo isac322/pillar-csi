@@ -110,8 +110,9 @@ func (*PillarAgentCustomValidator) ValidateUpdate(
 		}
 	}
 
-	if len(allErrs) > 0 {
-		return nil, allErrs.ToAggregate()
+	validationErr := allErrs.ToAggregate()
+	if validationErr != nil {
+		return nil, fmt.Errorf("validate PillarAgent update: %w", validationErr)
 	}
 	return nil, nil
 }

@@ -711,7 +711,6 @@ func (m *Manager) validateActivation(ctx context.Context, e Export, previous map
 	if err == nil {
 		return true, nil
 	}
-	//nolint:errcheck // AsType's bool is checked; preserve the original error and its wrapping.
 	if _, ok := errors.AsType[*runtimeValidationError](err); ok {
 		return false, err
 	}

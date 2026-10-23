@@ -6,15 +6,28 @@ Report security problems privately as described in [SECURITY.md](SECURITY.md), n
 
 ## Development setup
 
-You need Go 1.27.2 (see [go.mod](go.mod)), `make`, and Docker for the end-to-end tests. The Makefile downloads its other tools (controller-gen, golangci-lint, buf, envtest, ginkgo) into `./bin` on first use. Run `make help` to list every target.
+You need Go 1.27.3 (see [go.mod](go.mod)), `make`, and Docker for the end-to-end tests. The Makefile downloads its other tools (controller-gen, golangci-lint, buf, envtest, ginkgo) into `./bin` on first use. Run `make help` to list every target.
 
-Dependency updates target the newest compatible stable releases under the existing module paths. Keep `github.com/google/cel-go` at v0.31.0 because v0.32.0 changes its module path to `cel.dev/cel-go`. Keep `k8s.io/kube-openapi` at commit `be32def86098` and `sigs.k8s.io/structured-merge-diff/v6` at v6.4.2: Kubernetes v0.37.1 uses SMD v6, while newer kube-openapi commits require SMD v7.
+Dependency updates target the newest compatible stable releases under the existing module paths. Keep `github.com/google/cel-go` at v0.31.0, the last release on the old path; v0.32.0 uses `cel.dev/cel-go`. Kubernetes v0.37.1 requires SMD/v6 schema types, with `sigs.k8s.io/structured-merge-diff/v6` kept at v6.4.2. kube-openapi's SMD/v7 migration landed in [upstream PR #636](https://github.com/kubernetes/kube-openapi/pull/636) on September 4, making newer revisions type-incompatible with Kubernetes v0.37.1. Keep kube-openapi `v0.0.0-20260821135717-be32def86098`, the latest compatible baseline.
+
+For the docs site, use the Node version pinned in `.github/workflows/pages.yml`. Update direct npm dependencies to their latest stable releases and refresh the lockfile within upstream dependency ranges. Keep required older transitive versions, such as Babel 7 for magicast and p-queue 9 for Astro; do not force incompatible majors with overrides. Exclude prereleases even when a registry's `latest` tag points to one.
 
 ```sh
 make test-fast   # unit tests without envtest
 make test        # full unit and integration suite, including envtest
 make lint        # golangci-lint
 ```
+
+With Node.js and Docker available, build the devcontainer using the same pinned CLI and feature lockfile as CI:
+
+```sh
+npx --yes --package @devcontainers/cli@0.89.0 devcontainer build \
+  --workspace-folder . --frozen-lockfile --no-cache
+```
+
+This builds the Debian Trixie development image without starting its Docker-in-Docker container or running lifecycle hooks. Keep `.devcontainer/devcontainer-lock.json` checked in; the frozen build rejects feature resolution that would change it.
+
+The runtime images use Alpine 3.24 packages at that distribution's latest available versions. These may trail upstream releases; we do not source-build replacements to bypass the Alpine package ceiling.
 
 The API group and CSI provisioner name is `pillar-csi.bhyoo.com`. All CRDs are cluster-scoped: `PillarAgent`, `PillarStore`, `PillarProtocol`, `PillarStorageClass`, and the internal `PillarVolumeState`.
 
@@ -51,7 +64,9 @@ Check cleanup against the resource owned by the test. For TCP listeners, verify 
 
 Pull requests and pushes to `master` run the same CI workflow. Code changes run lint, unit and integration tests, CSI conformance, chart rendering, benchmarks, and both Kind and upstream External Storage E2E suites. Ordinary source PRs compile all eight platforms through the Dockerfile's builder stage, which declares `TARGETOS`/`TARGETARCH`/`TARGETVARIANT` after `COPY . .` so the architecture-independent `go mod download` step shares one vertex across platforms while the build args remain in scope for each architecture-specific compile. Image-contract changes, master pushes, and failed change detection run the full eight-platform OCI build. Documentation-only changes skip the code checks; `docs/E2E-TESTCASES.md` still counts as code. Failed change detection runs the checks rather than skipping them. Superseded pull-request runs are cancelled; master and daily runs are retained.
 
-The `CI gate` job runs on every pull request and is the CI workflow's required status check. It aggregates the jobs that block merge: Lint, Test, Build (all platforms), and the Kind E2E suite, plus the runtime-image build that E2E consumes. Each of them must succeed. A skipped job passes only when change detection succeeded and found a documentation-only change, or, for E2E, when a pushed commit message contains `[skip e2e]` or `[e2e skip]`. Any other skip, such as one caused by cancelling the run, fails the gate. The other CI jobs report results but do not block merge. To make a job blocking, add it to the gate's `needs` list and result check in `.github/workflows/ci.yml`.
+The `CI gate` job runs on every pull request and is the CI workflow's required status check. It aggregates the jobs that block merge: Lint, Test, Build (all platforms), the Kind E2E suite, the runtime-image build that E2E consumes, and the devcontainer build. Each required job must succeed. A skipped code job passes only when change detection succeeded and found a documentation-only change, or, for E2E, when a pushed commit message contains `[skip e2e]` or `[e2e skip]`. Any other skip, such as one caused by cancelling the run, fails the gate. The other CI jobs report results but do not block merge. To make a job blocking, add it to the gate's `needs` list and result check in `.github/workflows/ci.yml`.
+
+The devcontainer build runs only for `.devcontainer/**` or `.github/workflows/ci.yml` changes. It also runs if change detection fails or its devcontainer output is missing. The gate accepts a skipped devcontainer build only when detection succeeded and explicitly found no relevant change, so ordinary source PRs do not rebuild the devcontainer's Git feature. This uses the existing `CI gate` required check; no separate required status check is needed.
 
 TC coverage verification runs once through `make test`, and its report appears in the Test job summary. The daily workflow also runs the separate Docker multi-node data-path suite.
 
@@ -65,7 +80,7 @@ Docker suite tests run serially by default. `PILLAR_E2E_PARALLEL=true make test-
 
 Daily E2E enables this opt-in in each isolated topology job. Local Docker suite runs remain serial unless `PILLAR_E2E_PARALLEL=true` is set.
 
-Local `make test-docker-e2e` runs keep the nested Docker's pulled images, BuildKit cache (including the Go build cache mount), and the harness's Go module and build caches in Compose volumes, so a rerun rebuilds only what changed. Each run still starts and ends without Kind clusters, containers, networks, or E2E-owned host storage state. Base image tags such as `golang:1.27.2-alpine3.24` are not re-pulled while cached; run `make clean-docker-e2e-cache` to drop every cache and start from scratch. CI runners start with empty volumes.
+Local `make test-docker-e2e` runs keep the nested Docker's pulled images, BuildKit cache (including the Go build cache mount), and the harness's Go module and build caches in Compose volumes, so a rerun rebuilds only what changed. Each run still starts and ends without Kind clusters, containers, networks, or E2E-owned host storage state. Base image tags such as `golang:1.27.3-alpine3.24` are not re-pulled while cached; run `make clean-docker-e2e-cache` to drop every cache and start from scratch. CI runners start with empty volumes.
 
 External Storage E2E uses four workers when invoked by the CI and Daily callers; the reusable workflow defaults to two workers when called standalone. Local defaults remain one worker and 5 GiB. On a Linux host with the required storage modules, set `VG_SIZE=15G` when bootstrapping and `GINKGO_PROCS=2` when running `make test-external-e2e` to use the reusable-workflow settings locally. Parallel execution uses the matching Ginkgo binary from the upstream Kubernetes test bundle and keeps the same focus and skip filters.
 

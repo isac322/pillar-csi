@@ -83,19 +83,22 @@ func validateProtocolSpec(p pillarcsiv1alpha1.ProtocolSpec) error {
 	case p.NFS != nil:
 		errs = validateNFS(memberPath, p.NFS)
 	}
-	if len(errs) == 0 {
-		return nil
+	validationErr := errs.ToAggregate()
+	if validationErr != nil {
+		return fmt.Errorf("validate protocol configuration: %w", validationErr)
 	}
-	return errs.ToAggregate()
+	return nil
 }
 
 func validateProtocolUnion(protocolPath *field.Path, p pillarcsiv1alpha1.ProtocolSpec) error {
 	const unionRule = "exactly one protocol member must be set (supported: nvmeofTcp, iscsi, nfs)"
 	switch n := protocolMemberCount(p); {
 	case n == 0:
-		return field.ErrorList{field.Required(protocolPath, unionRule)}.ToAggregate()
+		return fmt.Errorf("validate protocol union: %w",
+			field.ErrorList{field.Required(protocolPath, unionRule)}.ToAggregate())
 	case n > 1:
-		return field.ErrorList{field.Invalid(protocolPath, n, unionRule)}.ToAggregate()
+		return fmt.Errorf("validate protocol union: %w",
+			field.ErrorList{field.Invalid(protocolPath, n, unionRule)}.ToAggregate())
 	default:
 		return nil
 	}
@@ -241,11 +244,11 @@ func (*PillarProtocolCustomValidator) ValidateUpdate(
 	oldMember := protocolMember(oldProtocol.Spec.Protocol)
 	newMember := protocolMember(newProtocol.Spec.Protocol)
 	if oldMember != newMember {
-		return nil, field.ErrorList{field.Forbidden(
+		return nil, fmt.Errorf("validate PillarProtocol update: %w", field.ErrorList{field.Forbidden(
 			field.NewPath("spec", "protocol"),
 			fmt.Sprintf("the protocol member is immutable; old member %q cannot be changed to %q",
 				oldMember, newMember),
-		)}.ToAggregate()
+		)}.ToAggregate())
 	}
 
 	return nil, validateProtocolSpec(newProtocol.Spec.Protocol)

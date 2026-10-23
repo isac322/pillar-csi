@@ -8,17 +8,17 @@
     "preview": "astro preview"
   },
   "dependencies": {
-    "@astrojs/markdown-remark": "^7.3.2",
-    "@astrojs/mdx": "^8.0.3",
-    "@astrojs/sitemap": "latest",
+    "@astrojs/markdown-remark": "^7.3.4",
+    "@astrojs/mdx": "^8.1.1",
+    "@astrojs/sitemap": "^3.7.4",
     "@fontsource-variable/archivo": "^5.3.0",
-    "@fontsource/ibm-plex-mono": "latest",
-    "astro": "^7.3.8",
-    "hast-util-to-string": "latest",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "astro": "^7.4.2",
+    "hast-util-to-string": "^3.0.1",
     "pagefind": "^1.5.2",
-    "rehype-autolink-headings": "latest",
-    "rehype-slug": "latest",
-    "remark-directive": "latest",
-    "unist-util-visit": "latest"
+    "rehype-autolink-headings": "^7.1.0",
+    "rehype-slug": "^6.0.0",
+    "remark-directive": "^4.0.0",
+    "unist-util-visit": "^5.1.0"
   }
 }

@@ -197,8 +197,9 @@ func (v *PillarStorageClassCustomValidator) ValidateUpdate(
 		))
 	}
 
-	if len(allErrs) > 0 {
-		return nil, allErrs.ToAggregate()
+	err := allErrs.ToAggregate()
+	if err != nil {
+		return nil, fmt.Errorf("validate PillarStorageClass update: %w", err)
 	}
 
 	// Also verify that the new binding's backend-protocol combination is still valid.
@@ -263,7 +264,11 @@ func (v *PillarStorageClassCustomValidator) validateCompatibility(
 		))
 	}
 	if v.Client == nil {
-		return allErrs.ToAggregate()
+		err := allErrs.ToAggregate()
+		if err != nil {
+			return fmt.Errorf("validate PillarStorageClass compatibility: %w", err)
+		}
+		return nil
 	}
 
 	store, storeErr := v.lookupStore(ctx, pb)
@@ -274,10 +279,11 @@ func (v *PillarStorageClassCustomValidator) validateCompatibility(
 	if storeErr == nil && protocolErr == nil {
 		allErrs = append(allErrs, validateCompatibleStorageClass(pb, store, protocol)...)
 	}
-	if len(allErrs) == 0 {
-		return nil
+	err := allErrs.ToAggregate()
+	if err != nil {
+		return fmt.Errorf("validate PillarStorageClass compatibility: %w", err)
 	}
-	return allErrs.ToAggregate()
+	return nil
 }
 
 func (v *PillarStorageClassCustomValidator) lookupStore(

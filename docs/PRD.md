@@ -1196,8 +1196,8 @@ Controller는 사전 용량 검증을 하지 않는다. Agent에 요청을 보�
 
 | 구성요소 | 기술 |
 |---------|------|
-| 언어 | Go 1.26+ |
-| CSI spec | v1.12.0 |
+| 언어 | Go 1.27.3 |
+| CSI spec | v1.13.0 |
 | gRPC | google.golang.org/grpc + protobuf |
 | CRD 프레임워크 | controller-runtime (kubebuilder) |
 | CLI | cobra |
