@@ -151,7 +151,7 @@ jobs:
       - name: Run linter
         uses: golangci/golangci-lint-action@v9.3.0
         with:
-          version: v2.14.0
+          version: v2.15.0
 
   test:
     name: Test
@@ -270,7 +270,7 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v5.0.1
         with:
-          version: v4.3.0
+          version: v4.3.1
 
       - name: Run chart render regression tests
         run: make test-chart
@@ -448,7 +448,7 @@ jobs:
       - name: Compile Go binaries for all supported Linux targets
         id: compile
         if: ${{ needs.changes.result == 'success' && needs.changes.outputs.image_contract != 'true' && !(github.event_name == 'push' && github.ref == 'refs/heads/master') }}
-        uses: docker/bake-action@v7.4.0
+        uses: docker/bake-action@v7.5.0
         with:
           files: docker-bake.hcl
           targets: compile
@@ -460,7 +460,7 @@ jobs:
       - name: Build all images for all platforms
         id: full_images
         if: ${{ needs.changes.result != 'success' || needs.changes.outputs.image_contract == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/master') }}
-        uses: docker/bake-action@v7.4.0
+        uses: docker/bake-action@v7.5.0
         with:
           files: docker-bake.hcl
           set: |
@@ -550,7 +550,7 @@ jobs:
         env:
           REGISTRY: pillar-csi
           TAG: ${{ steps.runtime_meta.outputs.image_tag }}
-        uses: docker/bake-action@v7.4.0
+        uses: docker/bake-action@v7.5.0
         with:
           files: docker-bake.hcl
           targets: controller,agent,node

@@ -93,8 +93,9 @@ func validatePillarStoreSpec(store *pillarcsiv1alpha1.PillarStore) error {
 			backend.Directory.HostRoot, "the directory hostRoot must be an absolute host path"))
 	}
 
-	if len(allErrs) > 0 {
-		return allErrs.ToAggregate()
+	err := allErrs.ToAggregate()
+	if err != nil {
+		return fmt.Errorf("validate PillarStore spec: %w", err)
 	}
 	return nil
 }
@@ -195,8 +196,9 @@ func (*PillarStoreCustomValidator) ValidateUpdate(
 		}
 	}
 
-	if len(allErrs) > 0 {
-		return nil, allErrs.ToAggregate()
+	err := allErrs.ToAggregate()
+	if err != nil {
+		return nil, fmt.Errorf("validate PillarStore update: %w", err)
 	}
 	return nil, validatePillarStoreSpec(newStore)
 }

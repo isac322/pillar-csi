@@ -324,7 +324,7 @@ Docker-in-Docker(DinD) 또는 Kind 지원 러너가 없으면 실행 불가.
 
 | 항목 | 버전 / 사양 | 비고 |
 |------|------------|------|
-| Go 빌드 도구체인 | 1.22+ | `go test ./test/e2e/ -v` 실행 |
+| Go 빌드 도구체인 | 1.27.3+ | `go test ./test/e2e/ -v` 실행 |
 | OS | Linux (amd64/arm64) 또는 macOS | tmpfs/tmpdir 지원 필요 |
 | RAM | 512 MiB 이상 | 동시 테스트 고루틴 수용 |
 | 디스크 | 200 MiB 여유 공간 | `t.TempDir()` 임시 파일 |
@@ -338,10 +338,10 @@ jobs:
     name: "In-Process E2E Tests"
     runs-on: ubuntu-22.04          # 또는 ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
         with:
-          go-version: "1.22"
+          go-version: "1.27.3"
           cache: true
       - name: Run In-Process E2E Tests
         run: |
@@ -350,7 +350,7 @@ jobs:
             2>&1 | tee e2e-inprocess.log
       - name: Upload test logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: e2e-inprocess-logs
           path: e2e-inprocess.log
@@ -361,7 +361,7 @@ jobs:
 ```yaml
 e2e-inprocess:
   stage: test
-  image: golang:1.27.2-trixie
+  image: golang:1.27.3-trixie
   script:
     - go test ./test/e2e/ -v -timeout 120s -count=1
   artifacts:
@@ -442,12 +442,12 @@ Kubernetes API 서버와 etcd의 실제 동작(CRD 검증 웹훅, RBAC, 어드�
 
 | 구성 요소 | 버전 | 비고 |
 |-----------|------|------|
-| Kind | v0.23+ | `helm/kind-action@v1` 또는 직접 설치 |
+| Kind | v0.23+ | `helm/kind-action@v1.15.1` 또는 직접 설치 |
 | Docker | 24+ | Kind 클러스터 노드 컨테이너용 |
 | kubectl | v1.29+ | CRD/RBAC 설치 및 검증 |
 | pillar-csi 이미지 | `example.com/pillar-csi:v0.0.1` | `make docker-build` 후 `kind load` |
 | cert-manager | v1.14+ (선택) | `CERT_MANAGER_INSTALL_SKIP=true`로 스킵 가능 |
-| Go 빌드 도구체인 | 1.22+ | mock agent 컴파일 및 테스트 실행 |
+| Go 빌드 도구체인 | 1.27.3+ | mock agent 컴파일 및 테스트 실행 |
 
 #### GitHub Actions — 유형 A-Kind 설정 예시
 
@@ -457,15 +457,15 @@ jobs:
     name: "Kind + Mock Backend E2E Tests"
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
         with:
-          go-version: "1.22"
+          go-version: "1.27.3"
           cache: true
       - name: Create Kind cluster
-        uses: helm/kind-action@v1
+        uses: helm/kind-action@v1.15.1
         with:
-          version: v0.23.0
+          version: v0.33.0
           cluster_name: pillar-csi-test
       - name: Build and load controller image
         run: |
@@ -476,7 +476,7 @@ jobs:
         run: make install
       - name: Install cert-manager (선택)
         run: |
-          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.5/cert-manager.yaml
+          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.2/cert-manager.yaml
           kubectl rollout status deployment/cert-manager -n cert-manager --timeout=120s
       - name: Run Kind+Mock E2E Tests
         run: |
@@ -4015,7 +4015,7 @@ PillarStore과 PillarStorageClass CRD에서 LVM 고유 필드의 OpenAPI 스키�
 
 이 카테고리의 테스트는 **실제 Kubernetes API 서버, CRD 검증 웹훅, RBAC** 동작을 검증한다.
 실제 ZFS/NVMe-oF 스토리지 백엔드는 여전히 mock을 사용하므로 스토리지 하드웨어는 불필요하다.
-표준 GitHub Actions에서 `helm/kind-action@v1`을 사용하면 실행 가능하다.
+표준 GitHub Actions에서 `helm/kind-action@v1.15.1`을 사용하면 실행 가능하다.
 
 ---
 
@@ -5725,7 +5725,7 @@ self-hosted 러너 또는 전용 스테이징 서버가 필요하다.
 | external-snapshotter | v7+ (F16) | VolumeSnapshot CRD 및 controller |
 | pillar-csi 이미지 | 로컬 빌드 | `make docker-build IMG=...` |
 | 루트 권한 | `sudo` 또는 직접 root | F8.1–F12.2, F24.1–F24.2, F26.1–F26.2 |
-| Go 빌드 도구체인 | 1.22+ | 테스트 컴파일 |
+| Go 빌드 도구체인 | 1.27.3+ | 테스트 컴파일 |
 
 #### Self-Hosted 러너 구성 예시 (GitHub Actions)
 
@@ -5748,10 +5748,10 @@ jobs:
       NVMEOF_TARGET_ADDR: "127.0.0.1"
       NVMEOF_TARGET_PORT: "4420"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
         with:
-          go-version: "1.22"
+          go-version: "1.27.3"
       - name: Setup ZFS pool
         run: |
           sudo modprobe zfs nvmet nvmet-tcp nvme-tcp
@@ -5764,7 +5764,7 @@ jobs:
       - name: Teardown ZFS pool
         if: always()
         run: sudo zpool destroy "$ZFS_POOL" || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: e2e-full-logs
@@ -6978,7 +6978,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: ZFS 커널 모듈 확인
         run: |
@@ -6994,7 +6994,7 @@ jobs:
           echo "ZFS_TEST_POOL=tank" >> $GITHUB_ENV
 
       - name: Go 설치
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
 
@@ -8070,7 +8070,7 @@ agent 재시작 복구(ReconcileState)를 검증하고 싶다
 
 | 항목 | 요구사항 | 설명 |
 |------|---------|------|
-| Go 버전 | 1.22+ | `go test ./test/e2e/ -v` 실행 |
+| Go 버전 | 1.27.3+ | `go test ./test/e2e/ -v` 실행 |
 | 운영체제 | Linux (amd64/arm64) 또는 macOS | tmpfs 디렉터리 지원 필요 |
 | root 권한 | 불필요 | mount(8), modprobe 없음 |
 | 커널 모듈 | 불필요 | nvmet, nvme-tcp 모듈 없음 |
@@ -8086,10 +8086,10 @@ jobs:
     name: "In-Process E2E (Mock Agent)"
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
         with:
-          go-version: "1.22"
+          go-version: "1.27.3"
           cache: true
 
       # mockAgentServer 사용 (E1-E8, E11-E17)
@@ -8112,7 +8112,7 @@ jobs:
 ```yaml
 e2e-mock-agent:
   stage: test
-  image: golang:1.27.2-trixie
+  image: golang:1.27.3-trixie
   script:
     # 빌드 태그 없음 — mock agent 모드가 기본
     - go test ./test/e2e/ -v -timeout 180s -count=1
