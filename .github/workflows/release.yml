@@ -120,7 +120,7 @@ jobs:
 
       - name: Login to GHCR
         if: needs.detect.outputs.measure_only != 'true'
-        uses: docker/login-action@v4.6.0
+        uses: docker/login-action@v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
