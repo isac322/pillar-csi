@@ -223,37 +223,49 @@ func desiredVolumeState(pvs *v1alpha1.PillarVolumeState, chap *agentv1.IscsiChap
 	}, nil
 }
 
-// ReconcileVolumeExport converges the storage node's export and ACL of the
-// volume tracked by the named PillarVolumeState to its durable desired state
-// (status.exportSpec + status.publishedNodes).  It is level-triggered: safe to
-// call at any time and repeatedly, it re-creates target state lost to an agent
-// restart, node reboot, or nvmet reload and never touches other volumes.
-//
-// It runs under the same per-volume lock as ControllerPublishVolume,
-// ControllerUnpublishVolume and DeleteVolume, re-reading the volume state
-// uncached under the lock.  That lock serializes only this process: it does
-// not order this call against another controller process (e.g. a stale
-// leader), whose delayed agent RPCs can still interleave.
-//
-// The outcome is recorded on the ExportReconciled condition.  A nil error
-// means the volume is converged, gone, or cannot be reconciled until its state
-// changes (missing exportSpec); a non-nil error asks the caller to requeue.
+// ReconcileVolumeExport retains the direct caller API and performs the
+// authoritative discovery read before choosing the lock key. Lifecycle and
+// export decisions are re-read authoritatively under the lock.
 func (s *ControllerServer) ReconcileVolumeExport(ctx context.Context, pvsName string) error {
 	pvs, found, err := s.readVolumeState(ctx, pvsName)
 	if err != nil || !found {
 		return err
 	}
-	err = s.validateVolumeDriver(pvs)
-	if err != nil {
-		return err
-	}
+	return s.reconcileVolumeExport(ctx, pvsName, pvs, false)
+}
 
-	unlock := s.volumeLocks.lock(pvs.Spec.VolumeID)
+// ReconcileVolumeExportWithCachedState uses the cached object only as a
+// provisional lock-key hint. All lifecycle and export decisions use the one
+// authoritative read performed under that lock.
+func (s *ControllerServer) ReconcileVolumeExportWithCachedState(
+	ctx context.Context,
+	pvsName string,
+	cached *v1alpha1.PillarVolumeState,
+) error {
+	if cached == nil {
+		return s.ReconcileVolumeExport(ctx, pvsName)
+	}
+	return s.reconcileVolumeExport(ctx, pvsName, cached, true)
+}
+
+func (s *ControllerServer) reconcileVolumeExport(
+	ctx context.Context,
+	pvsName string,
+	provisional *v1alpha1.PillarVolumeState,
+	cachedHint bool,
+) error {
+	lockID := provisional.Spec.VolumeID
+	unlock := s.volumeLocks.lock(lockID)
 	defer unlock()
 
-	pvs, found, err = s.readVolumeState(ctx, pvsName)
+	pvs, found, err := s.readVolumeState(ctx, pvsName)
 	if err != nil || !found || !pvs.DeletionTimestamp.IsZero() {
 		return err
+	}
+	if cachedHint && pvs.Spec.VolumeID != lockID {
+		return status.Errorf(codes.Aborted,
+			"PillarVolumeState %q volume ID changed from %q to %q",
+			pvsName, lockID, pvs.Spec.VolumeID)
 	}
 	err = s.validateVolumeDriver(pvs)
 	if err != nil {
@@ -275,17 +287,17 @@ func (s *ControllerServer) ReconcileVolumeExport(ctx context.Context, pvsName st
 	}
 
 	if pvs.Status.ExportSpec == nil && !localOnlyFilesystem(pvs) {
-		return s.setExportReconciled(ctx, pvsName, metav1.ConditionFalse, reasonExportSpecMissing,
+		return s.setExportReconciledSnapshot(ctx, pvs, metav1.ConditionFalse, reasonExportSpecMissing,
 			"status.exportSpec is not recorded; the export cannot be re-created from durable state")
 	}
 
 	reason, reconcileErr := s.reconcileVolumeOnAgent(ctx, pvs)
 	if reconcileErr != nil {
-		condErr := s.setExportReconciled(ctx, pvsName, metav1.ConditionFalse, reason, reconcileErr.Error())
+		condErr := s.setExportReconciledSnapshot(ctx, pvs, metav1.ConditionFalse, reason, reconcileErr.Error())
 		return fmt.Errorf("%w: volume %q: %w",
 			errExportReconcile, pvs.Spec.VolumeID, errors.Join(reconcileErr, condErr))
 	}
-	return s.setExportReconciled(ctx, pvsName, metav1.ConditionTrue, reasonExportReconciled,
+	return s.setExportReconciledSnapshot(ctx, pvs, metav1.ConditionTrue, reasonExportReconciled,
 		"export and ACL match the desired state")
 }
 
@@ -398,6 +410,7 @@ func reconcileItemReason(agentVolumeID string, result *agentv1.ReconcileItemResu
 // restoreEntry is one volume of a batch export restore.
 type restoreEntry struct {
 	pvsName string
+	pvs     *v1alpha1.PillarVolumeState
 	desired *agentv1.VolumeDesiredState
 	rank    int
 }
@@ -534,7 +547,7 @@ func (s *ControllerServer) prepareRestoreEntry(
 		return prepareRestoreResult{}
 	}
 	if pvs.Status.ExportSpec == nil && !localOnlyFilesystem(pvs) {
-		conditionErr := s.setExportReconciled(ctx, name, metav1.ConditionFalse,
+		conditionErr := s.setExportReconciledSnapshot(ctx, pvs, metav1.ConditionFalse,
 			reasonExportSpecMissing,
 			"status.exportSpec is not recorded; the export cannot be re-created from durable state")
 		return prepareRestoreResult{failed: true, err: conditionErr}
@@ -543,7 +556,7 @@ func (s *ControllerServer) prepareRestoreEntry(
 	if chapErr != nil {
 		reason := chapErrorReason(chapErr)
 		chapErr = fmt.Errorf("%w: volume %q: %w", errExportReconcile, pvs.Spec.AgentVolumeID, chapErr)
-		conditionErr := s.setExportReconciled(ctx, name, metav1.ConditionFalse,
+		conditionErr := s.setExportReconciledSnapshot(ctx, pvs, metav1.ConditionFalse,
 			reason, chapErr.Error())
 		return prepareRestoreResult{failed: true, err: wrapExportErrors(chapErr, conditionErr)}
 	}
@@ -551,13 +564,13 @@ func (s *ControllerServer) prepareRestoreEntry(
 	if buildErr != nil {
 		buildErr = fmt.Errorf("%w: build desired state for %q: %w",
 			errExportReconcile, pvs.Spec.AgentVolumeID, buildErr)
-		conditionErr := s.setExportReconciled(ctx, name, metav1.ConditionFalse,
+		conditionErr := s.setExportReconciledSnapshot(ctx, pvs, metav1.ConditionFalse,
 			reasonReconcileFailed, buildErr.Error())
 		return prepareRestoreResult{failed: true, err: wrapExportErrors(buildErr, conditionErr)}
 	}
 	return prepareRestoreResult{
 		entry: restoreEntry{
-			pvsName: name, desired: desired, rank: restoreRank(pvs),
+			pvsName: name, pvs: pvs, desired: desired, rank: restoreRank(pvs),
 		},
 		include: true,
 	}
@@ -612,8 +625,8 @@ func (s *ControllerServer) sendAgentRestore(
 		errs := make([]error, 0, 1+len(entries))
 		errs = append(errs, fmt.Errorf("%w: restore exports of agent %q: %w", errExportReconcile, agentName, err))
 		for _, entry := range entries {
-			errs = append(errs, s.setExportReconciled(ctx, entry.pvsName, metav1.ConditionFalse,
-				reasonAgentUnavailable, err.Error()))
+			errs = append(errs, s.setExportReconciledSnapshot(ctx, entry.pvs,
+				metav1.ConditionFalse, reasonAgentUnavailable, err.Error()))
 		}
 		return len(entries), wrapExportErrors(errs...)
 	}
@@ -632,15 +645,39 @@ func (s *ControllerServer) sendAgentRestore(
 			reason, itemErr = reconcileItemReason(volumeID, result)
 		}
 		if itemErr == nil {
-			errs = append(errs, s.setExportReconciled(ctx, entry.pvsName, metav1.ConditionTrue,
-				reasonExportReconciled, "export and ACL match the desired state"))
+			errs = append(errs, s.setExportReconciledSnapshot(ctx, entry.pvs,
+				metav1.ConditionTrue, reasonExportReconciled,
+				"export and ACL match the desired state"))
 			continue
 		}
 		failed++
 		errs = append(errs, fmt.Errorf("%w: %w", errExportReconcile, itemErr),
-			s.setExportReconciled(ctx, entry.pvsName, metav1.ConditionFalse, reason, itemErr.Error()))
+			s.setExportReconciledSnapshot(ctx, entry.pvs,
+				metav1.ConditionFalse, reason, itemErr.Error()))
 	}
 	return failed, wrapExportErrors(errs...)
+}
+
+// setExportReconciledSnapshot avoids a second authoritative read when the
+// already-authoritative snapshot contains the exact desired condition.
+func (s *ControllerServer) setExportReconciledSnapshot(
+	ctx context.Context,
+	pvs *v1alpha1.PillarVolumeState,
+	condStatus metav1.ConditionStatus,
+	reason, message string,
+) error {
+	if pvs != nil {
+		condition := meta.FindStatusCondition(pvs.Status.Conditions, ConditionExportReconciled)
+		if condition != nil &&
+			condition.Status == condStatus &&
+			condition.Reason == reason &&
+			condition.Message == message &&
+			condition.ObservedGeneration == pvs.Generation {
+			return nil
+		}
+		return s.setExportReconciled(ctx, pvs.Name, condStatus, reason, message)
+	}
+	return s.setExportReconciled(ctx, "", condStatus, reason, message)
 }
 
 // setExportReconciled records the ExportReconciled condition, writing only

@@ -216,40 +216,52 @@ func reapablePhase(pvs *v1alpha1.PillarVolumeState) bool {
 	}
 }
 
-// ReapAbandonedVolume ends the lifecycle of the named PillarVolumeState when
-// its provisioning was abandoned: CreateVolume never reported it created
-// (phase Provisioning or CreatePartial), it is attributed to a claim, that
-// claim no longer exists (a terminating claim still exists), and no
-// PersistentVolume refers to the volume.  It reports whether the lifecycle
-// was ended.
-//
-// Every other volume is left alone and (false, nil) is returned.
-//
-// The teardown runs under the volume lock and commits status.deleting with a
-// fresh fencing generation first, in a compare-and-swap that still requires
-// the reapable phase, so an attempt that became Ready in between is kept.  A
-// CreateVolume still in flight is then refused (it re-reads deleting, and
-// persistVolumeReady refuses a lifecycle under deletion) or rejected by the
-// agent as stale.  A failure keeps the record marked deleting and is returned
-// so the caller retries; the retry repeats the idempotent steps with the same
-// token.  A volume still recorded as published is refused and kept.
+// ReapAbandonedVolumeWithCachedState is the reconciler fast path. The cached
+// object is only a conservative discovery hint: a non-reapable hint returns
+// without an authoritative read, while a reapable hint supplies only the
+// provisional lock key.
+func (s *ControllerServer) ReapAbandonedVolumeWithCachedState(
+	ctx context.Context,
+	pvsName string,
+	cached *v1alpha1.PillarVolumeState,
+) (bool, error) {
+	if cached == nil || !reapablePhase(cached) {
+		return false, nil
+	}
+	return s.reapAbandonedVolume(ctx, pvsName, cached, true)
+}
+
+// ReapAbandonedVolume retains the direct caller API and performs the
+// authoritative discovery read before choosing the lock key. Lifecycle and
+// teardown decisions are re-read authoritatively under the lock.
 func (s *ControllerServer) ReapAbandonedVolume(ctx context.Context, pvsName string) (bool, error) {
 	pvs, found, err := s.readVolumeState(ctx, pvsName)
 	if err != nil || !found {
 		return false, err
 	}
-	if scopedDriverForVolume(pvs) != s.effectiveDriverName() {
-		return false, nil
-	}
-	volumeID := pvs.Spec.VolumeID
-	unlock := s.volumeLocks.lock(volumeID)
+	return s.reapAbandonedVolume(ctx, pvsName, pvs, false)
+}
+
+func (s *ControllerServer) reapAbandonedVolume(
+	ctx context.Context,
+	pvsName string,
+	provisional *v1alpha1.PillarVolumeState,
+	cachedHint bool,
+) (bool, error) {
+	lockID := provisional.Spec.VolumeID
+	unlock := s.volumeLocks.lock(lockID)
 	defer unlock()
 
 	// Decide on the current record: another holder of the lock may have
 	// deleted or re-created it.
-	pvs, found, err = s.readVolumeState(ctx, pvsName)
+	pvs, found, err := s.readVolumeState(ctx, pvsName)
 	if err != nil || !found {
 		return false, err
+	}
+	if cachedHint && pvs.Spec.VolumeID != lockID {
+		return false, status.Errorf(codes.Aborted,
+			"PillarVolumeState %q volume ID changed from %q to %q",
+			pvsName, lockID, pvs.Spec.VolumeID)
 	}
 	if scopedDriverForVolume(pvs) != s.effectiveDriverName() {
 		return false, nil
@@ -263,7 +275,7 @@ func (s *ControllerServer) ReapAbandonedVolume(ctx context.Context, pvsName stri
 	// of every other volume creates no span.
 	ctx, span := telemetry.Tracer().Start(ctx, telemetry.SpanControllerVolumeReap,
 		trace.WithNewRoot(), trace.WithSpanKind(trace.SpanKindInternal),
-		trace.WithAttributes(telemetry.VolumeAttributes(volumeID)...))
+		trace.WithAttributes(telemetry.VolumeAttributes(lockID)...))
 	defer span.End()
 
 	result, err := s.reapAbandoned(ctx, pvsName, pvs)

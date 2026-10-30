@@ -316,12 +316,25 @@ var _ = Describe("PillarVolumeState export resync", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Name: pvsResyncName}}
+		res, err := f.reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RequeueAfter).To(Equal(volumeExportResyncInterval))
+		got := &pillarcsiv1alpha1.PillarVolumeState{}
+		Expect(k8sClient.Get(ctx, req.NamespacedName, got)).To(Succeed())
+		Expect(got.Status.Phase).To(Equal(pillarcsiv1alpha1.PillarVolumeStatePhaseReady))
+		Expect(got.Status.ExportSpec).To(Equal(pvs.Status.ExportSpec))
+		Expect(apimeta.IsStatusConditionTrue(got.Status.Conditions, csi.ConditionExportReconciled)).To(BeTrue())
+		callsBeforeLoss := f.reconcileCalls.Load()
+		Expect(callsBeforeLoss).To(Equal(int32(1)))
+
 		// Storage node reboot: configfs is volatile and comes back empty.
 		Expect(os.RemoveAll(filepath.Join(f.cfgRoot, "nvmet"))).To(Succeed())
 
-		res, err := f.reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: pvsResyncName}})
+		res, err = f.reconciler.Reconcile(ctx, req)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.RequeueAfter).To(Equal(volumeExportResyncInterval))
+		Expect(f.reconcileCalls.Load()).To(Equal(callsBeforeLoss + 1))
 
 		Expect(f.subsystemPath("namespaces", "1")).To(BeADirectory(), "export not restored")
 		_, err = os.Lstat(f.subsystemPath("allowed_hosts", pvsResyncHost))
@@ -330,7 +343,6 @@ var _ = Describe("PillarVolumeState export resync", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(raw)).To(HavePrefix("0"), "restored target must stay closed to unpublished hosts")
 
-		got := &pillarcsiv1alpha1.PillarVolumeState{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvsResyncName}, got)).To(Succeed())
 		Expect(got.Status.ExportSpec).To(Equal(pvs.Status.ExportSpec), "exportSpec must survive the API server schema")
 		Expect(got.Status.Conditions).To(ContainElement(And(
