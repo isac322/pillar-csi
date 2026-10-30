@@ -52,6 +52,23 @@ type VolumeReaper interface {
 	ReapAbandonedVolume(ctx context.Context, pvsName string) (bool, error)
 }
 
+// cachedVolumeStateReconciler is an optional fast path for concrete handlers
+// that can use the informer snapshot as a conservative discovery hint before
+// taking the authoritative per-volume lock. Test doubles keep using the
+// name-only interfaces above.
+type cachedVolumeStateReconciler interface {
+	ReconcileVolumeExportWithCachedState(
+		ctx context.Context,
+		pvsName string,
+		cached *pillarcsiv1alpha1.PillarVolumeState,
+	) error
+	ReapAbandonedVolumeWithCachedState(
+		ctx context.Context,
+		pvsName string,
+		cached *pillarcsiv1alpha1.PillarVolumeState,
+	) (bool, error)
+}
+
 // PillarVolumeStateReconciler keeps the exports and ACLs of provisioned
 // volumes present on their storage nodes and ends the lifecycle of volumes
 // whose provisioning was abandoned.  It is level-triggered: every
@@ -101,7 +118,12 @@ func (r *PillarVolumeStateReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, fmt.Errorf("PillarVolumeState %q requires configured export and reaper handlers", req.Name)
 	}
 
-	reaped, err := reaper.ReapAbandonedVolume(ctx, req.Name)
+	var reaped bool
+	if cached, ok := reaper.(cachedVolumeStateReconciler); ok {
+		reaped, err = cached.ReapAbandonedVolumeWithCachedState(ctx, req.Name, pvs)
+	} else {
+		reaped, err = reaper.ReapAbandonedVolume(ctx, req.Name)
+	}
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reap abandoned PillarVolumeState %q: %w", req.Name, err)
 	}
@@ -109,7 +131,11 @@ func (r *PillarVolumeStateReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
-	err = exports.ReconcileVolumeExport(ctx, req.Name)
+	if cached, ok := exports.(cachedVolumeStateReconciler); ok {
+		err = cached.ReconcileVolumeExportWithCachedState(ctx, req.Name, pvs)
+	} else {
+		err = exports.ReconcileVolumeExport(ctx, req.Name)
+	}
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile export of PillarVolumeState %q: %w", req.Name, err)
 	}
