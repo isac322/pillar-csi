@@ -202,6 +202,23 @@ jobs:
             exit 1
           fi
 
+      # Kind nodes share the GitHub runner's host kernel.  Raise the host
+      # inotify limits so nfsdcld can allocate an inotify instance during NFS
+      # helper startup instead of failing with "No file descriptors available".
+      - name: Raise host inotify limits for Kind NFS helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_instances="$(sysctl -n fs.inotify.max_user_instances)"
+          if (( current_instances < 512 )); then
+            sudo sysctl -w fs.inotify.max_user_instances=512
+          fi
+          current_watches="$(sysctl -n fs.inotify.max_user_watches)"
+          if (( current_watches < 524288 )); then
+            sudo sysctl -w fs.inotify.max_user_watches=524288
+          fi
+          sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches
+
       # ── pre-pull base and third-party images ───────────────────────────────
       # Warm the local Docker daemon before image builds and Kind creation.
       # Base images serve Dockerfile stages; chart runtime images are copied
