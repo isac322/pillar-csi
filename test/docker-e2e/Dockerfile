@@ -34,7 +34,7 @@ RUN go build -trimpath -o /kind ./cmd/kind
 
 FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS go
 
-FROM docker:29.9.2-dind
+FROM docker:29.9.3-dind
 
 ARG KUBERNETES_VERSION=v1.37.1
 ARG HELM_VERSION=v4.3.1
