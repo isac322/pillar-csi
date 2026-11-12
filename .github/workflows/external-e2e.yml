@@ -127,7 +127,7 @@ jobs:
           version: ${{ env.KIND_VERSION }}
 
       - name: Install Helm
-        uses: azure/setup-helm@v5.0.1
+        uses: azure/setup-helm@v5.1.0
         with:
           version: v4.3.1
 
