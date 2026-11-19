@@ -20,7 +20,7 @@
 # See docker-bake.hcl for the build matrix and CI integration.
 
 # ── Builder stage ─────────────────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.24 AS builder
 
 WORKDIR /workspace
 
